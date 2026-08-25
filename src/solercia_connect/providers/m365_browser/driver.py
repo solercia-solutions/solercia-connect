@@ -18,17 +18,19 @@ from solercia_connect.config import ConnectionType
 from solercia_connect.domain import (
     Capability,
     DomainRecord,
-    EmailAddress,
     MailMessage,
     MailQuery,
-    Provenance,
-    ProviderFamily,
     QueryPayload,
     ReasonCode,
     RouteKind,
     utc_now,
 )
 from solercia_connect.errors import ConnectorFailure
+from solercia_connect.providers._microsoft import (
+    field,
+    microsoft_provenance,
+    normalize_mail_message,
+)
 from solercia_connect.providers._shared import unique_canonical_account_identity
 from solercia_connect.providers.m365_browser.selectors import ENDPOINTS, Microsoft365Selectors
 
@@ -651,80 +653,19 @@ def _outlook_timestamp(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _outlook_datetime(value: object) -> datetime:
-    if not isinstance(value, str) or not value.strip():
-        raise ConnectorFailure(
-            ReasonCode.BROWSER_EXTRACTION_FAILED,
-            "Outlook message is missing a usable SentDateTime",
-        )
-    text = value.strip()
-    if text.endswith("Z"):
-        text = f"{text[:-1]}+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError as exc:
-        raise ConnectorFailure(
-            ReasonCode.BROWSER_EXTRACTION_FAILED,
-            "Outlook message carried an unparsable SentDateTime",
-        ) from exc
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-
-
-def _outlook_address(value: object) -> EmailAddress | None:
-    if not isinstance(value, Mapping):
-        return None
-    inner = value.get("EmailAddress")
-    if not isinstance(inner, Mapping):
-        return None
-    address = inner.get("Address")
-    if not isinstance(address, str) or not address.strip():
-        return None
-    name = inner.get("Name")
-    return EmailAddress(address, name.strip() if isinstance(name, str) and name.strip() else None)
-
-
-def _outlook_addresses(value: object) -> tuple[EmailAddress, ...]:
-    if not isinstance(value, list):
-        return ()
-    resolved = (_outlook_address(item) for item in value)
-    return tuple(address for address in resolved if address is not None)
-
-
 def _normalize_outlook_message(item: Mapping[str, object]) -> MailMessage:
-    identifier = item.get("Id")
-    if not isinstance(identifier, str) or not identifier.strip():
-        raise ConnectorFailure(
-            ReasonCode.BROWSER_EXTRACTION_FAILED,
-            "Outlook message is missing a usable identifier",
-        )
-    body = item.get("Body")
-    content = ""
-    body_format = "text"
-    if isinstance(body, Mapping):
-        raw_content = body.get("Content")
-        content = raw_content if isinstance(raw_content, str) else ""
-        raw_format = body.get("ContentType")
-        if isinstance(raw_format, str) and raw_format.strip():
-            body_format = raw_format.strip().casefold()
-    subject = item.get("Subject")
-    conversation = item.get("ConversationId")
-    return MailMessage(
-        identifier,
-        subject if isinstance(subject, str) else "",
-        _outlook_datetime(item.get("SentDateTime")),
-        _outlook_address(item.get("From")),
-        _outlook_addresses(item.get("ToRecipients")),
-        _outlook_addresses(item.get("CcRecipients")),
-        content,
-        body_format,
-        conversation if isinstance(conversation, str) and conversation.strip() else None,
-        bool(item.get("HasAttachments")),
-        Provenance(
-            "microsoft365.browser",
-            ProviderFamily.MICROSOFT,
-            RouteKind.BROWSER,
-            identifier,
-            utc_now(),
+    """Normalize through the shared Microsoft layer so both routes return one record shape."""
+    identifier = field(item, "id", "Id")
+    source_id = identifier if isinstance(identifier, str) else ""
+    return normalize_mail_message(
+        item,
+        provenance=microsoft_provenance(
+            provider_id="microsoft365.browser",
+            route=RouteKind.BROWSER,
+            source_id=source_id,
+            fetched_at=utc_now(),
+            account_id=None,
+            endpoint="outlook-rest-v2",
         ),
     )
 

@@ -21,6 +21,7 @@ def test_connection_types_are_ordered_and_accounts_are_validated_before_use() ->
     assert [item.value for item in ConnectionType] == [
         "outlook",
         "teams",
+        "onedrive",
         "gmail",
         "google-calendar",
         "jira",

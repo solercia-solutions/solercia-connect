@@ -29,6 +29,7 @@ _FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
 class ConnectionType(StrEnum):
     OUTLOOK = "outlook"
     TEAMS = "teams"
+    ONEDRIVE = "onedrive"
     GMAIL = "gmail"
     GOOGLE_CALENDAR = "google-calendar"
     JIRA = "jira"
@@ -42,6 +43,9 @@ class ConnectionType(StrEnum):
         aliases = {
             "microsoft-outlook": cls.OUTLOOK,
             "microsoft-teams": cls.TEAMS,
+            "microsoft-onedrive": cls.ONEDRIVE,
+            "sharepoint": cls.ONEDRIVE,
+            "microsoft-sharepoint": cls.ONEDRIVE,
             "google-calendar": cls.GOOGLE_CALENDAR,
             "calendar": cls.GOOGLE_CALENDAR,
         }
@@ -81,6 +85,17 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
             "Microsoft work or school account (personal accounts are unsupported)",
             "Tenant admin must allow Graph transcript access and grant the delegated scope",
             "A known online meeting ID is required for transcript reads",
+        ),
+    ),
+    TargetSpec(
+        ConnectionType.ONEDRIVE,
+        "microsoft.graph",
+        ("files.search", "files.get"),
+        ("SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID",),
+        ("openid", "profile", "User.Read", "Files.Read.All", "Sites.Read.All"),
+        (
+            "Microsoft work or school account",
+            "Tenant consent for delegated file and site read scopes",
         ),
     ),
     TargetSpec(

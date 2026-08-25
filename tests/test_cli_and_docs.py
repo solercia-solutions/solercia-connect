@@ -32,8 +32,8 @@ def test_providers_command_reports_matrix_without_credentials(monkeypatch: objec
     assert [item["type"] for item in payload["data"]["targets"][:4]] == [
         "outlook",
         "teams",
+        "onedrive",
         "gmail",
-        "google-calendar",
     ]
     assert '"mail.sent.list"' in result.stdout
     assert "ACCESS_TOKEN" not in result.stdout

@@ -13,6 +13,8 @@ class Capability(StrEnum):
     CALENDAR_EVENTS_LIST = "calendar.events.list"
     MEETING_TRANSCRIPTS_LIST = "meeting.transcripts.list"
     MEETING_TRANSCRIPT_GET = "meeting.transcript.get"
+    FILES_SEARCH = "files.search"
+    FILES_GET = "files.get"
     EXTERNAL_ISSUES_SEARCH = "external.issues.search"
     TICKETS_SEARCH = "tickets.search"
 
@@ -153,7 +155,36 @@ class TicketQuery:
             raise ValueError("TicketQuery limit must be between 1 and 1000")
 
 
-type QueryPayload = MailQuery | CalendarQuery | TranscriptQuery | IssueQuery | TicketQuery
+@dataclass(frozen=True, slots=True)
+class FileQuery:
+    """Locate files in a personal drive or a SharePoint site."""
+
+    text: str | None = None
+    folder_path: str | None = None
+    item_id: str | None = None
+    site: str | None = None
+    window: DateWindow | None = None
+    account_id: str | None = None
+    include_content: bool = False
+    max_content_bytes: int = 10_485_760
+    limit: int = 50
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.limit <= 500:
+            raise ValueError("FileQuery limit must be between 1 and 500")
+        if self.max_content_bytes <= 0:
+            raise ValueError("FileQuery max_content_bytes must be positive")
+        if self.item_id is not None and not self.item_id.strip():
+            raise ValueError("FileQuery item_id cannot be blank")
+        if self.folder_path is not None and not self.folder_path.strip():
+            raise ValueError("FileQuery folder_path cannot be blank")
+        if self.site is not None and not self.site.strip():
+            raise ValueError("FileQuery site cannot be blank")
+
+
+type QueryPayload = (
+    MailQuery | CalendarQuery | TranscriptQuery | IssueQuery | TicketQuery | FileQuery
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,7 +278,35 @@ class TicketCase:
     provenance: Provenance
 
 
-type DomainRecord = MailMessage | CalendarEvent | MeetingTranscript | ExternalIssue | TicketCase
+@dataclass(frozen=True, slots=True)
+class DriveFile:
+    """One file or folder observed in a personal drive or SharePoint document library."""
+
+    id: str
+    name: str
+    path: str | None
+    size_bytes: int | None
+    modified_at: datetime | None
+    created_at: datetime | None
+    mime_type: str | None
+    web_url: str | None
+    drive_id: str | None
+    is_folder: bool
+    content_base64: str | None
+    provenance: Provenance
+
+    def __post_init__(self) -> None:
+        if not self.id.strip():
+            raise ValueError("DriveFile id cannot be empty")
+        if not self.name.strip():
+            raise ValueError("DriveFile name cannot be empty")
+        if self.size_bytes is not None and self.size_bytes < 0:
+            raise ValueError("DriveFile size_bytes cannot be negative")
+
+
+type DomainRecord = (
+    MailMessage | CalendarEvent | MeetingTranscript | ExternalIssue | TicketCase | DriveFile
+)
 
 
 @dataclass(frozen=True, slots=True)

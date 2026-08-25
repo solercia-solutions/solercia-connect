@@ -1,0 +1,175 @@
+"""The route is an implementation detail, never part of the contract.
+
+A caller asks for a capability. Whether it was served by the official Microsoft Graph route or by
+the supervised browser route must not change the shape of what comes back. These tests feed the
+same information in the two casings the two collections actually use and require the resulting
+records to be identical apart from provenance, which is the one field whose job is to say where
+the data came from.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import UTC, datetime
+from typing import Any
+
+import pytest
+
+from solercia_connect.domain import Capability, RouteKind
+from solercia_connect.providers._microsoft import (
+    microsoft_provenance,
+    normalize_drive_item,
+    normalize_mail_message,
+)
+from solercia_connect.providers.m365_browser import Microsoft365BrowserAdapter
+from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
+
+_FETCHED = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+
+_GRAPH_MESSAGE: dict[str, Any] = {
+    "id": "AAMk-1",
+    "subject": "Radicación de soporte",
+    "sentDateTime": "2026-08-14T09:31:00Z",
+    "from": {"emailAddress": {"name": "Camilo", "address": "user@example.com"}},
+    "toRecipients": [{"emailAddress": {"name": "Mesa", "address": "mesa@example.com"}}],
+    "ccRecipients": [{"emailAddress": {"address": "jefe@example.com"}}],
+    "body": {"contentType": "html", "content": "<p>cuerpo</p>"},
+    "conversationId": "conv-1",
+    "hasAttachments": True,
+}
+
+_BROWSER_MESSAGE: dict[str, Any] = {
+    "Id": "AAMk-1",
+    "Subject": "Radicación de soporte",
+    "SentDateTime": "2026-08-14T09:31:00Z",
+    "From": {"EmailAddress": {"Name": "Camilo", "Address": "user@example.com"}},
+    "ToRecipients": [{"EmailAddress": {"Name": "Mesa", "Address": "mesa@example.com"}}],
+    "CcRecipients": [{"EmailAddress": {"Address": "jefe@example.com"}}],
+    "Body": {"ContentType": "HTML", "Content": "<p>cuerpo</p>"},
+    "ConversationId": "conv-1",
+    "HasAttachments": True,
+}
+
+_GRAPH_FILE: dict[str, Any] = {
+    "id": "01ITEM",
+    "name": "Acta 2026-08.docx",
+    "size": 20480,
+    "lastModifiedDateTime": "2026-08-20T18:05:00Z",
+    "createdDateTime": "2026-08-19T08:00:00Z",
+    "file": {"mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    "webUrl": "https://example.sharepoint.com/Documents/Acta.docx",
+    "parentReference": {"driveId": "b!drive", "path": "/drive/root:/Documentos"},
+}
+
+_BROWSER_FILE: dict[str, Any] = {
+    "Id": "01ITEM",
+    "Name": "Acta 2026-08.docx",
+    "Size": 20480,
+    "LastModifiedDateTime": "2026-08-20T18:05:00Z",
+    "CreatedDateTime": "2026-08-19T08:00:00Z",
+    "File": {"MimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    "WebUrl": "https://example.sharepoint.com/Documents/Acta.docx",
+    "ParentReference": {"DriveId": "b!drive", "Path": "/drive/root:/Documentos"},
+}
+
+
+def _provenance(route: RouteKind, endpoint: str):
+    return microsoft_provenance(
+        provider_id="microsoft.graph" if route is RouteKind.OFFICIAL else "microsoft365.browser",
+        route=route,
+        source_id="source",
+        fetched_at=_FETCHED,
+        account_id="user@example.com",
+        endpoint=endpoint,
+    )
+
+
+def test_a_mail_record_is_identical_whichever_route_produced_it() -> None:
+    official = normalize_mail_message(
+        _GRAPH_MESSAGE,
+        provenance=_provenance(RouteKind.OFFICIAL, "graph-v1"),
+    )
+    browser = normalize_mail_message(
+        _BROWSER_MESSAGE,
+        provenance=_provenance(RouteKind.BROWSER, "outlook-rest-v2"),
+    )
+
+    assert replace(official, provenance=browser.provenance) == browser
+    assert official.sender == browser.sender
+    assert official.to == browser.to
+    assert official.cc == browser.cc
+    assert official.body_format == browser.body_format == "html"
+    assert official.sent_at == browser.sent_at
+
+
+def test_a_file_record_is_identical_whichever_route_produced_it() -> None:
+    official = normalize_drive_item(
+        _GRAPH_FILE,
+        provenance=_provenance(RouteKind.OFFICIAL, "graph-drive-v1"),
+    )
+    browser = normalize_drive_item(
+        _BROWSER_FILE,
+        provenance=_provenance(RouteKind.BROWSER, "sharepoint-rest-v2"),
+    )
+
+    assert replace(official, provenance=browser.provenance) == browser
+    assert official.name == browser.name == "Acta 2026-08.docx"
+    assert official.size_bytes == browser.size_bytes == 20480
+    assert official.path == browser.path == "/drive/root:/Documentos/Acta 2026-08.docx"
+    assert official.is_folder is browser.is_folder is False
+
+
+def test_provenance_is_the_only_place_the_route_is_visible() -> None:
+    official = normalize_mail_message(
+        _GRAPH_MESSAGE,
+        provenance=_provenance(RouteKind.OFFICIAL, "graph-v1"),
+    )
+    browser = normalize_mail_message(
+        _BROWSER_MESSAGE,
+        provenance=_provenance(RouteKind.BROWSER, "outlook-rest-v2"),
+    )
+
+    assert official.provenance.route is RouteKind.OFFICIAL
+    assert browser.provenance.route is RouteKind.BROWSER
+    assert official.provenance.family is browser.provenance.family
+
+
+def test_both_microsoft_adapters_answer_the_same_port() -> None:
+    """Neither adapter may add or rename a method the other does not have."""
+    contract = {"descriptor", "health", "execute"}
+
+    assert contract.issubset(set(dir(MicrosoftGraphAdapter)))
+    assert contract.issubset(set(dir(Microsoft365BrowserAdapter)))
+    assert MicrosoftGraphAdapter.descriptor.family is Microsoft365BrowserAdapter.descriptor.family
+
+
+@pytest.mark.parametrize(
+    "capability",
+    sorted(
+        MicrosoftGraphAdapter.descriptor.capabilities
+        & Microsoft365BrowserAdapter.descriptor.capabilities,
+        key=str,
+    ),
+)
+def test_shared_capabilities_are_declared_with_the_same_identifier(
+    capability: Capability,
+) -> None:
+    """A capability both routes claim must be the same capability, not a look-alike."""
+    assert capability in MicrosoftGraphAdapter.descriptor.capabilities
+    assert capability in Microsoft365BrowserAdapter.descriptor.capabilities
+    assert isinstance(capability.value, str) and "." in capability.value
+
+
+def test_normalization_never_stamps_its_own_time() -> None:
+    """Fetch time comes from the caller's clock, so records stay reproducible in tests."""
+    record = normalize_mail_message(
+        _BROWSER_MESSAGE,
+        provenance=_provenance(RouteKind.BROWSER, "outlook-rest-v2"),
+    )
+    again = normalize_mail_message(
+        _BROWSER_MESSAGE,
+        provenance=_provenance(RouteKind.BROWSER, "outlook-rest-v2"),
+    )
+
+    assert record.provenance.fetched_at == _FETCHED
+    assert record == again

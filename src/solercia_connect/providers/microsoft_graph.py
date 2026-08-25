@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
@@ -12,7 +14,10 @@ from solercia_connect.domain import (
     CalendarQuery,
     Capability,
     ConnectorRequest,
+    DateWindow,
+    DriveFile,
     EmailAddress,
+    FileQuery,
     HealthReport,
     HealthState,
     MailMessage,
@@ -27,6 +32,10 @@ from solercia_connect.domain import (
 )
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.ports import HTTPTransport, ProviderDescriptor
+from solercia_connect.providers._microsoft import (
+    microsoft_provenance,
+    normalize_drive_item,
+)
 from solercia_connect.providers._shared import (
     as_string,
     ensure_official_https_base_url,
@@ -53,6 +62,8 @@ class MicrosoftGraphAdapter:
                 Capability.CALENDAR_EVENTS_LIST,
                 Capability.MEETING_TRANSCRIPTS_LIST,
                 Capability.MEETING_TRANSCRIPT_GET,
+                Capability.FILES_SEARCH,
+                Capability.FILES_GET,
             }
         ),
     )
@@ -89,7 +100,7 @@ class MicrosoftGraphAdapter:
 
     def execute(
         self, request: ConnectorRequest
-    ) -> tuple[MailMessage | CalendarEvent | MeetingTranscript, ...]:
+    ) -> tuple[MailMessage | CalendarEvent | MeetingTranscript | DriveFile, ...]:
         if request.capability is Capability.MAIL_SENT_LIST and isinstance(
             request.payload, MailQuery
         ):
@@ -105,6 +116,14 @@ class MicrosoftGraphAdapter:
             return self.list_transcripts(
                 request.payload,
                 first_only=request.capability is Capability.MEETING_TRANSCRIPT_GET,
+            )
+        if request.capability in {
+            Capability.FILES_SEARCH,
+            Capability.FILES_GET,
+        } and isinstance(request.payload, FileQuery):
+            return self.list_files(
+                request.payload,
+                with_content=request.capability is Capability.FILES_GET,
             )
         raise ConnectorFailure(
             ReasonCode.CAPABILITY_NOT_IMPLEMENTED,
@@ -134,6 +153,96 @@ class MicrosoftGraphAdapter:
             f"{self._base_url}/me/mailFolders/sentitems/messages", params, query.limit
         )
         return tuple(self._normalize_message(item, account_id) for item in items)
+
+    def list_files(self, query: FileQuery, *, with_content: bool = False) -> tuple[DriveFile, ...]:
+        """List, search or fetch drive items from OneDrive or a SharePoint document library."""
+        account_id = self._identity()
+        if query.account_id and query.account_id.lower() != account_id.lower():
+            raise ConnectorFailure(
+                ReasonCode.AUTHORIZATION_BOUNDARY_VIOLATION,
+                "Requested drive does not match the authenticated Microsoft account",
+            )
+        drive_url = self._drive_base_url(query.site)
+        select = (
+            "id,name,size,lastModifiedDateTime,createdDateTime,file,folder,webUrl,parentReference"
+        )
+
+        if query.item_id is not None:
+            payload = request_json(
+                self._transport,
+                "GET",
+                f"{drive_url}/items/{quote(query.item_id.strip(), safe='')}",
+                headers=self._headers(),
+                params={"$select": select},
+            )
+            items = [require_mapping(payload, "microsoft.driveItem")]
+        else:
+            url, params = self._drive_listing(drive_url, query, select)
+            items = self._paged_values(url, params, query.limit)
+
+        files = [self._normalize_drive_item(item, account_id) for item in items]
+        files = [item for item in files if _within_window(item, query.window)]
+        if with_content:
+            files = [self._with_content(item, drive_url, query.max_content_bytes) for item in files]
+        return tuple(files[: query.limit])
+
+    def _drive_base_url(self, site: str | None) -> str:
+        if site is None:
+            return f"{self._base_url}/me/drive"
+        cleaned = site.strip().strip("/")
+        return f"{self._base_url}/sites/{quote(cleaned, safe=':/')}/drive"
+
+    def _drive_listing(
+        self,
+        drive_url: str,
+        query: FileQuery,
+        select: str,
+    ) -> tuple[str, dict[str, Any]]:
+        params: dict[str, Any] = {"$select": select, "$top": min(query.limit, 200)}
+        if query.text is not None:
+            escaped = query.text.strip().replace("'", "''")
+            return f"{drive_url}/root/search(q='{quote(escaped, safe='')}')", params
+        if query.folder_path is not None:
+            path = query.folder_path.strip().strip("/")
+            return f"{drive_url}/root:/{quote(path, safe='/')}:/children", params
+        return f"{drive_url}/root/children", params
+
+    def _with_content(self, item: DriveFile, drive_url: str, max_bytes: int) -> DriveFile:
+        if item.is_folder:
+            return item
+        if item.size_bytes is not None and item.size_bytes > max_bytes:
+            raise ConnectorFailure(
+                ReasonCode.INVALID_INPUT,
+                "Drive item exceeds the requested maximum content size",
+            )
+        response = request_bytes(
+            self._transport,
+            "GET",
+            f"{drive_url}/items/{quote(item.id, safe='')}/content",
+            headers=self._headers(),
+        )
+        content = response.content
+        if len(content) > max_bytes:
+            raise ConnectorFailure(
+                ReasonCode.INVALID_INPUT,
+                "Drive item exceeds the requested maximum content size",
+            )
+        return replace(item, content_base64=base64.b64encode(content).decode("ascii"))
+
+    def _normalize_drive_item(self, item: dict[str, Any], account_id: str) -> DriveFile:
+        """Normalize through the shared Microsoft layer, exactly like the browser route."""
+        source_id = require_string(item.get("id"), "driveItem.id")
+        return normalize_drive_item(
+            item,
+            provenance=microsoft_provenance(
+                provider_id=self.descriptor.provider_id,
+                route=self.descriptor.route,
+                source_id=source_id,
+                fetched_at=self._clock(),
+                account_id=account_id,
+                endpoint="graph-drive-v1",
+            ),
+        )
 
     def list_events(self, query: CalendarQuery) -> tuple[CalendarEvent, ...]:
         account_id = self._identity()
@@ -425,3 +534,11 @@ def _vtt_last_cue_seconds(content: str) -> float | None:
     ):
         values.append(int(hours) * 3600 + int(minutes) * 60 + float(seconds))
     return max(values) if values else None
+
+
+def _within_window(item: DriveFile, window: DateWindow | None) -> bool:
+    if window is None:
+        return True
+    if item.modified_at is None:
+        return False
+    return window.start <= item.modified_at < window.end

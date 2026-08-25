@@ -173,6 +173,7 @@ _OAUTH_TYPES = frozenset(
     {
         ConnectionType.OUTLOOK,
         ConnectionType.TEAMS,
+        ConnectionType.ONEDRIVE,
         ConnectionType.GMAIL,
         ConnectionType.GOOGLE_CALENDAR,
     }
