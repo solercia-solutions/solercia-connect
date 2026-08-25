@@ -69,7 +69,9 @@ class RunRequest(BaseModel):
     search: str | None = None
     folder_path: str | None = None
     item_id: str | None = None
+    drive_id: str | None = None
     site: str | None = None
+    include_shared: bool = True
     include_content: bool | None = None
     include_attachments: bool = False
     max_attachment_bytes: int = Field(default=10_485_760, ge=1)
@@ -133,7 +135,9 @@ class RunRequest(BaseModel):
             "search": self.search,
             "folder_path": self.folder_path,
             "item_id": self.item_id,
+            "drive_id": self.drive_id,
             "site": self.site,
+            "include_shared": self.include_shared,
             "max_content_bytes": self.max_content_bytes,
             "include_attachments": self.include_attachments,
             "max_attachment_bytes": self.max_attachment_bytes,
