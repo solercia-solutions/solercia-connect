@@ -108,7 +108,7 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "Microsoft 365 Web",
         "browser",
         "meeting.transcripts.*",
-        "not-available",
-        "Transcripts live in the organizer's drive or need a Graph audience the session lacks",
+        "implemented",
+        "SharePoint recording transcripts, own and shared; speaker-named WebVTT, window filter",
     ),
 )

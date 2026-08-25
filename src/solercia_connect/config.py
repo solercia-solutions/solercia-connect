@@ -95,7 +95,9 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
         (
             "Microsoft work or school account (personal accounts are unsupported)",
             "Tenant admin must allow Graph transcript access and grant the delegated scope",
-            "A known online meeting ID is required for transcript reads",
+            "A known online meeting ID is required by the official route",
+            "The supervised browser route instead reads the recording that carries the "
+            "transcript, selected by drive item or by period",
         ),
     ),
     TargetSpec(
