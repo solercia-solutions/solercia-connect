@@ -6,6 +6,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from solercia_connect import __version__
 from solercia_connect.cli import app
 
 runner = CliRunner()
@@ -18,7 +19,10 @@ def test_version_command() -> None:
     payload = json.loads(result.stdout)
     assert payload["schema"] == "solercia.connect/v1"
     assert payload["operation"] == "version"
-    assert payload["data"]["version"] == "0.1.0"
+    # Reported version must match the installed package and stay a valid release number,
+    # so a release bump does not need this test edited to keep passing.
+    assert payload["data"]["version"] == __version__
+    assert re.fullmatch(r"\d+\.\d+\.\d+", payload["data"]["version"])
 
 
 def test_providers_command_reports_matrix_without_credentials(monkeypatch: object) -> None:
