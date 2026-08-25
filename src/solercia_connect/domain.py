@@ -379,16 +379,28 @@ class HealthReport:
     detail: str = ""
 
 
+_CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
+    Capability.MAIL_SENT_LIST: MailMessage,
+    Capability.CALENDAR_EVENTS_LIST: CalendarEvent,
+    Capability.MEETING_TRANSCRIPTS_LIST: MeetingTranscript,
+    Capability.MEETING_TRANSCRIPT_GET: MeetingTranscript,
+    Capability.FILES_SEARCH: DriveFile,
+    Capability.FILES_GET: DriveFile,
+    Capability.EXTERNAL_ISSUES_SEARCH: ExternalIssue,
+    Capability.TICKETS_SEARCH: TicketCase,
+}
+
+
 def record_matches_capability(record: DomainRecord, capability: Capability) -> bool:
-    expected: dict[Capability, type[object]] = {
-        Capability.MAIL_SENT_LIST: MailMessage,
-        Capability.CALENDAR_EVENTS_LIST: CalendarEvent,
-        Capability.MEETING_TRANSCRIPTS_LIST: MeetingTranscript,
-        Capability.MEETING_TRANSCRIPT_GET: MeetingTranscript,
-        Capability.EXTERNAL_ISSUES_SEARCH: ExternalIssue,
-        Capability.TICKETS_SEARCH: TicketCase,
-    }
-    return isinstance(record, expected[capability])
+    """Check a record against the type its capability promises.
+
+    An unmapped capability used to raise a bare KeyError that surfaced to the caller as an
+    unknown error, hiding a one-line omission behind the least useful message available.
+    """
+    expected = _CAPABILITY_RECORD_TYPES.get(capability)
+    if expected is None:
+        raise ValueError(f"Capability {capability.value} declares no record type")
+    return isinstance(record, expected)
 
 
 def _stable_value(value: Any) -> Any:

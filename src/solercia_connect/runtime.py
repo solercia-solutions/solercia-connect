@@ -45,6 +45,10 @@ class RoutePolicy:
         {
             ReasonCode.ADMIN_CONSENT_REQUIRED,
             ReasonCode.OFFICIAL_CAPABILITY_UNAVAILABLE,
+            # A tenant that grants no application registration leaves the official route
+            # unconfigured. That is the primary reason the browser fallback exists, so it
+            # must be able to take over instead of ending the run.
+            ReasonCode.CONFIGURATION_INVALID,
         }
     )
     browser_fallback_capabilities: frozenset[Capability] = frozenset(
@@ -105,8 +109,15 @@ class ConnectorRuntime:
         try:
             official = self._registry.official(request.provider_id)
         except ConnectorFailure as registry_failure:
+            # An unconfigured official provider is a routing outcome, not the end of the run.
             steps.append(_step(1, RouteKind.OFFICIAL, request.provider_id, 0, registry_failure))
-            return self._failure_outcome(request, steps, registry_failure.reason)
+            return self._browser_outcome(
+                request,
+                steps,
+                registry_failure,
+                family=None,
+                browser_fallback_enabled=browser_fallback_enabled,
+            )
 
         if request.capability not in official.descriptor.capabilities:
             official_failure = ConnectorFailure(
@@ -127,6 +138,24 @@ class ConnectorRuntime:
             if result is not None:
                 return self._success_outcome(request, steps, RouteKind.OFFICIAL, result)
 
+        return self._browser_outcome(
+            request,
+            steps,
+            official_failure,
+            family=official.descriptor.family,
+            browser_fallback_enabled=browser_fallback_enabled,
+        )
+
+    def _browser_outcome(
+        self,
+        request: ConnectorRequest,
+        steps: list[TraceStep],
+        official_failure: ConnectorFailure,
+        *,
+        family: ProviderFamily | None,
+        browser_fallback_enabled: bool,
+    ) -> ExecutionOutcome:
+        """Decide and run the browser route for one already-failed official attempt."""
         if not browser_fallback_enabled:
             steps.append(
                 TraceStep(
@@ -141,25 +170,11 @@ class ConnectorRuntime:
             )
             return self._failure_outcome(request, steps, official_failure.reason)
 
-        if not self._policy.allows_browser(
-            request,
-            official_failure,
-            official.descriptor.family,
-        ):
-            steps.append(
-                TraceStep(
-                    len(steps) + 1,
-                    RouteKind.BROWSER,
-                    "browser-policy",
-                    0,
-                    StepOutcome.SKIPPED,
-                    ReasonCode.BROWSER_FALLBACK_DENIED,
-                    "Typed reason or capability is not allowlisted for browser fallback",
-                )
-            )
-            return self._failure_outcome(request, steps, official_failure.reason)
-
-        browser = self._registry.browser(official.descriptor.family)
+        browser = (
+            self._registry.browser(family)
+            if family is not None
+            else self._registry.browser_for_capability(request.capability)
+        )
         if browser is None:
             steps.append(
                 TraceStep(
@@ -175,6 +190,24 @@ class ConnectorRuntime:
             return self._failure_outcome(
                 request, steps, ReasonCode.BROWSER_CAPABILITY_NOT_IMPLEMENTED
             )
+
+        if not self._policy.allows_browser(
+            request,
+            official_failure,
+            browser.descriptor.family,
+        ):
+            steps.append(
+                TraceStep(
+                    len(steps) + 1,
+                    RouteKind.BROWSER,
+                    "browser-policy",
+                    0,
+                    StepOutcome.SKIPPED,
+                    ReasonCode.BROWSER_FALLBACK_DENIED,
+                    "Typed reason or capability is not allowlisted for browser fallback",
+                )
+            )
+            return self._failure_outcome(request, steps, official_failure.reason)
 
         if request.capability not in browser.descriptor.capabilities:
             steps.append(

@@ -8,6 +8,7 @@ from solercia_connect.browser_profile import (
     microsoft_browser_profile_root,
 )
 from solercia_connect.config import (
+    MICROSOFT_TARGETS,
     ConnectionType,
     ConnectSettings,
     ProfileStore,
@@ -71,7 +72,7 @@ def registry_from_environment(
         )
         microsoft_registered = True
     elif (
-        parsed_type in {ConnectionType.OUTLOOK, ConnectionType.TEAMS, ConnectionType.ONEDRIVE}
+        parsed_type in MICROSOFT_TARGETS
         and normalized_account is not None
         and (profile := profiles.get(parsed_type, normalized_account)) is not None
         and profile.route == "official"
@@ -167,8 +168,7 @@ def registry_from_environment(
 
     browser_profile = (
         profiles.get(parsed_type, normalized_account)
-        if parsed_type in {ConnectionType.OUTLOOK, ConnectionType.TEAMS, ConnectionType.ONEDRIVE}
-        and normalized_account is not None
+        if parsed_type in MICROSOFT_TARGETS and normalized_account is not None
         else None
     )
     if (
@@ -203,11 +203,7 @@ def browser_adapter_from_environment(
     parsed_type = (
         ConnectionType.TEAMS if connection_type is None else ConnectionType.parse(connection_type)
     )
-    if parsed_type not in {
-        ConnectionType.OUTLOOK,
-        ConnectionType.TEAMS,
-        ConnectionType.ONEDRIVE,
-    }:
+    if parsed_type not in MICROSOFT_TARGETS:
         raise ValueError("Microsoft browser fallback supports only Outlook, Teams and OneDrive")
     values = effective_environment(environ=environ)
     settings = load_settings(environ=values)

@@ -12,6 +12,7 @@ from solercia_connect.browser_profile import (
     microsoft_browser_profile_root,
 )
 from solercia_connect.config import (
+    MICROSOFT_TARGETS,
     ConnectionType,
     ConnectSettings,
     ProfileStore,
@@ -98,10 +99,11 @@ class DoctorService:
         missing = tuple(
             name for name in spec.required_configuration if name not in configured_names
         )
-        microsoft_target = spec.type in {ConnectionType.OUTLOOK, ConnectionType.TEAMS}
+        microsoft_target = spec.type in MICROSOFT_TARGETS
         oauth_target = spec.type in {
             ConnectionType.OUTLOOK,
             ConnectionType.TEAMS,
+            ConnectionType.ONEDRIVE,
             ConnectionType.GMAIL,
             ConnectionType.GOOGLE_CALENDAR,
         }

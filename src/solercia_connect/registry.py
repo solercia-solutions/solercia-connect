@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from solercia_connect.domain import ProviderFamily, ReasonCode, RouteKind
+from solercia_connect.domain import Capability, ProviderFamily, ReasonCode, RouteKind
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.ports import ProviderAdapter, ProviderDescriptor
 
@@ -34,6 +34,17 @@ class ProviderRegistry:
 
     def browser(self, family: ProviderFamily) -> ProviderAdapter | None:
         return self._browser.get(family)
+
+    def browser_for_capability(self, capability: Capability) -> ProviderAdapter | None:
+        """Find a browser adapter by capability, for when no official adapter exists at all.
+
+        An unconfigured official provider is the very situation the fallback exists for, so the
+        family cannot be read off an official descriptor that was never built.
+        """
+        for adapter in self._browser.values():
+            if capability in adapter.descriptor.capabilities:
+                return adapter
+        return None
 
     def find(self, provider_id: str) -> ProviderAdapter:
         if provider_id in self._official:

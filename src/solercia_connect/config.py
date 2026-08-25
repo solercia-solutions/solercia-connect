@@ -66,6 +66,17 @@ class TargetSpec:
     external_prerequisites: tuple[str, ...] = ()
 
 
+# Every target served by the Microsoft identity stack. Deciding this inline at each call site
+# meant a new Microsoft target silently fell into another provider's branch.
+MICROSOFT_TARGETS: frozenset[ConnectionType] = frozenset(
+    {
+        ConnectionType.OUTLOOK,
+        ConnectionType.TEAMS,
+        ConnectionType.ONEDRIVE,
+    }
+)
+
+
 TARGET_SPECS: tuple[TargetSpec, ...] = (
     TargetSpec(
         ConnectionType.OUTLOOK,

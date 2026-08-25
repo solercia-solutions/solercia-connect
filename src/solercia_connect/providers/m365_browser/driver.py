@@ -130,6 +130,8 @@ class BrowserDriver(Protocol):
 
     def onedrive_session_identity(self, *, timeout_ms: int) -> str: ...
 
+    def observed_session_authorization(self) -> bool: ...
+
     def reveal_identity_menu(
         self,
         selectors: Microsoft365Selectors,
@@ -197,7 +199,7 @@ class PlaywrightBrowserDriver:
             self._playwright = None
             raise ConnectorFailure(
                 ReasonCode.CONFIGURATION_INVALID,
-                "Playwright Chromium could not start; install the browser runtime",
+                _launch_failure_message(exc),
             ) from exc
         try:
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
@@ -428,21 +430,34 @@ class PlaywrightBrowserDriver:
 
         return tuple(messages)
 
+    def observed_session_authorization(self) -> bool:
+        """Report whether the session has already issued an authorized provider call.
+
+        A drive surface exposes no stable shell selector, so DOM presence is the wrong readiness
+        signal there. Traffic the session itself authorized is direct evidence that sign-in
+        completed, and it does not depend on a vendor's markup staying still.
+        """
+        return self._outlook_bearer is not None or self._files_bearer is not None
+
     def onedrive_session_identity(self, *, timeout_ms: int) -> str:
-        """Return the canonical account the SharePoint session itself reports."""
-        drive_origin_url = f"{self._drive_origin(timeout_ms=timeout_ms)}/_api/v2.0/me"
-        payload = self._authorized_files_get(
-            drive_origin_url,
-            params=None,
-            timeout_ms=timeout_ms,
-        )
-        for key in ("userPrincipalName", "UserPrincipalName", "email", "Email", "mail", "Mail"):
-            identity = unique_canonical_account_identity(payload.get(key), exact=True)
+        """Return the canonical account the drive session itself reports.
+
+        The v2 ``/me`` document carries only an opaque id on this surface, so identity is read
+        from the drive's own owner. The classic current-user document is a fixed second choice,
+        not a retry loop: both are read-only and the order never varies.
+        """
+        origin = self._drive_origin(timeout_ms=timeout_ms)
+        for url, extract in (
+            (f"{origin}/_api/v2.0/me/drive", _drive_owner_identity),
+            (f"{origin}/_api/web/currentuser", _current_user_identity),
+        ):
+            payload = self._authorized_files_get(url, params=None, timeout_ms=timeout_ms)
+            identity = extract(payload)
             if identity is not None:
                 return identity
         raise ConnectorFailure(
             ReasonCode.BROWSER_IDENTITY_UNAVAILABLE,
-            "SharePoint identity endpoint did not return one canonical account",
+            "Drive session did not report one canonical account",
         )
 
     def _drive_origin(self, *, timeout_ms: int) -> str:
@@ -968,6 +983,38 @@ def _within_window(item: DriveFile, window: DateWindow | None) -> bool:
     if item.modified_at is None:
         return False
     return window.start <= item.modified_at < window.end
+
+
+def _launch_failure_message(exc: Exception) -> str:
+    """Name the actual obstacle instead of always blaming a missing runtime.
+
+    A dedicated profile still held by an earlier browser process produced the same message as an
+    uninstalled runtime, which sent the reader to reinstall something that was already there.
+    """
+    text = str(exc).casefold()
+    if any(marker in text for marker in ("singletonlock", "profile", "already in use", "lock")):
+        return (
+            "The dedicated browser profile is already in use by another process; close it and retry"
+        )
+    return "Playwright Chromium could not start; install the browser runtime"
+
+
+def _drive_owner_identity(payload: Mapping[str, object]) -> str | None:
+    owner = payload.get("owner")
+    if not isinstance(owner, Mapping):
+        return None
+    user = owner.get("user")
+    if not isinstance(user, Mapping):
+        return None
+    return unique_canonical_account_identity(user.get("email"), exact=True)
+
+
+def _current_user_identity(payload: Mapping[str, object]) -> str | None:
+    for key in ("Email", "UserPrincipalName"):
+        identity = unique_canonical_account_identity(payload.get(key), exact=True)
+        if identity is not None:
+            return identity
+    return None
 
 
 def _authorization_header(request: Any) -> object:

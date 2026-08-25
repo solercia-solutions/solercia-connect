@@ -9,6 +9,7 @@ from typing import Any, Protocol, cast
 
 from solercia_connect.browser_profile import microsoft_browser_profile_path
 from solercia_connect.config import (
+    MICROSOFT_TARGETS,
     ConnectionProfile,
     ConnectionType,
     ConnectSettings,
@@ -108,7 +109,7 @@ class ConnectionService:
                 ("Configure the provider variables and use doctor or health.",),
                 "capability",
             )
-        microsoft_target = parsed in {ConnectionType.OUTLOOK, ConnectionType.TEAMS}
+        microsoft_target = parsed in MICROSOFT_TARGETS
         if (
             parsed is ConnectionType.TEAMS
             and self._settings.microsoft_tenant.casefold() == "consumers"
@@ -148,7 +149,7 @@ class ConnectionService:
             )
         try:
             oauth = self._oauth_builder(parsed, normalized)
-            if parsed in {ConnectionType.OUTLOOK, ConnectionType.TEAMS}:
+            if parsed in MICROSOFT_TARGETS:
                 microsoft = cast(MicrosoftInteractiveOAuth, oauth)
                 authorization = microsoft.start_device_authorization()
                 self._emit_device_action(parsed, normalized, authorization)
@@ -184,7 +185,7 @@ class ConnectionService:
             )
         except ConnectorFailure as failure:
             if (
-                parsed in {ConnectionType.OUTLOOK, ConnectionType.TEAMS}
+                parsed in MICROSOFT_TARGETS
                 and self._browser_route_authorized(allow_browser_fallback)
                 and failure.reason in _MICROSOFT_FALLBACK_REASONS
             ):
@@ -460,7 +461,7 @@ class ConnectionService:
         account: str,
         oauth: OAuthProvider,
     ) -> str:
-        if parsed in {ConnectionType.OUTLOOK, ConnectionType.TEAMS}:
+        if parsed in MICROSOFT_TARGETS:
             return (
                 MicrosoftGraphAdapter(
                     self._transport,
@@ -578,13 +579,20 @@ class ConnectionService:
         )
 
     def _missing_configuration(self, parsed: ConnectionType) -> tuple[str, ...]:
-        if parsed in {ConnectionType.OUTLOOK, ConnectionType.TEAMS}:
-            return (
-                ()
-                if self._settings.microsoft_client_id
-                else ("SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID",)
-            )
-        return () if self._settings.google_client_id else ("SOLERCIA_CONNECT_GOOGLE_CLIENT_ID",)
+        """Report what this target declares it needs, never what a fallback branch assumed.
+
+        Deciding by an else-branch made every unlisted target report Google's client ID, so a
+        Microsoft target could be told to configure the wrong provider entirely.
+        """
+        configured = {
+            "SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID": self._settings.microsoft_client_id,
+            "SOLERCIA_CONNECT_GOOGLE_CLIENT_ID": self._settings.google_client_id,
+        }
+        return tuple(
+            name
+            for name in target_spec(parsed).required_configuration
+            if name in configured and not configured[name]
+        )
 
     def _browser_route_authorized(self, allow_browser_fallback: bool) -> bool:
         return self._settings.browser_fallback_enabled and allow_browser_fallback
@@ -774,7 +782,7 @@ def oauth_provider_from_settings(
     spec = target_spec(parsed)
     key = _token_key(parsed, account)
     http = transport or HttpxTransport()
-    if parsed in {ConnectionType.OUTLOOK, ConnectionType.TEAMS}:
+    if parsed in MICROSOFT_TARGETS:
         client_id = settings.microsoft_client_id
         if client_id is None:
             raise ValueError("Microsoft client ID is not configured")

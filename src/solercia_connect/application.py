@@ -245,9 +245,15 @@ def _missing_oauth_configuration(
     type_value: ConnectionType,
     settings: ConnectSettings,
 ) -> tuple[str, ...]:
-    if type_value in {ConnectionType.OUTLOOK, ConnectionType.TEAMS}:
-        return () if settings.microsoft_client_id else ("SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID",)
-    return () if settings.google_client_id else ("SOLERCIA_CONNECT_GOOGLE_CLIENT_ID",)
+    configured = {
+        "SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID": settings.microsoft_client_id,
+        "SOLERCIA_CONNECT_GOOGLE_CLIENT_ID": settings.google_client_id,
+    }
+    return tuple(
+        name
+        for name in target_spec(type_value).required_configuration
+        if name in configured and not configured[name]
+    )
 
 
 def _query(

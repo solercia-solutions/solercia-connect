@@ -692,21 +692,19 @@ def _target_for_provider(
     provider: str,
     capability: Capability | None,
 ) -> ConnectionType | None:
-    if provider == "microsoft.graph":
-        return (
-            ConnectionType.TEAMS
-            if capability
-            in {Capability.MEETING_TRANSCRIPTS_LIST, Capability.MEETING_TRANSCRIPT_GET}
-            else ConnectionType.OUTLOOK
-        )
-    if provider == "google.gmail":
-        return ConnectionType.GMAIL
-    if provider == "google.calendar":
-        return ConnectionType.GOOGLE_CALENDAR
-    if provider == "jira.cloud":
-        return ConnectionType.JIRA
-    if provider == "glpi.rest":
-        return ConnectionType.GLPI
+    """Resolve the target from the declared specs, not from a hand-maintained mapping.
+
+    Several targets share one provider ID, so the capability decides between them. Deriving this
+    from TARGET_SPECS means a new capability is routable as soon as it is declared.
+    """
+    matches = [spec for spec in TARGET_SPECS if spec.provider_id == provider]
+    if not matches:
+        return None
+    if capability is None:
+        return matches[0].type
+    for spec in matches:
+        if capability.value in spec.capabilities:
+            return spec.type
     return None
 
 

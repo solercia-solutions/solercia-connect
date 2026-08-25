@@ -229,7 +229,10 @@ class Microsoft365BrowserAdapter:
                         ReasonCode.BROWSER_LOGIN_REQUIRED,
                         "Microsoft 365 browser session requires interactive login",
                     )
-            elif snapshot.authenticated_shell_visible:
+            elif snapshot.authenticated_shell_visible or (
+                self._connection_type is ConnectionType.ONEDRIVE
+                and self._driver.observed_session_authorization()
+            ):
                 machine.advance(BrowserState.AUTHENTICATED)
                 account = self._attested_account(machine, snapshot)
                 if any(
