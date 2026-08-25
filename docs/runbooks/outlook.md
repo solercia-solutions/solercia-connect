@@ -36,7 +36,9 @@ solercia-connect connect outlook user@example.com --allow-browser-fallback
 ```
 
 The user performs login/MFA in the dedicated profile. `connected_browser` means the account-bound
-session was verified; `extraction_status: not_implemented` remains authoritative.
+session was verified. The envelope's `extraction_status` and `capabilities` fields are
+authoritative about what that route can read: Outlook reports `available` with
+`mail.sent.list`, while Teams still reports `not_implemented`.
 
 ## Validate a dedicated account
 

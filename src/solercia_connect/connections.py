@@ -30,6 +30,7 @@ from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmail
 from solercia_connect.providers.m365_browser import (
     Microsoft365BrowserAdapter,
     PlaywrightBrowserDriver,
+    browser_extraction_report,
 )
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
 from solercia_connect.transport import HttpxTransport
@@ -268,7 +269,10 @@ class ConnectionService:
                     provider=parsed.value,
                     account=normalized,
                     route="browser",
-                    data={"extraction_status": "not_implemented", "identity_verified": True},
+                    data={
+                        "identity_verified": True,
+                        **browser_extraction_report(parsed),
+                    },
                 )
             tokens = self._tokens.load(_token_key(parsed, normalized))
             if tokens is None:
@@ -435,7 +439,7 @@ class ConnectionService:
                 data={
                     "identity_verified": True,
                     "session_status": "connected_browser",
-                    "extraction_status": "not_implemented",
+                    **browser_extraction_report(parsed),
                 },
             )
         except ConnectorFailure as failure:

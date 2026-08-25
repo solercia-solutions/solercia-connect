@@ -35,6 +35,22 @@ from solercia_connect.providers.m365_browser.states import BrowserState, Browser
 
 _OUTLOOK_IDENTITY_PROBE_ATTEMPTS = 2
 
+# Single source of truth for what the browser route can actually extract today.
+_BROWSER_EXTRACTION_CAPABILITIES: dict[ConnectionType, tuple[Capability, ...]] = {
+    ConnectionType.OUTLOOK: (Capability.MAIL_SENT_LIST,),
+    ConnectionType.TEAMS: (),
+}
+
+
+def browser_extraction_report(connection_type: str | ConnectionType) -> dict[str, object]:
+    """Describe the browser route's extraction surface for a connection type."""
+    parsed = ConnectionType.parse(connection_type)
+    capabilities = _BROWSER_EXTRACTION_CAPABILITIES.get(parsed, ())
+    return {
+        "extraction_status": "available" if capabilities else "not_implemented",
+        "capabilities": [capability.value for capability in capabilities],
+    }
+
 
 class Microsoft365BrowserAdapter:
     descriptor = ProviderDescriptor(

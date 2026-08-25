@@ -98,7 +98,8 @@ def test_live_shape_zero_dom_signals_with_rest_me_connects_and_returns(tmp_path:
     assert result.data == {
         "identity_verified": True,
         "session_status": "connected_browser",
-        "extraction_status": "not_implemented",
+        "extraction_status": "available",
+        "capabilities": ["mail.sent.list"],
     }
     assert driver.open_calls == [(profile_dir, False), (profile_dir, True)]
     assert driver.open_connection_types == [ConnectionType.OUTLOOK, ConnectionType.OUTLOOK]
@@ -293,6 +294,7 @@ class _ProbePage(_EventEmitter):
         self.wait_calls: list[int] = []
         self.probe_calls: list[dict[str, object]] = []
         self.probe_scripts: list[str] = []
+        self.probe_params: list[dict[str, str] | None] = []
         self.probe_authorization_present: list[bool] = []
         self.requests_on_wait: deque[tuple[str, object]] = deque()
         self.request_on_goto: tuple[str, object] | None = None
@@ -318,17 +320,64 @@ class _ProbePage(_EventEmitter):
             self.emit_request(url, authorization)
 
     def evaluate(self, script: str, payload: dict[str, object]) -> object:
-        self.probe_scripts.append(script)
-        authorization = payload.get("authorization")
-        self.probe_authorization_present.append(
+        raise AssertionError("Identity must not be probed from inside the page")
+
+
+class _FakeResponse:
+    def __init__(self, status: int, payload: object, *, malformed: bool = False) -> None:
+        self.status = status
+        self._payload = payload
+        self._malformed = malformed
+        self.disposed = False
+
+    def json(self) -> object:
+        if self._malformed:
+            raise ValueError("response is not JSON")
+        return self._payload
+
+    def dispose(self) -> None:
+        self.disposed = True
+
+
+class _FakeAPIRequestContext:
+    """Stands in for Playwright's request context, which is not bound by page CORS."""
+
+    def __init__(self, page: _ProbePage) -> None:
+        self._page = page
+
+    def get(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str],
+        params: dict[str, str] | None,
+        timeout: int,
+        fail_on_status_code: bool,
+    ) -> _FakeResponse:
+        assert fail_on_status_code is False
+        authorization = headers.get("Authorization")
+        self._page.probe_authorization_present.append(
             isinstance(authorization, str) and authorization.startswith("Bearer ")
         )
-        self.probe_calls.append(
-            {key: value for key, value in payload.items() if key != "authorization"}
-        )
-        if not self.results:
+        self._page.probe_calls.append({"endpoint": url, "method": "GET", "timeoutMs": timeout})
+        self._page.probe_params.append(params)
+        if not self._page.results:
             raise AssertionError("Unexpected Outlook identity probe")
-        return self.results.popleft()
+        result = self._page.results.popleft()
+        assert isinstance(result, dict)
+        kind = result.get("kind")
+        if kind == "unavailable":
+            raise RuntimeError("request could not be issued")
+        if kind == "http_error":
+            status = result.get("status")
+            assert isinstance(status, int)
+            return _FakeResponse(status, None)
+        if kind == "malformed":
+            return _FakeResponse(200, None, malformed=True)
+        payload: dict[str, object] = {}
+        if "emailAddress" in result:
+            payload["EmailAddress"] = result["emailAddress"]
+        return _FakeResponse(200, payload)
 
 
 class _FakeContext(_EventEmitter):
@@ -336,6 +385,7 @@ class _FakeContext(_EventEmitter):
         super().__init__()
         self.pages = [page]
         self.closed = False
+        self.request = _FakeAPIRequestContext(page)
 
     def new_page(self) -> _ProbePage:
         return self.pages[0]
@@ -502,8 +552,7 @@ def test_request_hooks_exist_before_navigation_and_probe_exact_get_only(
         }
     ]
     assert page.probe_authorization_present == [True]
-    assert "payload.EmailAddress" in page.probe_scripts[0]
-    assert "payload.DisplayName" not in page.probe_scripts[0]
+    assert page.probe_params == [{"$select": "EmailAddress"}]
     assert transient is not None and transient.cleared is True
     assert context.closed is True
     assert playwright.stopped is True

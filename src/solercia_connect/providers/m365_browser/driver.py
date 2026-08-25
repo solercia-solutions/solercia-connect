@@ -5,6 +5,7 @@ import re
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
@@ -14,7 +15,19 @@ from solercia_connect.browser_profile import (
     ensure_browser_profile_path,
 )
 from solercia_connect.config import ConnectionType
-from solercia_connect.domain import Capability, DomainRecord, QueryPayload, ReasonCode
+from solercia_connect.domain import (
+    Capability,
+    DomainRecord,
+    EmailAddress,
+    MailMessage,
+    MailQuery,
+    Provenance,
+    ProviderFamily,
+    QueryPayload,
+    ReasonCode,
+    RouteKind,
+    utc_now,
+)
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.providers._shared import unique_canonical_account_identity
 from solercia_connect.providers.m365_browser.selectors import ENDPOINTS, Microsoft365Selectors
@@ -25,42 +38,17 @@ _OUTLOOK_AUTHORIZATION_HOST_SUFFIXES = (
     "substrate.office.com",
 )
 _MAX_OUTLOOK_BEARER_BYTES = 8_192
+_READ_BEARER_WAIT_INTERVAL_MS = 500
+_READ_BEARER_MAX_CYCLES = 20
+_OUTLOOK_PAGE_SIZE = 50
+_OUTLOOK_MAX_PAGES = 20
+_SENT_MAIL_SELECT = (
+    "Id,Subject,SentDateTime,From,ToRecipients,CcRecipients,Body,ConversationId,HasAttachments"
+)
 _BEARER_AUTHORIZATION = re.compile(
     r"Bearer[ \t]+([A-Z0-9._~+/-]+=*)",
     re.IGNORECASE,
 )
-_OUTLOOK_IDENTITY_PROBE = """
-async ({ endpoint, method, authorization, timeoutMs }) => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(endpoint, {
-      method,
-      headers: { Authorization: authorization, Accept: "application/json" },
-      body: undefined,
-      cache: "no-store",
-      credentials: "omit",
-      redirect: "error",
-      signal: controller.signal,
-    });
-    if (!response.ok) return { kind: "http_error", status: response.status };
-    let payload;
-    try {
-      payload = await response.json();
-    } catch (_) {
-      return { kind: "malformed" };
-    }
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      return { kind: "malformed" };
-    }
-    return { kind: "ok", emailAddress: payload.EmailAddress };
-  } catch (_) {
-    return { kind: "unavailable" };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-"""
 
 
 class _TransientBearer:
@@ -363,10 +351,119 @@ class PlaywrightBrowserDriver:
         *,
         timeout_ms: int,
     ) -> tuple[DomainRecord, ...]:
-        del capability, payload, selectors, timeout_ms
+        del selectors
+        if capability is Capability.MAIL_SENT_LIST and isinstance(payload, MailQuery):
+            return self._read_sent_mail(payload, timeout_ms=timeout_ms)
         raise ConnectorFailure(
             ReasonCode.BROWSER_CAPABILITY_NOT_IMPLEMENTED,
-            "Built-in Microsoft 365 browser extraction is not live-validated in v0.1",
+            f"Microsoft 365 browser route does not implement {capability.value}",
+        )
+
+    def _read_sent_mail(
+        self,
+        query: MailQuery,
+        *,
+        timeout_ms: int,
+    ) -> tuple[MailMessage, ...]:
+        """List sent mail through the documented read-only Outlook REST collection."""
+        messages: list[MailMessage] = []
+        url: str | None = ENDPOINTS.outlook_sent_messages
+        params: Mapping[str, str] | None = {
+            "$filter": (
+                f"SentDateTime ge {_outlook_timestamp(query.window.start)}"
+                f" and SentDateTime lt {_outlook_timestamp(query.window.end)}"
+            ),
+            "$select": _SENT_MAIL_SELECT,
+            "$orderby": "SentDateTime asc",
+            "$top": str(min(_OUTLOOK_PAGE_SIZE, query.limit)),
+        }
+
+        for _ in range(_OUTLOOK_MAX_PAGES):
+            if url is None or len(messages) >= query.limit:
+                break
+            payload = self._authorized_outlook_get(url, params=params, timeout_ms=timeout_ms)
+            items = payload.get("value")
+            if not isinstance(items, list):
+                raise ConnectorFailure(
+                    ReasonCode.BROWSER_EXTRACTION_FAILED,
+                    "Outlook sent-mail collection returned an unexpected payload shape",
+                )
+            for item in items:
+                if len(messages) >= query.limit:
+                    break
+                if isinstance(item, Mapping):
+                    messages.append(_normalize_outlook_message(item))
+            next_link = payload.get("@odata.nextLink")
+            url = next_link if isinstance(next_link, str) else None
+            params = None
+
+        return tuple(messages)
+
+    def _authorized_outlook_get(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, str] | None,
+        timeout_ms: int,
+    ) -> Mapping[str, object]:
+        """Issue one read-only Outlook REST call with a freshly captured authorization."""
+        bearer = self._await_outlook_bearer(timeout_ms=timeout_ms)
+        try:
+            outcome = self._outlook_rest_get(url, bearer, params=params, timeout_ms=timeout_ms)
+        finally:
+            bearer.clear()
+
+        kind = outcome.get("kind")
+        if kind == "ok":
+            payload = outcome.get("payload")
+            if isinstance(payload, Mapping):
+                return payload
+            raise ConnectorFailure(
+                ReasonCode.BROWSER_EXTRACTION_FAILED,
+                "Outlook read-only collection returned a malformed response",
+            )
+        if kind == "http_error":
+            status = outcome.get("status")
+            if isinstance(status, int) and status in {401, 403}:
+                raise ConnectorFailure(
+                    ReasonCode.BROWSER_IDENTITY_UNAVAILABLE,
+                    "Outlook rejected the captured session authorization for a read-only call",
+                )
+            raise ConnectorFailure(
+                ReasonCode.BROWSER_EXTRACTION_FAILED,
+                "Outlook rejected the bounded read-only collection call",
+            )
+        if kind == "malformed":
+            raise ConnectorFailure(
+                ReasonCode.BROWSER_EXTRACTION_FAILED,
+                "Outlook read-only collection returned a malformed response",
+            )
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_EXTRACTION_FAILED,
+            "Outlook read-only collection call did not complete",
+        )
+
+    def _await_outlook_bearer(self, *, timeout_ms: int) -> _TransientBearer:
+        """Wait, within a bounded window, for the session to emit an authorization."""
+        page = self._require_page()
+        for cycle in range(_READ_BEARER_MAX_CYCLES + 1):
+            bearer = self._take_outlook_bearer()
+            if bearer is not None:
+                return bearer
+            if cycle == _READ_BEARER_MAX_CYCLES:
+                break
+            if cycle == 0:
+                # Re-entering the mailbox makes the session issue authorized calls again.
+                with suppress(Exception):
+                    page.goto(
+                        ENDPOINTS.outlook_sent,
+                        wait_until="domcontentloaded",
+                        timeout=timeout_ms,
+                    )
+            page.wait_for_timeout(_READ_BEARER_WAIT_INTERVAL_MS)
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_IDENTITY_UNAVAILABLE,
+            "Outlook session authorization was not observed within the bounded read window",
         )
 
     def close(self) -> None:
@@ -437,22 +534,65 @@ class PlaywrightBrowserDriver:
         *,
         timeout_ms: int,
     ) -> object:
-        authorization = bearer.authorization_header()
-        payload: dict[str, object] = {
-            "endpoint": ENDPOINTS.outlook_identity,
-            "method": "GET",
-            "authorization": authorization,
-            "timeoutMs": timeout_ms,
-        }
+        del page
+        return self._outlook_rest_get(
+            ENDPOINTS.outlook_identity,
+            bearer,
+            params={"$select": "EmailAddress"},
+            timeout_ms=timeout_ms,
+        )
+
+    def _outlook_rest_get(
+        self,
+        url: str,
+        bearer: _TransientBearer,
+        *,
+        params: Mapping[str, str] | None,
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        """Read-only Outlook REST call issued outside the page's cross-origin sandbox.
+
+        The page is served from one Microsoft host while the REST endpoint lives on another,
+        so an in-page fetch is subject to that origin's CORS policy and fails for reasons that
+        have nothing to do with the session. Playwright's request context shares the session
+        but is not bound by CORS, which makes the outcome depend only on the session itself.
+        """
+        if not _is_allowed_outlook_request_url(url):
+            return {"kind": "unavailable"}
+        context = self._context
+        if context is None:
+            return {"kind": "unavailable"}
         self._probing_outlook_identity = True
         try:
-            return page.evaluate(_OUTLOOK_IDENTITY_PROBE, payload)
+            response = context.request.get(
+                url,
+                headers={
+                    "Authorization": bearer.authorization_header(),
+                    "Accept": "application/json",
+                },
+                params=dict(params) if params else None,
+                timeout=timeout_ms,
+                fail_on_status_code=False,
+            )
         except Exception:
             return {"kind": "unavailable"}
         finally:
             self._probing_outlook_identity = False
-            payload["authorization"] = ""
-            authorization = ""
+
+        try:
+            status = int(response.status)
+            if status < 200 or status >= 300:
+                return {"kind": "http_error", "status": status}
+            payload = response.json()
+        except Exception:
+            return {"kind": "malformed"}
+        finally:
+            with suppress(Exception):
+                response.dispose()
+
+        if not isinstance(payload, Mapping):
+            return {"kind": "malformed"}
+        return {"kind": "ok", "payload": payload, "emailAddress": payload.get("EmailAddress")}
 
     def _require_page(self) -> Any:
         if self._page is None:
@@ -503,6 +643,89 @@ def _is_allowed_outlook_request_url(value: str) -> bool:
     return any(
         host == suffix or host.endswith(f".{suffix}")
         for suffix in _OUTLOOK_AUTHORIZATION_HOST_SUFFIXES
+    )
+
+
+def _outlook_timestamp(value: datetime) -> str:
+    """Render a UTC instant in the literal form the Outlook REST filter expects."""
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _outlook_datetime(value: object) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_EXTRACTION_FAILED,
+            "Outlook message is missing a usable SentDateTime",
+        )
+    text = value.strip()
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_EXTRACTION_FAILED,
+            "Outlook message carried an unparsable SentDateTime",
+        ) from exc
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _outlook_address(value: object) -> EmailAddress | None:
+    if not isinstance(value, Mapping):
+        return None
+    inner = value.get("EmailAddress")
+    if not isinstance(inner, Mapping):
+        return None
+    address = inner.get("Address")
+    if not isinstance(address, str) or not address.strip():
+        return None
+    name = inner.get("Name")
+    return EmailAddress(address, name.strip() if isinstance(name, str) and name.strip() else None)
+
+
+def _outlook_addresses(value: object) -> tuple[EmailAddress, ...]:
+    if not isinstance(value, list):
+        return ()
+    resolved = (_outlook_address(item) for item in value)
+    return tuple(address for address in resolved if address is not None)
+
+
+def _normalize_outlook_message(item: Mapping[str, object]) -> MailMessage:
+    identifier = item.get("Id")
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_EXTRACTION_FAILED,
+            "Outlook message is missing a usable identifier",
+        )
+    body = item.get("Body")
+    content = ""
+    body_format = "text"
+    if isinstance(body, Mapping):
+        raw_content = body.get("Content")
+        content = raw_content if isinstance(raw_content, str) else ""
+        raw_format = body.get("ContentType")
+        if isinstance(raw_format, str) and raw_format.strip():
+            body_format = raw_format.strip().casefold()
+    subject = item.get("Subject")
+    conversation = item.get("ConversationId")
+    return MailMessage(
+        identifier,
+        subject if isinstance(subject, str) else "",
+        _outlook_datetime(item.get("SentDateTime")),
+        _outlook_address(item.get("From")),
+        _outlook_addresses(item.get("ToRecipients")),
+        _outlook_addresses(item.get("CcRecipients")),
+        content,
+        body_format,
+        conversation if isinstance(conversation, str) and conversation.strip() else None,
+        bool(item.get("HasAttachments")),
+        Provenance(
+            "microsoft365.browser",
+            ProviderFamily.MICROSOFT,
+            RouteKind.BROWSER,
+            identifier,
+            utc_now(),
+        ),
     )
 
 

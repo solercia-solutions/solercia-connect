@@ -12,6 +12,9 @@ class Microsoft365Endpoints:
     teams_home: str = "https://teams.microsoft.com/v2/"
     outlook_sent: str = "https://outlook.office.com/mail/sentitems/"
     outlook_identity: str = "https://outlook.office.com/api/v2.0/me"
+    outlook_sent_messages: str = (
+        "https://outlook.office.com/api/v2.0/me/MailFolders/SentItems/messages"
+    )
     onedrive_launch: str = "https://www.microsoft365.com/launch/onedrive?auth=2"
 
     def home_for(self, connection_type: ConnectionType) -> str:

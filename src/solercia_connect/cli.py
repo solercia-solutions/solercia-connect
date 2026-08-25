@@ -39,6 +39,7 @@ from solercia_connect.errors import ConnectorFailure
 from solercia_connect.matrix import CAPABILITY_MATRIX
 from solercia_connect.oauth import KeyringOAuthTokenStore
 from solercia_connect.output import SecureOutputError, write_secure_json
+from solercia_connect.providers.m365_browser import browser_extraction_report
 from solercia_connect.serialization import to_json, to_primitive
 
 
@@ -544,7 +545,7 @@ def m365_status(
             provider="microsoft365.browser",
             account=report.account_id,
             route="browser",
-            data={"health": report, "extraction_status": "not_implemented"},
+            data={"health": report, **browser_extraction_report(ConnectionType.TEAMS)},
         )
     except (ValueError, ConnectorFailure) as failure:
         envelope = _exception_envelope("m365.status", failure, provider="microsoft365.browser")

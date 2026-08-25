@@ -72,7 +72,14 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
     CapabilityRow(
         "Microsoft 365 Web",
         "browser",
-        "mail/calendar/transcripts",
+        "mail.sent.list",
+        "implemented",
+        "Documented read-only Outlook REST collection, strict range, paging, full message body",
+    ),
+    CapabilityRow(
+        "Microsoft 365 Web",
+        "browser",
+        "calendar/transcripts",
         "foundation-only",
         "Routing and injected driver contract exist; built-in extraction fails explicitly",
     ),

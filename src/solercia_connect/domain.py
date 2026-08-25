@@ -55,6 +55,7 @@ class ReasonCode(StrEnum):
     BROWSER_SELECTOR_MISMATCH = "browser_selector_mismatch"
     BROWSER_TIMEOUT = "browser_timeout"
     BROWSER_CAPABILITY_NOT_IMPLEMENTED = "browser_capability_not_implemented"
+    BROWSER_EXTRACTION_FAILED = "browser_extraction_failed"
     OAUTH_CALLBACK_INVALID = "oauth_callback_invalid"
     OAUTH_STATE_MISMATCH = "oauth_state_mismatch"
     OAUTH_CALLBACK_TIMEOUT = "oauth_callback_timeout"

@@ -39,7 +39,18 @@ Teams keeps its separate versioned DOM current-account proof. After the headless
 closes and the synchronous command returns to the console; no daemon or background worker remains:
 
 ```json
-{"status": "connected_browser", "route": "browser", "data": {"extraction_status": "not_implemented"}}
+{"status": "connected_browser", "route": "browser",
+ "data": {"extraction_status": "available", "capabilities": ["mail.sent.list"]}}
+```
+
+Once connected, sent mail is read over the same supervised session through the documented
+read-only Outlook REST collection, with the same strict range and paging as the official
+route. The envelope declares what that route can extract, so a caller never has to guess:
+
+```bash
+SOLERCIA_CONNECT_ENV_FILE=.env.local \
+  solercia-connect run outlook mail.sent.list user@example.com \
+  --start 2026-08-01 --end 2026-09-01 --allow-browser-fallback --output sent.json
 ```
 
 Make never prints the environment file values. Direct CLI use still requires explicitly exporting

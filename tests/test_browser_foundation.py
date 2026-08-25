@@ -832,7 +832,8 @@ def test_browser_read_requires_one_observed_account(
     assert driver.read_calls == 0
 
 
-def test_real_driver_extraction_is_explicitly_not_implemented() -> None:
+def test_real_driver_sent_mail_extraction_requires_an_open_session() -> None:
+    """Sent mail is implemented, so it fails on the missing session, not on the capability."""
     driver = PlaywrightBrowserDriver()
     window = DateWindow(
         datetime(2026, 8, 1, tzinfo=UTC),
@@ -847,7 +848,32 @@ def test_real_driver_extraction_is_explicitly_not_implemented() -> None:
             timeout_ms=1_000,
         )
 
+    assert captured.value.reason is not ReasonCode.BROWSER_CAPABILITY_NOT_IMPLEMENTED
+    assert captured.value.reason is ReasonCode.CONFIGURATION_INVALID
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [
+        Capability.CALENDAR_EVENTS_LIST,
+        Capability.MEETING_TRANSCRIPTS_LIST,
+        Capability.MEETING_TRANSCRIPT_GET,
+    ],
+)
+def test_real_driver_reports_unimplemented_browser_capabilities_explicitly(
+    capability: Capability,
+) -> None:
+    driver = PlaywrightBrowserDriver()
+    window = DateWindow(
+        datetime(2026, 8, 1, tzinfo=UTC),
+        datetime(2026, 9, 1, tzinfo=UTC),
+    )
+
+    with pytest.raises(ConnectorFailure) as captured:
+        driver.read_records(capability, MailQuery(window), SELECTORS, timeout_ms=1_000)
+
     assert captured.value.reason is ReasonCode.BROWSER_CAPABILITY_NOT_IMPLEMENTED
+    assert capability.value in str(captured.value)
 
 
 def test_personal_chrome_profile_is_rejected() -> None:

@@ -560,7 +560,7 @@ def test_connect_non_allowlisted_official_failures_never_use_browser(
     assert browser_calls == []
 
 
-def test_browser_fallback_is_explicit_allowlisted_and_never_claims_extraction(
+def test_browser_fallback_is_explicit_allowlisted_and_declares_its_capabilities(
     tmp_path: Path,
 ) -> None:
     settings = _settings(tmp_path, SOLERCIA_CONNECT_BROWSER_FALLBACK="true")
@@ -589,7 +589,8 @@ def test_browser_fallback_is_explicit_allowlisted_and_never_claims_extraction(
     assert denied.ok is False
     assert browser_calls == [("outlook", "user@example.com")]
     assert connected.status == "connected_browser"
-    assert connected.data["extraction_status"] == "not_implemented"
+    assert connected.data["extraction_status"] == "available"
+    assert connected.data["capabilities"] == ["mail.sent.list"]
 
 
 def test_teams_personal_audience_is_blocked_without_fallback(tmp_path: Path) -> None:
