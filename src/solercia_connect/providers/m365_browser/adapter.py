@@ -33,7 +33,6 @@ from solercia_connect.providers.m365_browser.driver import BrowserDriver, Browse
 from solercia_connect.providers.m365_browser.selectors import ENDPOINTS, SELECTORS
 from solercia_connect.providers.m365_browser.states import BrowserState, BrowserStateMachine
 
-
 _OUTLOOK_IDENTITY_PROBE_ATTEMPTS = 2
 
 

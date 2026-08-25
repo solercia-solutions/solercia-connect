@@ -57,10 +57,22 @@ sensitive.
 - Use a dedicated persistent profile; personal Chrome, Edge, Brave, or Chromium profiles are
   rejected. Keep its directory private and outside shared/cloud-synced storage.
 - The user performs password entry and MFA. The runtime never asks for or types credentials.
-- A uniquely verified browser identity may establish `connected_browser`; built-in browser data
-  extraction remains `not_implemented` until deterministic live evidence exists.
-- Do not inspect browser token storage, intercept authorization headers, copy cookies, or call
-  retired/undocumented provider endpoints.
+- A uniquely verified browser identity may establish `connected_browser`. Built-in browser data
+  extraction is enabled only for capabilities backed by documented read-only provider endpoints.
+- The session authorization captured from the user's own supervised browser session may be used
+  in memory to call those endpoints. This is the deliberate purpose of the fallback route and is
+  gated twice: the environment must make the route available and every invocation must pass
+  `--allow-browser-fallback`. The user supplies their own credentials and MFA.
+- That authorization is bound by the following non-negotiable rules:
+  - It is held only in a mutable in-memory buffer that is zeroed after use and on close.
+  - It is never written to disk, never logged, never serialized into an envelope or receipt, and
+    never included in a diagnostic.
+  - It is read only from HTTPS requests whose host matches the provider allowlist, and it is sent
+    only to endpoints on that same allowlist.
+  - It is used only for read-only calls to documented provider endpoints.
+- Do not read `document.cookie`, browser local storage, session storage, or any other long-lived
+  credential store. Do not persist cookies or profile contents outside the dedicated profile. Do
+  not call retired or undocumented provider endpoints.
 
 ## Never log or serialize
 

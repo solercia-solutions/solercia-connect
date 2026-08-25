@@ -19,7 +19,6 @@ from solercia_connect.errors import ConnectorFailure
 from solercia_connect.providers._shared import unique_canonical_account_identity
 from solercia_connect.providers.m365_browser.selectors import ENDPOINTS, Microsoft365Selectors
 
-
 _OUTLOOK_AUTHORIZATION_HOST_SUFFIXES = (
     "outlook.cloud.microsoft",
     "outlook.office.com",
@@ -245,12 +244,15 @@ class PlaywrightBrowserDriver:
         probe_timeout_ms: int,
     ) -> str:
         """Return only the canonical Outlook REST ``EmailAddress`` for this session."""
-        if min(
-            wait_interval_ms,
-            max_wait_cycles,
-            max_probe_attempts,
-            probe_timeout_ms,
-        ) <= 0:
+        if (
+            min(
+                wait_interval_ms,
+                max_wait_cycles,
+                max_probe_attempts,
+                probe_timeout_ms,
+            )
+            <= 0
+        ):
             raise ValueError("Outlook identity wait and probe bounds must be positive")
         page = self._require_page()
         wait_cycles = 0
@@ -295,8 +297,7 @@ class PlaywrightBrowserDriver:
                     status = outcome.get("status")
                     if isinstance(status, int) and status in {401, 403}:
                         last_failure = (
-                            "Outlook identity endpoint rejected the captured session "
-                            "authorization"
+                            "Outlook identity endpoint rejected the captured session authorization"
                         )
                     elif isinstance(status, int) and status in {404, 410}:
                         raise _outlook_identity_failure(

@@ -19,8 +19,7 @@ from solercia_connect.providers.m365_browser.driver import (
     PlaywrightBrowserDriver,
 )
 from solercia_connect.providers.m365_browser.selectors import ENDPOINTS, SELECTORS
-from tests.fakes import FakeBrowserDriver, NOW, authenticated_snapshot
-
+from tests.fakes import NOW, FakeBrowserDriver, authenticated_snapshot
 
 _TOKEN = "opaque-browser-bearer-that-must-never-escape"
 _OUTLOOK_ME = "https://outlook.office.com/api/v2.0/me"
@@ -75,9 +74,7 @@ def _connect_with_driver(tmp_path: Path, driver: FakeBrowserDriver):
         settings,
         profiles,
         _MemoryTokenStore(),
-        browser_connector=lambda type_value, account: (
-            adapter.interactive_login().account_id or ""
-        ),
+        browser_connector=lambda type_value, account: adapter.interactive_login().account_id or "",
         clock=lambda: NOW,
     )
     result = service.connect(
@@ -184,9 +181,7 @@ def test_status_identity_unavailable_names_executable_connect_and_status_paths(
 ) -> None:
     settings = _settings(tmp_path)
     profiles = ProfileStore.from_settings(settings)
-    profiles.save(
-        ConnectionProfile.create("outlook", "user@example.com", route="browser", now=NOW)
-    )
+    profiles.save(ConnectionProfile.create("outlook", "user@example.com", route="browser", now=NOW))
 
     def unavailable(type_value: ConnectionType, account: str) -> str:
         del type_value, account
@@ -440,9 +435,7 @@ def test_live_shape_allowed_bearer_rest_me_reaches_connected_browser(
         settings,
         profiles,
         _MemoryTokenStore(),
-        browser_connector=lambda type_value, account: (
-            adapter.interactive_login().account_id or ""
-        ),
+        browser_connector=lambda type_value, account: adapter.interactive_login().account_id or "",
         clock=lambda: NOW,
     )
 
@@ -459,19 +452,17 @@ def test_live_shape_allowed_bearer_rest_me_reaches_connected_browser(
         [{"endpoint": _OUTLOOK_ME, "method": "GET", "timeoutMs": 11}],
     ]
     assert all(
-        not set(page.selector_calls).intersection(SELECTORS.identity_controls)
-        for page in pages
+        not set(page.selector_calls).intersection(SELECTORS.identity_controls) for page in pages
     )
     assert all(context.closed for context in contexts)
     assert len(sequence.instances) == 2
     assert [
-        instance.chromium.launch_calls[0]["user_data_dir"]
-        for instance in sequence.instances
+        instance.chromium.launch_calls[0]["user_data_dir"] for instance in sequence.instances
     ] == [str(profile_dir), str(profile_dir)]
-    assert [
-        instance.chromium.launch_calls[0]["headless"]
-        for instance in sequence.instances
-    ] == [False, True]
+    assert [instance.chromium.launch_calls[0]["headless"] for instance in sequence.instances] == [
+        False,
+        True,
+    ]
     assert all(instance.stopped for instance in sequence.instances)
 
 

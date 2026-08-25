@@ -16,6 +16,10 @@ from solercia_connect.domain import (
     RouteKind,
 )
 from solercia_connect.errors import ConnectorFailure
+from solercia_connect.providers.m365_browser.driver import (
+    _is_allowed_outlook_request_url,
+    _TransientBearer,
+)
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
 from solercia_connect.registry import ProviderRegistry
 from solercia_connect.runtime import ConnectorRuntime
@@ -90,14 +94,64 @@ def test_serialization_redacts_secret_dataclass() -> None:
     assert REDACTED in rendered
 
 
-def test_browser_source_contains_no_token_capture_implementation() -> None:
+def test_browser_source_contains_no_dom_storage_or_cookie_token_capture() -> None:
     source_root = Path(__file__).parents[1] / "src/solercia_connect/providers/m365_browser"
     source = "\n".join(path.read_text() for path in source_root.rglob("*.py"))
 
-    assert "window.__ot" not in source
-    assert "localStorage" not in source
-    assert "document.cookie" not in source
-    assert "Authorization" not in source
+    forbidden_capture_surfaces = (
+        "window.__ot",
+        "localStorage",
+        "sessionStorage",
+        "document.cookie",
+        ".cookies(",
+        "storage_state",
+    )
+    for marker in forbidden_capture_surfaces:
+        assert marker not in source
+
+
+def test_transient_bearer_never_reveals_and_does_not_survive_clearing() -> None:
+    """SECURITY.md: held only in memory, zeroed after use, never printable."""
+    bearer = _TransientBearer("opaque-session-token")
+
+    assert "opaque-session-token" not in repr(bearer)
+    assert bearer.authorization_header() == "Bearer opaque-session-token"
+
+    bearer.clear()
+
+    assert bearer.cleared is True
+    with pytest.raises(RuntimeError):
+        bearer.authorization_header()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://outlook.office.com/api/v2.0/me",
+        "https://outlook.office.com.evil.test/api/v2.0/me",
+        "https://evil.test/api/v2.0/me",
+        "https://user:pass@outlook.office.com/api/v2.0/me",
+        "https://outlook.office.com:8443/api/v2.0/me",
+        "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        "https://outlook.office.com@evil.test/api/v2.0/me",
+    ],
+)
+def test_session_authorization_is_never_read_outside_the_allowlist(url: str) -> None:
+    """SECURITY.md: read only from HTTPS requests whose host matches the allowlist."""
+    assert _is_allowed_outlook_request_url(url) is False
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://outlook.office.com/api/v2.0/me",
+        "https://outlook.cloud.microsoft/api/v2.0/me",
+        "https://substrate.office.com/api/beta/me",
+        "https://OUTLOOK.OFFICE.COM/api/v2.0/me",
+    ],
+)
+def test_session_authorization_is_read_from_allowlisted_provider_hosts(url: str) -> None:
+    assert _is_allowed_outlook_request_url(url) is True
 
 
 def test_success_receipt_contains_no_provider_credentials() -> None:

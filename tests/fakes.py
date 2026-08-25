@@ -156,10 +156,7 @@ class FakeBrowserDriver:
     ) -> BrowserSnapshot:
         del selectors
         self.snapshot_connection_types.append(connection_type)
-        if len(self.snapshots) > 1:
-            snapshot = self.snapshots.popleft()
-        else:
-            snapshot = self.snapshots[0]
+        snapshot = self.snapshots.popleft() if len(self.snapshots) > 1 else self.snapshots[0]
         self.last_snapshot = snapshot
         return snapshot
 
