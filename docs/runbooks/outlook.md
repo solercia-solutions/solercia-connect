@@ -1,7 +1,8 @@
 # Connect Outlook
 
-Use official Microsoft Graph device authorization first. Browser fallback is an explicit session
-fallback and does not currently provide built-in extraction.
+Use official Microsoft Graph device authorization first. The browser route is an explicit session
+fallback for when the tenant has not granted the delegated scopes; it reads mail, calendar and
+drive files over the supervised session, and Teams recordings carry their transcripts.
 
 ## Prepare
 
@@ -37,8 +38,29 @@ solercia-connect connect outlook user@example.com --allow-browser-fallback
 
 The user performs login/MFA in the dedicated profile. `connected_browser` means the account-bound
 session was verified. The envelope's `extraction_status` and `capabilities` fields are
-authoritative about what that route can read: Outlook reports `available` with
-`mail.sent.list`, while Teams still reports `not_implemented`.
+authoritative about what that route can read: `outlook` reports `mail.sent.list` and
+`calendar.events.list`, and `onedrive` reports `files.search`/`files.get` plus
+`meeting.transcripts.*`.
+
+Transcripts answer to the `onedrive` target rather than to `teams`, because a transcript is a
+drive item hanging off the recording. That is also why a meeting the account merely attended is
+readable: the site cookie covers the organizer's drive too. The `teams` target itself extracts
+nothing over this route — the Teams client degrades under automation.
+
+```bash
+# Every recording in a period, own and shared, with speaker-named WebVTT.
+solercia-connect run \
+  --provider microsoft.graph \
+  --capability meeting.transcript.get \
+  --start '2026-08-01T00:00:00-05:00' \
+  --end   '2026-09-01T00:00:00-05:00' \
+  --account user@example.com \
+  --allow-browser-fallback \
+  --output transcripts.json
+```
+
+The loopback service does not offer this route: interactive authorization is CLI-only by design,
+so a connector reading through the local API needs an account connected over the official route.
 
 ## Validate a dedicated account
 
