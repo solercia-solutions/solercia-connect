@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from solercia_connect.domain import (
+    CalendarEvent,
     DriveFile,
     EmailAddress,
     MailAttachment,
@@ -117,6 +118,62 @@ def normalize_mail_message(
         body_format,
         conversation if isinstance(conversation, str) and conversation.strip() else None,
         bool(field(item, "hasAttachments", "HasAttachments")),
+        provenance,
+    )
+
+
+def microsoft_event_datetime(value: object, label: str) -> datetime:
+    """Read a Microsoft date-time pair, treating a naive value as the zone it declares."""
+    if not isinstance(value, Mapping):
+        raise ConnectorFailure(
+            ReasonCode.MALFORMED_PROVIDER_DATA,
+            f"Microsoft event is missing a usable {label}",
+        )
+    raw = field(value, "dateTime", "DateTime")
+    parsed = optional_microsoft_datetime(raw)
+    if parsed is None:
+        raise ConnectorFailure(
+            ReasonCode.MALFORMED_PROVIDER_DATA,
+            f"Microsoft event carried an unparsable {label}",
+        )
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _attendee_addresses(value: object) -> tuple[EmailAddress, ...]:
+    if not isinstance(value, list):
+        return ()
+    resolved = (microsoft_address(item) for item in value)
+    return tuple(address for address in resolved if address is not None)
+
+
+def normalize_calendar_event(
+    item: Mapping[str, Any],
+    *,
+    provenance: Provenance,
+) -> CalendarEvent:
+    identifier = field(item, "id", "Id")
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise ConnectorFailure(
+            ReasonCode.MALFORMED_PROVIDER_DATA,
+            "Microsoft event is missing a usable identifier",
+        )
+    subject = field(item, "subject", "Subject")
+    response = field(item, "responseStatus", "ResponseStatus")
+    response_value = (
+        field(response, "response", "Response") if isinstance(response, Mapping) else None
+    )
+    return CalendarEvent(
+        identifier,
+        subject if isinstance(subject, str) else "",
+        microsoft_event_datetime(field(item, "start", "Start"), "start"),
+        microsoft_event_datetime(field(item, "end", "End"), "end"),
+        microsoft_address(field(item, "organizer", "Organizer")),
+        _attendee_addresses(field(item, "attendees", "Attendees")),
+        response_value if isinstance(response_value, str) and response_value.strip() else None,
+        bool(field(item, "isOnlineMeeting", "IsOnlineMeeting")),
+        bool(field(item, "isCancelled", "IsCancelled")),
         provenance,
     )
 

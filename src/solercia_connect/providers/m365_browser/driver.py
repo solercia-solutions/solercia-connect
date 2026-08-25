@@ -17,6 +17,8 @@ from solercia_connect.browser_profile import (
 )
 from solercia_connect.config import ConnectionType
 from solercia_connect.domain import (
+    CalendarEvent,
+    CalendarQuery,
     Capability,
     DateWindow,
     DomainRecord,
@@ -33,6 +35,7 @@ from solercia_connect.errors import ConnectorFailure
 from solercia_connect.providers._microsoft import (
     field,
     microsoft_provenance,
+    normalize_calendar_event,
     normalize_drive_item,
     normalize_mail_attachment,
     normalize_mail_message,
@@ -378,6 +381,8 @@ class PlaywrightBrowserDriver:
         del selectors
         if capability is Capability.MAIL_SENT_LIST and isinstance(payload, MailQuery):
             return self._read_sent_mail(payload, timeout_ms=timeout_ms)
+        if capability is Capability.CALENDAR_EVENTS_LIST and isinstance(payload, CalendarQuery):
+            return self._read_calendar(payload, timeout_ms=timeout_ms)
         if capability in {Capability.FILES_SEARCH, Capability.FILES_GET} and isinstance(
             payload, FileQuery
         ):
@@ -435,6 +440,73 @@ class PlaywrightBrowserDriver:
                 for message in messages
             ]
         return tuple(messages)
+
+    def _read_calendar(
+        self,
+        query: CalendarQuery,
+        *,
+        timeout_ms: int,
+    ) -> tuple[CalendarEvent, ...]:
+        """Read the calendar view, which expands recurring series into real occurrences."""
+        events: list[CalendarEvent] = []
+        url: str | None = ENDPOINTS.outlook_calendar_view
+        params: Mapping[str, str] | None = {
+            "startDateTime": _outlook_timestamp(query.window.start),
+            "endDateTime": _outlook_timestamp(query.window.end),
+            "$orderby": "Start/DateTime asc",
+            "$top": str(min(_OUTLOOK_PAGE_SIZE, query.limit)),
+        }
+        # Without this the provider answers in the mailbox's own zone, which would make the same
+        # request return different instants for different mailboxes.
+        headers = {"Prefer": 'outlook.timezone="UTC"'}
+
+        for _ in range(_OUTLOOK_MAX_PAGES):
+            if url is None or len(events) >= query.limit:
+                break
+            payload = self._authorized_outlook_get(
+                url,
+                params=params,
+                timeout_ms=timeout_ms,
+                extra_headers=headers,
+            )
+            items = payload.get("value")
+            if not isinstance(items, list):
+                raise ConnectorFailure(
+                    ReasonCode.BROWSER_EXTRACTION_FAILED,
+                    "Outlook calendar view returned an unexpected payload shape",
+                )
+            for item in items:
+                if len(events) >= query.limit:
+                    break
+                if not isinstance(item, Mapping):
+                    continue
+                event = normalize_calendar_event(
+                    item,
+                    provenance=microsoft_provenance(
+                        provider_id="microsoft365.browser",
+                        route=RouteKind.BROWSER,
+                        source_id=str(field(item, "id", "Id") or ""),
+                        fetched_at=utc_now(),
+                        account_id=None,
+                        endpoint="outlook-rest-v2-calendarview",
+                    ),
+                )
+                events.append(event)
+            next_link = payload.get("@odata.nextLink")
+            url = next_link if isinstance(next_link, str) else None
+            params = None
+
+        if query.accepted_only:
+            events = [event for event in events if _attendance_confirmed(event)]
+        if query.excluded_organizer_domains:
+            excluded = {domain.casefold() for domain in query.excluded_organizer_domains}
+            events = [
+                event
+                for event in events
+                if event.organizer is None
+                or event.organizer.address.rsplit("@", 1)[-1].casefold() not in excluded
+            ]
+        return tuple(events)
 
     def _message_with_attachments(
         self,
@@ -705,11 +777,19 @@ class PlaywrightBrowserDriver:
         *,
         params: Mapping[str, str] | None,
         timeout_ms: int,
+        extra_headers: Mapping[str, str] | None = None,
     ) -> Mapping[str, object]:
         """Issue one read-only Outlook REST call with a freshly captured authorization."""
         bearer = self._await_outlook_bearer(timeout_ms=timeout_ms)
         try:
-            outcome = self._outlook_rest_get(url, bearer, params=params, timeout_ms=timeout_ms)
+            outcome = self._rest_get(
+                url,
+                bearer,
+                params=params,
+                timeout_ms=timeout_ms,
+                allowed=_is_allowed_outlook_request_url,
+                extra_headers=extra_headers,
+            )
         finally:
             bearer.clear()
 
@@ -862,6 +942,7 @@ class PlaywrightBrowserDriver:
         params: Mapping[str, str] | None,
         timeout_ms: int,
         allowed: Callable[[str], bool],
+        extra_headers: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         """Read-only Outlook REST call issued outside the page's cross-origin sandbox.
 
@@ -882,6 +963,7 @@ class PlaywrightBrowserDriver:
                 headers={
                     "Authorization": bearer.authorization_header(),
                     "Accept": "application/json",
+                    **(dict(extra_headers) if extra_headers else {}),
                 },
                 params=dict(params) if params else None,
                 timeout=timeout_ms,
@@ -1053,6 +1135,21 @@ def _current_user_identity(payload: Mapping[str, object]) -> str | None:
         if identity is not None:
             return identity
     return None
+
+
+_CONFIRMED_ATTENDANCE = frozenset({"accepted", "organizer"})
+
+
+def _attendance_confirmed(event: CalendarEvent) -> bool:
+    """Keep only meetings the account actually committed to.
+
+    Microsoft reports the organizer's own meetings as "organizer" rather than "accepted", and a
+    tentative or unanswered invitation is not attendance.
+    """
+    if event.is_cancelled:
+        return False
+    status = (event.response_status or "").strip().casefold()
+    return status in _CONFIRMED_ATTENDANCE
 
 
 def _authorization_header(request: Any) -> object:

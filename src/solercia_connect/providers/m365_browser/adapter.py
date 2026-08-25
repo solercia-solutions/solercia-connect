@@ -37,7 +37,7 @@ _OUTLOOK_IDENTITY_PROBE_ATTEMPTS = 2
 
 # Single source of truth for what the browser route can actually extract today.
 _BROWSER_EXTRACTION_CAPABILITIES: dict[ConnectionType, tuple[Capability, ...]] = {
-    ConnectionType.OUTLOOK: (Capability.MAIL_SENT_LIST,),
+    ConnectionType.OUTLOOK: (Capability.MAIL_SENT_LIST, Capability.CALENDAR_EVENTS_LIST),
     ConnectionType.TEAMS: (),
     ConnectionType.ONEDRIVE: (Capability.FILES_SEARCH, Capability.FILES_GET),
 }

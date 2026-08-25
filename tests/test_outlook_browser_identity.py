@@ -99,7 +99,7 @@ def test_live_shape_zero_dom_signals_with_rest_me_connects_and_returns(tmp_path:
         "identity_verified": True,
         "session_status": "connected_browser",
         "extraction_status": "available",
-        "capabilities": ["mail.sent.list"],
+        "capabilities": ["mail.sent.list", "calendar.events.list"],
     }
     assert driver.open_calls == [(profile_dir, False), (profile_dir, True)]
     assert driver.open_connection_types == [ConnectionType.OUTLOOK, ConnectionType.OUTLOOK]

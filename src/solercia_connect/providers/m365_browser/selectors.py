@@ -13,6 +13,7 @@ class Microsoft365Endpoints:
     outlook_sent: str = "https://outlook.office.com/mail/sentitems/"
     outlook_identity: str = "https://outlook.office.com/api/v2.0/me"
     outlook_messages: str = "https://outlook.office.com/api/v2.0/me/messages"
+    outlook_calendar_view: str = "https://outlook.office.com/api/v2.0/me/calendarview"
     outlook_sent_messages: str = (
         "https://outlook.office.com/api/v2.0/me/MailFolders/SentItems/messages"
     )

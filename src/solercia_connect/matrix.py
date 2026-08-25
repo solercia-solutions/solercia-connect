@@ -93,6 +93,13 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
     CapabilityRow(
         "Microsoft 365 Web",
         "browser",
+        "calendar.events.list",
+        "implemented",
+        "calendarView with expanded recurrences, UTC-pinned, attendance and domain filters",
+    ),
+    CapabilityRow(
+        "Microsoft 365 Web",
+        "browser",
         "files.search / files.get",
         "implemented",
         "SharePoint REST drive on the observed host; separate authorization from mail",
@@ -100,7 +107,7 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
     CapabilityRow(
         "Microsoft 365 Web",
         "browser",
-        "calendar/transcripts",
+        "meeting.transcripts.*",
         "foundation-only",
         "Routing and injected driver contract exist; built-in extraction fails explicitly",
     ),

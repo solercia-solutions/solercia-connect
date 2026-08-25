@@ -590,7 +590,7 @@ def test_browser_fallback_is_explicit_allowlisted_and_declares_its_capabilities(
     assert browser_calls == [("outlook", "user@example.com")]
     assert connected.status == "connected_browser"
     assert connected.data["extraction_status"] == "available"
-    assert connected.data["capabilities"] == ["mail.sent.list"]
+    assert connected.data["capabilities"] == ["mail.sent.list", "calendar.events.list"]
 
 
 def test_teams_personal_audience_is_blocked_without_fallback(tmp_path: Path) -> None:
