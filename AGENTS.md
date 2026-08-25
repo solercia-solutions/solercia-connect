@@ -1,0 +1,61 @@
+# AGENTS.md — Solercia Connect
+
+Solercia Connect is a Python 3.12, official-first connector runtime for Microsoft 365,
+Google Workspace, Jira, and GLPI. It normalizes read operations into typed records with
+provenance and deterministic execution receipts.
+
+## Stack
+
+- **Language:** Python 3.12, src layout
+- **HTTP:** httpx through an injected transport port
+- **CLI:** Typer
+- **Browser fallback:** optional Playwright with a dedicated persistent profile
+- **Tests:** pytest; static checks with Ruff and mypy
+
+## Commands
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/pip install -e '.[dev,browser]'
+.venv/bin/pytest
+.venv/bin/pytest --cov=solercia_connect --cov-branch --cov-report=term-missing
+.venv/bin/ruff format --check .
+.venv/bin/ruff check .
+.venv/bin/mypy src
+uv build
+.venv/bin/solercia-connect providers
+```
+
+## Architecture
+
+- `domain.py` owns capabilities, normalized DTOs, provenance, and receipts.
+- `ports.py` owns provider, token, transport, and browser interfaces.
+- `runtime.py` owns official-first routing, bounded retry, and fallback policy.
+- `providers/` contains vendor adapters; vendor payloads never cross this boundary.
+- `providers/m365_browser/` is an explicit Microsoft-only fallback foundation.
+- No adapter owns persistence or transactions. This first slice has no database.
+
+## Non-negotiable conventions
+
+- Official APIs and delegated least-privilege authentication are always primary.
+- Never decide routes with an LLM, heuristics, randomness, or unbounded retries.
+- Browser fallback requires an explicit flag plus a typed capability/reason allowlist.
+- Fail closed on invalid credentials, account mismatch, authorization-boundary risk,
+  malformed provider data, and unknown failures.
+- Never log credentials, cookies, bearer tokens, authorization headers, or raw error bodies.
+- Browser operations are read-only and use a dedicated profile, never a personal Chrome profile.
+- Keep provider access behind semantic ports; do not add CRUD repositories for vendor APIs.
+- Use timezone-aware datetimes and end-exclusive ranges.
+- Tests stay with the behavior they prove. Do not commit or push unless explicitly requested.
+
+## Agent skill
+
+Load `agents/skills/solercia-connect/SKILL.md` for connector work. Agents must invoke the
+library or CLI instead of reimplementing OAuth, API calls, routing, or browser selectors.
+
+## Mandatory platform decision
+
+Before architecture, persistence, integration, authentication, provider identity, data modeling,
+or cross-product changes, read and follow
+`docs/decisions/2026-08-23-solercia-platform-decisions.md`. A conflicting request requires an
+explicit new ADR or decision and an update to that record; never override it silently.

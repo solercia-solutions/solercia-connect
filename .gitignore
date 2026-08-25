@@ -1,0 +1,36 @@
+# --- Secrets: never commit any environment file except the template ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# --- Local runtime state ---
+.venv/
+.profiles/
+browser-profiles/
+
+# --- Python build and cache artifacts ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Playwright ---
+playwright-report/
+test-results/
+
+# --- Editor / OS ---
+.DS_Store
+
+# --- Local AI runtime state ---
+.atl/
+.codegraph/
