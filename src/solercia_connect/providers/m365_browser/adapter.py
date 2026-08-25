@@ -39,6 +39,7 @@ _OUTLOOK_IDENTITY_PROBE_ATTEMPTS = 2
 _BROWSER_EXTRACTION_CAPABILITIES: dict[ConnectionType, tuple[Capability, ...]] = {
     ConnectionType.OUTLOOK: (Capability.MAIL_SENT_LIST,),
     ConnectionType.TEAMS: (),
+    ConnectionType.ONEDRIVE: (Capability.FILES_SEARCH, Capability.FILES_GET),
 }
 
 
@@ -63,6 +64,8 @@ class Microsoft365BrowserAdapter:
                 Capability.CALENDAR_EVENTS_LIST,
                 Capability.MEETING_TRANSCRIPTS_LIST,
                 Capability.MEETING_TRANSCRIPT_GET,
+                Capability.FILES_SEARCH,
+                Capability.FILES_GET,
             }
         ),
     )
@@ -94,8 +97,12 @@ class Microsoft365BrowserAdapter:
         ):
             raise ValueError("Browser timeouts and poll bounds must be positive")
         parsed_type = ConnectionType.parse(connection_type)
-        if parsed_type not in {ConnectionType.OUTLOOK, ConnectionType.TEAMS}:
-            raise ValueError("Microsoft browser fallback supports only Outlook and Teams")
+        if parsed_type not in {
+            ConnectionType.OUTLOOK,
+            ConnectionType.TEAMS,
+            ConnectionType.ONEDRIVE,
+        }:
+            raise ValueError("Microsoft browser fallback supports only Outlook, Teams and OneDrive")
         self._driver = driver
         self._connection_type = parsed_type
         self._profile_dir = profile_dir.expanduser()
@@ -224,11 +231,7 @@ class Microsoft365BrowserAdapter:
                     )
             elif snapshot.authenticated_shell_visible:
                 machine.advance(BrowserState.AUTHENTICATED)
-                account = (
-                    self._outlook_account(machine)
-                    if self._connection_type is ConnectionType.OUTLOOK
-                    else self._attest_teams_account(machine, snapshot)
-                )
+                account = self._attested_account(machine, snapshot)
                 if any(
                     boundary is not None and account != boundary
                     for boundary in (self._expected_account, requested_account)
@@ -251,6 +254,25 @@ class Microsoft365BrowserAdapter:
             reason = ReasonCode.BROWSER_TIMEOUT
         machine.advance(BrowserState.FAILED)
         raise ConnectorFailure(reason, "Microsoft 365 browser state did not become ready in time")
+
+    def _attested_account(
+        self,
+        machine: BrowserStateMachine,
+        snapshot: BrowserSnapshot,
+    ) -> str:
+        """Prove identity with the evidence the connection type's own session exposes."""
+        if self._connection_type is ConnectionType.OUTLOOK:
+            return self._outlook_account(machine)
+        if self._connection_type is ConnectionType.ONEDRIVE:
+            return self._onedrive_account(machine)
+        return self._attest_teams_account(machine, snapshot)
+
+    def _onedrive_account(self, machine: BrowserStateMachine) -> str:
+        try:
+            return self._driver.onedrive_session_identity(timeout_ms=self._read_timeout_ms)
+        except ConnectorFailure:
+            machine.advance(BrowserState.FAILED)
+            raise
 
     def _outlook_account(self, machine: BrowserStateMachine) -> str:
         observed = self._driver.outlook_session_identity(
@@ -323,11 +345,12 @@ class Microsoft365BrowserAdapter:
         )
 
     def _bind_provenance(self, record: DomainRecord, account: str) -> DomainRecord:
-        identity_evidence = (
-            "outlook-rest-v2-me"
-            if self._connection_type is ConnectionType.OUTLOOK
-            else f"web-ui:{SELECTORS.version}"
-        )
+        if self._connection_type is ConnectionType.OUTLOOK:
+            identity_evidence = "outlook-rest-v2-me"
+        elif self._connection_type is ConnectionType.ONEDRIVE:
+            identity_evidence = "sharepoint-rest-v2-me"
+        else:
+            identity_evidence = f"web-ui:{SELECTORS.version}"
         provenance = Provenance(
             self.descriptor.provider_id,
             self.descriptor.family,

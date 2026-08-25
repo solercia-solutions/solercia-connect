@@ -71,7 +71,7 @@ def registry_from_environment(
         )
         microsoft_registered = True
     elif (
-        parsed_type in {ConnectionType.OUTLOOK, ConnectionType.TEAMS}
+        parsed_type in {ConnectionType.OUTLOOK, ConnectionType.TEAMS, ConnectionType.ONEDRIVE}
         and normalized_account is not None
         and (profile := profiles.get(parsed_type, normalized_account)) is not None
         and profile.route == "official"
@@ -167,7 +167,7 @@ def registry_from_environment(
 
     browser_profile = (
         profiles.get(parsed_type, normalized_account)
-        if parsed_type in {ConnectionType.OUTLOOK, ConnectionType.TEAMS}
+        if parsed_type in {ConnectionType.OUTLOOK, ConnectionType.TEAMS, ConnectionType.ONEDRIVE}
         and normalized_account is not None
         else None
     )
@@ -203,8 +203,12 @@ def browser_adapter_from_environment(
     parsed_type = (
         ConnectionType.TEAMS if connection_type is None else ConnectionType.parse(connection_type)
     )
-    if parsed_type not in {ConnectionType.OUTLOOK, ConnectionType.TEAMS}:
-        raise ValueError("Microsoft browser fallback supports only Outlook and Teams")
+    if parsed_type not in {
+        ConnectionType.OUTLOOK,
+        ConnectionType.TEAMS,
+        ConnectionType.ONEDRIVE,
+    }:
+        raise ValueError("Microsoft browser fallback supports only Outlook, Teams and OneDrive")
     values = effective_environment(environ=environ)
     settings = load_settings(environ=values)
     if not settings.browser_fallback_enabled:

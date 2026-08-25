@@ -53,6 +53,8 @@ class RoutePolicy:
             Capability.CALENDAR_EVENTS_LIST,
             Capability.MEETING_TRANSCRIPTS_LIST,
             Capability.MEETING_TRANSCRIPT_GET,
+            Capability.FILES_SEARCH,
+            Capability.FILES_GET,
         }
     )
     browser_fallback_families: frozenset[ProviderFamily] = frozenset({ProviderFamily.MICROSOFT})

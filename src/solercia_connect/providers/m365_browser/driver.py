@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import base64
 import importlib
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from solercia_connect.browser_profile import (
     audit_browser_profile_path,
@@ -17,7 +18,10 @@ from solercia_connect.browser_profile import (
 from solercia_connect.config import ConnectionType
 from solercia_connect.domain import (
     Capability,
+    DateWindow,
     DomainRecord,
+    DriveFile,
+    FileQuery,
     MailMessage,
     MailQuery,
     QueryPayload,
@@ -29,6 +33,7 @@ from solercia_connect.errors import ConnectorFailure
 from solercia_connect.providers._microsoft import (
     field,
     microsoft_provenance,
+    normalize_drive_item,
     normalize_mail_message,
 )
 from solercia_connect.providers._shared import unique_canonical_account_identity
@@ -38,6 +43,10 @@ _OUTLOOK_AUTHORIZATION_HOST_SUFFIXES = (
     "outlook.cloud.microsoft",
     "outlook.office.com",
     "substrate.office.com",
+)
+_FILES_AUTHORIZATION_HOST_SUFFIXES = (
+    "sharepoint.com",
+    "onedrive.live.com",
 )
 _MAX_OUTLOOK_BEARER_BYTES = 8_192
 _READ_BEARER_WAIT_INTERVAL_MS = 500
@@ -119,6 +128,8 @@ class BrowserDriver(Protocol):
         probe_timeout_ms: int,
     ) -> str: ...
 
+    def onedrive_session_identity(self, *, timeout_ms: int) -> str: ...
+
     def reveal_identity_menu(
         self,
         selectors: Microsoft365Selectors,
@@ -150,6 +161,9 @@ class PlaywrightBrowserDriver:
         self._outlook_bearer: _TransientBearer | None = None
         self._capture_outlook_authorization = False
         self._probing_outlook_identity = False
+        self._files_bearer: _TransientBearer | None = None
+        self._files_origin: str | None = None
+        self._capture_files_authorization = False
 
     def open_persistent(
         self,
@@ -159,7 +173,9 @@ class PlaywrightBrowserDriver:
         connection_type: ConnectionType | None = None,
     ) -> None:
         self._capture_outlook_authorization = False
+        self._capture_files_authorization = False
         self._clear_outlook_bearer()
+        self._clear_files_bearer()
         profile_dir = ensure_browser_profile_path(profile_dir)
         try:
             sync_playwright = importlib.import_module("playwright.sync_api").sync_playwright
@@ -186,8 +202,11 @@ class PlaywrightBrowserDriver:
         try:
             self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
             if connection_type is ConnectionType.OUTLOOK:
-                self._install_outlook_request_observers()
+                self._install_request_observer(self._observe_outlook_request)
                 self._capture_outlook_authorization = True
+            elif connection_type is ConnectionType.ONEDRIVE:
+                self._install_request_observer(self._observe_files_request)
+                self._capture_files_authorization = True
         except Exception as exc:
             with suppress(Exception):
                 self.close()
@@ -356,6 +375,14 @@ class PlaywrightBrowserDriver:
         del selectors
         if capability is Capability.MAIL_SENT_LIST and isinstance(payload, MailQuery):
             return self._read_sent_mail(payload, timeout_ms=timeout_ms)
+        if capability in {Capability.FILES_SEARCH, Capability.FILES_GET} and isinstance(
+            payload, FileQuery
+        ):
+            return self._read_files(
+                payload,
+                timeout_ms=timeout_ms,
+                with_content=capability is Capability.FILES_GET,
+            )
         raise ConnectorFailure(
             ReasonCode.BROWSER_CAPABILITY_NOT_IMPLEMENTED,
             f"Microsoft 365 browser route does not implement {capability.value}",
@@ -401,6 +428,224 @@ class PlaywrightBrowserDriver:
 
         return tuple(messages)
 
+    def onedrive_session_identity(self, *, timeout_ms: int) -> str:
+        """Return the canonical account the SharePoint session itself reports."""
+        drive_origin_url = f"{self._drive_origin(timeout_ms=timeout_ms)}/_api/v2.0/me"
+        payload = self._authorized_files_get(
+            drive_origin_url,
+            params=None,
+            timeout_ms=timeout_ms,
+        )
+        for key in ("userPrincipalName", "UserPrincipalName", "email", "Email", "mail", "Mail"):
+            identity = unique_canonical_account_identity(payload.get(key), exact=True)
+            if identity is not None:
+                return identity
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_IDENTITY_UNAVAILABLE,
+            "SharePoint identity endpoint did not return one canonical account",
+        )
+
+    def _drive_origin(self, *, timeout_ms: int) -> str:
+        bearer = self._await_files_bearer(timeout_ms=timeout_ms)
+        self._files_bearer = bearer
+        origin = self._files_origin
+        if origin is None:
+            raise ConnectorFailure(
+                ReasonCode.BROWSER_IDENTITY_UNAVAILABLE,
+                "SharePoint drive host was not observed in the supervised session",
+            )
+        return origin
+
+    def _read_files(
+        self,
+        query: FileQuery,
+        *,
+        timeout_ms: int,
+        with_content: bool,
+    ) -> tuple[DriveFile, ...]:
+        """List, search or fetch drive items over the supervised SharePoint session."""
+        select = (
+            "id,name,size,lastModifiedDateTime,createdDateTime,file,folder,webUrl,parentReference"
+        )
+        drive_url = self._drive_base_url(query.site, timeout_ms=timeout_ms)
+
+        if query.item_id is not None:
+            payload = self._authorized_files_get(
+                f"{drive_url}/items/{quote(query.item_id.strip(), safe='')}",
+                params={"$select": select},
+                timeout_ms=timeout_ms,
+            )
+            items: list[Mapping[str, object]] = [payload]
+        else:
+            url, params = self._drive_listing(drive_url, query, select)
+            payload = self._authorized_files_get(url, params=params, timeout_ms=timeout_ms)
+            raw = payload.get("value")
+            if not isinstance(raw, list):
+                raise ConnectorFailure(
+                    ReasonCode.BROWSER_EXTRACTION_FAILED,
+                    "SharePoint drive collection returned an unexpected payload shape",
+                )
+            items = [item for item in raw if isinstance(item, Mapping)]
+
+        files = [
+            normalize_drive_item(
+                item,
+                provenance=microsoft_provenance(
+                    provider_id="microsoft365.browser",
+                    route=RouteKind.BROWSER,
+                    source_id=str(field(item, "id", "Id") or ""),
+                    fetched_at=utc_now(),
+                    account_id=None,
+                    endpoint="sharepoint-rest-v2",
+                ),
+            )
+            for item in items
+        ]
+        files = [item for item in files if _within_window(item, query.window)]
+        if with_content:
+            files = [
+                self._file_with_content(item, drive_url, query, timeout_ms=timeout_ms)
+                for item in files
+            ]
+        return tuple(files[: query.limit])
+
+    def _drive_listing(
+        self,
+        drive_url: str,
+        query: FileQuery,
+        select: str,
+    ) -> tuple[str, dict[str, str]]:
+        params = {"$select": select, "$top": str(min(query.limit, 200))}
+        if query.text is not None:
+            escaped = query.text.strip().replace("'", "''")
+            return f"{drive_url}/root/search(q='{quote(escaped, safe='')}')", params
+        if query.folder_path is not None:
+            path = query.folder_path.strip().strip("/")
+            return f"{drive_url}/root:/{quote(path, safe='/')}:/children", params
+        return f"{drive_url}/root/children", params
+
+    def _file_with_content(
+        self,
+        item: DriveFile,
+        drive_url: str,
+        query: FileQuery,
+        *,
+        timeout_ms: int,
+    ) -> DriveFile:
+        if item.is_folder:
+            return item
+        if item.size_bytes is not None and item.size_bytes > query.max_content_bytes:
+            raise ConnectorFailure(
+                ReasonCode.INVALID_INPUT,
+                "Drive item exceeds the requested maximum content size",
+            )
+        bearer = self._await_files_bearer(timeout_ms=timeout_ms)
+        try:
+            content = self._outlook_rest_bytes(
+                f"{drive_url}/items/{quote(item.id, safe='')}/content",
+                bearer,
+                timeout_ms=timeout_ms,
+            )
+        finally:
+            bearer.clear()
+        if len(content) > query.max_content_bytes:
+            raise ConnectorFailure(
+                ReasonCode.INVALID_INPUT,
+                "Drive item exceeds the requested maximum content size",
+            )
+        return replace(item, content_base64=base64.b64encode(content).decode("ascii"))
+
+    def _drive_base_url(self, site: str | None, *, timeout_ms: int) -> str:
+        bearer_origin = self._drive_origin(timeout_ms=timeout_ms)
+        if site is None:
+            return f"{bearer_origin}/_api/v2.0/me/drive"
+        cleaned = site.strip().strip("/")
+        return f"{bearer_origin}/_api/v2.0/sites/{quote(cleaned, safe=':/')}/drive"
+
+    def _authorized_files_get(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, str] | None,
+        timeout_ms: int,
+    ) -> Mapping[str, object]:
+        bearer = self._await_files_bearer(timeout_ms=timeout_ms)
+        try:
+            outcome = self._rest_get(
+                url,
+                bearer,
+                params=params,
+                timeout_ms=timeout_ms,
+                allowed=_is_allowed_files_request_url,
+            )
+        finally:
+            bearer.clear()
+        return _require_rest_payload(outcome)
+
+    def _await_files_bearer(self, *, timeout_ms: int) -> _TransientBearer:
+        page = self._require_page()
+        for cycle in range(_READ_BEARER_MAX_CYCLES + 1):
+            bearer = self._take_files_bearer()
+            if bearer is not None:
+                return bearer
+            if cycle == _READ_BEARER_MAX_CYCLES:
+                break
+            if cycle == 0:
+                # Opening the drive makes the session issue authorized SharePoint calls.
+                with suppress(Exception):
+                    page.goto(
+                        ENDPOINTS.onedrive_launch,
+                        wait_until="domcontentloaded",
+                        timeout=timeout_ms,
+                    )
+            page.wait_for_timeout(_READ_BEARER_WAIT_INTERVAL_MS)
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_IDENTITY_UNAVAILABLE,
+            "SharePoint session authorization was not observed within the bounded read window",
+        )
+
+    def _outlook_rest_bytes(
+        self,
+        url: str,
+        bearer: _TransientBearer,
+        *,
+        timeout_ms: int,
+    ) -> bytes:
+        if not _is_allowed_files_request_url(url):
+            raise ConnectorFailure(
+                ReasonCode.BROWSER_EXTRACTION_FAILED,
+                "Drive content host is not on the provider allowlist",
+            )
+        context = self._context
+        if context is None:
+            raise ConnectorFailure(
+                ReasonCode.CONFIGURATION_INVALID,
+                "Playwright persistent context is not open",
+            )
+        try:
+            response = context.request.get(
+                url,
+                headers={"Authorization": bearer.authorization_header()},
+                params=None,
+                timeout=timeout_ms,
+                fail_on_status_code=False,
+            )
+            status = int(response.status)
+            if status < 200 or status >= 300:
+                raise ConnectorFailure(
+                    ReasonCode.BROWSER_EXTRACTION_FAILED,
+                    "SharePoint rejected the bounded read-only content call",
+                )
+            body = response.body()
+        except ConnectorFailure:
+            raise
+        except Exception as exc:
+            raise ConnectorFailure(
+                ReasonCode.BROWSER_EXTRACTION_FAILED,
+                "SharePoint content call did not complete",
+            ) from exc
+        return body if isinstance(body, bytes) else bytes(body)
+
     def _authorized_outlook_get(
         self,
         url: str,
@@ -415,35 +660,7 @@ class PlaywrightBrowserDriver:
         finally:
             bearer.clear()
 
-        kind = outcome.get("kind")
-        if kind == "ok":
-            payload = outcome.get("payload")
-            if isinstance(payload, Mapping):
-                return payload
-            raise ConnectorFailure(
-                ReasonCode.BROWSER_EXTRACTION_FAILED,
-                "Outlook read-only collection returned a malformed response",
-            )
-        if kind == "http_error":
-            status = outcome.get("status")
-            if isinstance(status, int) and status in {401, 403}:
-                raise ConnectorFailure(
-                    ReasonCode.BROWSER_IDENTITY_UNAVAILABLE,
-                    "Outlook rejected the captured session authorization for a read-only call",
-                )
-            raise ConnectorFailure(
-                ReasonCode.BROWSER_EXTRACTION_FAILED,
-                "Outlook rejected the bounded read-only collection call",
-            )
-        if kind == "malformed":
-            raise ConnectorFailure(
-                ReasonCode.BROWSER_EXTRACTION_FAILED,
-                "Outlook read-only collection returned a malformed response",
-            )
-        raise ConnectorFailure(
-            ReasonCode.BROWSER_EXTRACTION_FAILED,
-            "Outlook read-only collection call did not complete",
-        )
+        return _require_rest_payload(outcome)
 
     def _await_outlook_bearer(self, *, timeout_ms: int) -> _TransientBearer:
         """Wait, within a bounded window, for the session to emit an authorization."""
@@ -470,7 +687,10 @@ class PlaywrightBrowserDriver:
 
     def close(self) -> None:
         self._capture_outlook_authorization = False
+        self._capture_files_authorization = False
         self._clear_outlook_bearer()
+        self._clear_files_bearer()
+        self._files_origin = None
         context = self._context
         playwright = self._playwright
         self._page = None
@@ -483,12 +703,45 @@ class PlaywrightBrowserDriver:
             if playwright is not None:
                 playwright.stop()
 
-    def _install_outlook_request_observers(self) -> None:
+    def _install_request_observer(self, observer: Any) -> None:
         for emitter in (self._context, self._page):
             try:
-                emitter.on("request", self._observe_outlook_request)
+                emitter.on("request", observer)
             except Exception:
                 continue
+
+    def _observe_files_request(self, request: Any) -> None:
+        """Capture the drive authorization and the drive host that issued it."""
+        if not self._capture_files_authorization or self._probing_outlook_identity:
+            return
+        try:
+            url = request.url
+            if not isinstance(url, str) or not _is_allowed_files_request_url(url):
+                return
+            captured = _parse_bearer(_authorization_header(request))
+            if captured is None:
+                return
+            parsed = urlsplit(url)
+            if parsed.hostname is None:
+                captured.clear()
+                return
+            previous = self._files_bearer
+            self._files_bearer = captured
+            self._files_origin = f"https://{parsed.hostname.casefold()}"
+            if previous is not None:
+                previous.clear()
+        except Exception:
+            return
+
+    def _take_files_bearer(self) -> _TransientBearer | None:
+        bearer = self._files_bearer
+        self._files_bearer = None
+        return bearer
+
+    def _clear_files_bearer(self) -> None:
+        bearer = self._take_files_bearer()
+        if bearer is not None:
+            bearer.clear()
 
     def _observe_outlook_request(self, request: Any) -> None:
         if not self._capture_outlook_authorization or self._probing_outlook_identity:
@@ -497,19 +750,7 @@ class PlaywrightBrowserDriver:
             url = request.url
             if not isinstance(url, str) or not _is_allowed_outlook_request_url(url):
                 return
-            all_headers = getattr(request, "all_headers", None)
-            headers = all_headers() if callable(all_headers) else request.headers
-            if not isinstance(headers, Mapping):
-                return
-            authorization = next(
-                (
-                    value
-                    for name, value in headers.items()
-                    if isinstance(name, str) and name.casefold() == "authorization"
-                ),
-                None,
-            )
-            captured = _parse_bearer(authorization)
+            captured = _parse_bearer(_authorization_header(request))
             if captured is None:
                 return
             previous = self._outlook_bearer
@@ -552,6 +793,23 @@ class PlaywrightBrowserDriver:
         params: Mapping[str, str] | None,
         timeout_ms: int,
     ) -> dict[str, object]:
+        return self._rest_get(
+            url,
+            bearer,
+            params=params,
+            timeout_ms=timeout_ms,
+            allowed=_is_allowed_outlook_request_url,
+        )
+
+    def _rest_get(
+        self,
+        url: str,
+        bearer: _TransientBearer,
+        *,
+        params: Mapping[str, str] | None,
+        timeout_ms: int,
+        allowed: Callable[[str], bool],
+    ) -> dict[str, object]:
         """Read-only Outlook REST call issued outside the page's cross-origin sandbox.
 
         The page is served from one Microsoft host while the REST endpoint lives on another,
@@ -559,7 +817,7 @@ class PlaywrightBrowserDriver:
         have nothing to do with the session. Playwright's request context shares the session
         but is not bound by CORS, which makes the outcome depend only on the session itself.
         """
-        if not _is_allowed_outlook_request_url(url):
+        if not allowed(url):
             return {"kind": "unavailable"}
         context = self._context
         if context is None:
@@ -627,7 +885,7 @@ def _parse_bearer(value: object) -> _TransientBearer | None:
     return captured
 
 
-def _is_allowed_outlook_request_url(value: str) -> bool:
+def _is_allowed_request_url(value: str, suffixes: tuple[str, ...]) -> bool:
     try:
         parsed = urlsplit(value)
         port = parsed.port
@@ -642,10 +900,11 @@ def _is_allowed_outlook_request_url(value: str) -> bool:
     ):
         return False
     host = parsed.hostname.casefold().rstrip(".")
-    return any(
-        host == suffix or host.endswith(f".{suffix}")
-        for suffix in _OUTLOOK_AUTHORIZATION_HOST_SUFFIXES
-    )
+    return any(host == suffix or host.endswith(f".{suffix}") for suffix in suffixes)
+
+
+def _is_allowed_outlook_request_url(value: str) -> bool:
+    return _is_allowed_request_url(value, _OUTLOOK_AUTHORIZATION_HOST_SUFFIXES)
 
 
 def _outlook_timestamp(value: datetime) -> str:
@@ -668,6 +927,67 @@ def _normalize_outlook_message(item: Mapping[str, object]) -> MailMessage:
             endpoint="outlook-rest-v2",
         ),
     )
+
+
+def _require_rest_payload(outcome: Mapping[str, object]) -> Mapping[str, object]:
+    """Map one read-only REST outcome onto the typed failures the contract declares."""
+    kind = outcome.get("kind")
+    if kind == "ok":
+        payload = outcome.get("payload")
+        if isinstance(payload, Mapping):
+            return payload
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_EXTRACTION_FAILED,
+            "Read-only collection returned a malformed response",
+        )
+    if kind == "http_error":
+        status = outcome.get("status")
+        if isinstance(status, int) and status in {401, 403}:
+            raise ConnectorFailure(
+                ReasonCode.BROWSER_IDENTITY_UNAVAILABLE,
+                "Provider rejected the captured session authorization for a read-only call",
+            )
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_EXTRACTION_FAILED,
+            "Provider rejected the bounded read-only collection call",
+        )
+    if kind == "malformed":
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_EXTRACTION_FAILED,
+            "Read-only collection returned a malformed response",
+        )
+    raise ConnectorFailure(
+        ReasonCode.BROWSER_EXTRACTION_FAILED,
+        "Read-only collection call did not complete",
+    )
+
+
+def _within_window(item: DriveFile, window: DateWindow | None) -> bool:
+    if window is None:
+        return True
+    if item.modified_at is None:
+        return False
+    return window.start <= item.modified_at < window.end
+
+
+def _authorization_header(request: Any) -> object:
+    all_headers = getattr(request, "all_headers", None)
+    headers = all_headers() if callable(all_headers) else request.headers
+    if not isinstance(headers, Mapping):
+        return None
+    return next(
+        (
+            value
+            for name, value in headers.items()
+            if isinstance(name, str) and name.casefold() == "authorization"
+        ),
+        None,
+    )
+
+
+def _is_allowed_files_request_url(value: str) -> bool:
+    """Accept only HTTPS drive hosts; the mail authorization is not valid here."""
+    return _is_allowed_request_url(value, _FILES_AUTHORIZATION_HOST_SUFFIXES)
 
 
 def _outlook_identity_failure(message: str) -> ConnectorFailure:

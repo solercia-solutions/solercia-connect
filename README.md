@@ -87,6 +87,36 @@ The root wrapper is only a convenience alias and contains no provider logic:
 ./solercia-connect.sh outlook user@example.com --allow-browser-fallback
 ```
 
+## Files on OneDrive and SharePoint
+
+Files are a capability pair on the `onedrive` target, which also answers to `sharepoint`. The
+official route reads Microsoft Graph; the supervised browser route reads the equivalent SharePoint
+REST drive on whichever host the session actually uses. Both return the same `DriveFile` records,
+so the route never leaks into a caller's code:
+
+```bash
+solercia-connect run --provider microsoft.graph --capability files.search \
+  --account user@example.com --search "acta" --limit 50
+
+solercia-connect run --provider microsoft.graph --capability files.search \
+  --account user@example.com --folder "/Documentos/2026"
+
+solercia-connect run --provider microsoft.graph --capability files.search \
+  --account user@example.com --site "contoso.sharepoint.com:/sites/calidad"
+
+solercia-connect run --provider microsoft.graph --capability files.get \
+  --account user@example.com --item-id 01ITEMID --with-content \
+  --max-content-bytes 5242880 --output acta.json
+```
+
+`files.get` returns the item with its content base64-encoded. The byte budget is enforced before
+the download starts, so an oversized file fails the request instead of the process. A drive
+listing is not a date range, so `--start`/`--end` are optional here and filter by last
+modification when given.
+
+The browser route keeps mail and drive authorizations separate, because the two audiences are not
+interchangeable: a mail token is never reused for a drive call.
+
 ## Provider readiness
 
 | Target | Official local contract | Browser route | Live evidence |

@@ -22,7 +22,9 @@ class Microsoft365Endpoints:
             return self.outlook_sent
         if connection_type is ConnectionType.TEAMS:
             return self.teams_home
-        raise ValueError("Microsoft browser fallback supports only Outlook and Teams")
+        if connection_type is ConnectionType.ONEDRIVE:
+            return self.onedrive_launch
+        raise ValueError("Microsoft browser fallback supports only Outlook, Teams and OneDrive")
 
 
 @dataclass(frozen=True, slots=True)
