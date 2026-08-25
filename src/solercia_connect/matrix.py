@@ -108,7 +108,7 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "Microsoft 365 Web",
         "browser",
         "meeting.transcripts.*",
-        "foundation-only",
-        "Routing and injected driver contract exist; built-in extraction fails explicitly",
+        "not-available",
+        "Transcripts live in the organizer's drive or need a Graph audience the session lacks",
     ),
 )

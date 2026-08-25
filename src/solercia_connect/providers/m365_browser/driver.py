@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import importlib
 import re
+from collections import deque
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -57,6 +58,8 @@ _READ_BEARER_WAIT_INTERVAL_MS = 500
 _READ_BEARER_MAX_CYCLES = 20
 _OUTLOOK_PAGE_SIZE = 50
 _OUTLOOK_MAX_PAGES = 20
+_DRIVE_WALK_MAX_DEPTH = 4
+_DRIVE_WALK_MAX_FOLDERS = 60
 _SENT_MAIL_SELECT = (
     "Id,Subject,SentDateTime,From,ToRecipients,CcRecipients,Body,ConversationId,HasAttachments"
 )
@@ -601,6 +604,8 @@ class PlaywrightBrowserDriver:
                 timeout_ms=timeout_ms,
             )
             items: list[Mapping[str, object]] = [payload]
+        elif query.text is not None:
+            items = self._walk_drive_for_text(drive_url, query, select, timeout_ms=timeout_ms)
         else:
             url, params = self._drive_listing(drive_url, query, select)
             payload = self._authorized_files_get(url, params=params, timeout_ms=timeout_ms)
@@ -641,13 +646,68 @@ class PlaywrightBrowserDriver:
         select: str,
     ) -> tuple[str, dict[str, str]]:
         params = {"$select": select, "$top": str(min(query.limit, 200))}
-        if query.text is not None:
-            escaped = query.text.strip().replace("'", "''")
-            return f"{drive_url}/root/search(q='{quote(escaped, safe='')}')", params
         if query.folder_path is not None:
             path = query.folder_path.strip().strip("/")
             return f"{drive_url}/root:/{quote(path, safe='/')}:/children", params
         return f"{drive_url}/root/children", params
+
+    def _walk_drive_for_text(
+        self,
+        drive_url: str,
+        query: FileQuery,
+        select: str,
+        *,
+        timeout_ms: int,
+    ) -> list[Mapping[str, object]]:
+        """Find items by name with a bounded walk instead of the provider's search endpoint.
+
+        That endpoint answers this drive surface with an empty collection even for items that
+        demonstrably exist, which is the one failure mode worth refusing to inherit: an empty
+        result is indistinguishable from "nothing matched". A bounded walk is slower and honest.
+        """
+        needle = (query.text or "").strip().casefold()
+        start = (
+            f"root:/{quote(query.folder_path.strip().strip('/'), safe='/')}:"
+            if (query.folder_path is not None)
+            else "root"
+        )
+        pending: deque[tuple[str, int]] = deque([(start, 0)])
+        matches: list[Mapping[str, object]] = []
+        visited = 0
+        bearer = self._await_files_bearer(timeout_ms=timeout_ms)
+
+        try:
+            while pending and len(matches) < query.limit and visited < _DRIVE_WALK_MAX_FOLDERS:
+                anchor, depth = pending.popleft()
+                visited += 1
+                try:
+                    payload = self._authorized_files_get(
+                        f"{drive_url}/{anchor}/children",
+                        params={"$select": select, "$top": "200"},
+                        timeout_ms=timeout_ms,
+                        bearer=bearer,
+                    )
+                except ConnectorFailure:
+                    # One unreadable folder is not a failed search; the rest of the drive stands.
+                    continue
+                items = payload.get("value")
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, Mapping):
+                        continue
+                    name = field(item, "name", "Name")
+                    if isinstance(name, str) and needle in name.casefold():
+                        matches.append(item)
+                        if len(matches) >= query.limit:
+                            break
+                    is_folder = field(item, "folder", "Folder") is not None
+                    identifier = field(item, "id", "Id")
+                    if is_folder and depth < _DRIVE_WALK_MAX_DEPTH and isinstance(identifier, str):
+                        pending.append((f"items/{quote(identifier, safe='')}", depth + 1))
+        finally:
+            bearer.clear()
+        return matches
 
     def _file_with_content(
         self,
@@ -693,18 +753,26 @@ class PlaywrightBrowserDriver:
         *,
         params: Mapping[str, str] | None,
         timeout_ms: int,
+        bearer: _TransientBearer | None = None,
     ) -> Mapping[str, object]:
-        bearer = self._await_files_bearer(timeout_ms=timeout_ms)
+        """Issue one read-only drive call.
+
+        A caller doing many reads in one operation passes a single authorization and clears it
+        once at the end. Re-capturing per call meant renavigating the drive for every folder,
+        which turned a bounded walk into something that could not finish.
+        """
+        held = bearer if bearer is not None else self._await_files_bearer(timeout_ms=timeout_ms)
         try:
             outcome = self._rest_get(
                 url,
-                bearer,
+                held,
                 params=params,
                 timeout_ms=timeout_ms,
                 allowed=_is_allowed_files_request_url,
             )
         finally:
-            bearer.clear()
+            if bearer is None:
+                held.clear()
         return _require_rest_payload(outcome)
 
     def _await_files_bearer(self, *, timeout_ms: int) -> _TransientBearer:

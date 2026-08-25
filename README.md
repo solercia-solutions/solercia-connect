@@ -87,6 +87,27 @@ The root wrapper is only a convenience alias and contains no provider logic:
 ./solercia-connect.sh outlook user@example.com --allow-browser-fallback
 ```
 
+## What each route can read
+
+| Capability | Official (Graph) | Browser (supervised session) |
+|---|---|---|
+| `mail.sent.list` (with attachments) | yes | yes |
+| `calendar.events.list` | yes | yes |
+| `files.search` / `files.get` | yes | yes |
+| `meeting.transcripts.*` | yes | no — see below |
+
+Records are identical across routes; `provenance` is the only field that names the route.
+
+Meeting transcripts are not readable over the browser route. A transcript is stored in the
+*organizer's* drive, and the session's authorization is scoped to the drive and mailbox hosts, not
+to the Graph audience that serves the transcript collection. When a transcript has been shared as
+a file, `files.search --site` reaches it like any other document.
+
+Browser file search walks the drive rather than calling the provider's search endpoint, which
+answers that surface with an empty collection even for items that exist. The walk is bounded in
+depth and in folders visited, and a folder the account cannot read is skipped rather than failing
+the search.
+
 ## Files on OneDrive and SharePoint
 
 Files are a capability pair on the `onedrive` target, which also answers to `sharepoint`. The
