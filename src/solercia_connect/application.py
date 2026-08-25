@@ -18,6 +18,7 @@ from solercia_connect.domain import (
     Capability,
     ConnectorRequest,
     DateWindow,
+    FileQuery,
     IssueQuery,
     MailQuery,
     QueryPayload,
@@ -258,11 +259,18 @@ def _query(
     limit = payload.get("limit", 50)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
         raise ValueError("limit must be an integer between 1 and 1000")
+    optional_window_capabilities = {
+        Capability.MEETING_TRANSCRIPT_GET,
+        Capability.FILES_SEARCH,
+        Capability.FILES_GET,
+    }
     window = (
         None
-        if capability is Capability.MEETING_TRANSCRIPT_GET
+        if capability in optional_window_capabilities
         else _window(payload.get("start"), payload.get("end"))
     )
+    if capability in {Capability.FILES_SEARCH, Capability.FILES_GET}:
+        window = _window(payload.get("start"), payload.get("end"), optional=True)
     if capability is Capability.MAIL_SENT_LIST:
         return MailQuery(_required_window(window), account, min(limit, 100))
     if capability is Capability.CALENDAR_EVENTS_LIST:
@@ -281,6 +289,31 @@ def _query(
     }:
         meeting_id = _required_string(payload, "meeting_id")
         return TranscriptQuery(meeting_id, window, account, min(limit, 50))
+    if capability in {Capability.FILES_SEARCH, Capability.FILES_GET}:
+        include_content = payload.get("include_content", capability is Capability.FILES_GET)
+        if not isinstance(include_content, bool):
+            raise ValueError("include_content must be a boolean")
+        max_content_bytes = payload.get("max_content_bytes", 10_485_760)
+        if (
+            isinstance(max_content_bytes, bool)
+            or not isinstance(max_content_bytes, int)
+            or max_content_bytes <= 0
+        ):
+            raise ValueError("max_content_bytes must be a positive integer")
+        item_id = _optional_string(payload.get("item_id"))
+        if capability is Capability.FILES_GET and item_id is None:
+            raise ValueError("item_id is required for files.get")
+        return FileQuery(
+            _optional_string(payload.get("search")),
+            _optional_string(payload.get("folder_path")),
+            item_id,
+            _optional_string(payload.get("site")),
+            window,
+            account,
+            include_content,
+            max_content_bytes,
+            min(limit, 500),
+        )
     if capability is Capability.EXTERNAL_ISSUES_SEARCH:
         assignee = _optional_string(payload.get("assignee"))
         jql = _optional_string(payload.get("jql"))
@@ -290,7 +323,9 @@ def _query(
     return TicketQuery(_required_window(window), min(limit, 1000))
 
 
-def _window(start: Any, end: Any) -> DateWindow:
+def _window(start: Any, end: Any, *, optional: bool = False) -> DateWindow | None:
+    if start is None and end is None and optional:
+        return None
     if not isinstance(start, str) or not isinstance(end, str):
         raise ValueError("start and end are required timezone-aware ISO 8601 values")
     return DateWindow(datetime.fromisoformat(start), datetime.fromisoformat(end))

@@ -27,6 +27,7 @@ from solercia_connect.domain import (
     CalendarQuery,
     Capability,
     DateWindow,
+    FileQuery,
     IssueQuery,
     MailQuery,
     QueryPayload,
@@ -189,6 +190,30 @@ def run_capability(
     assignee: Annotated[str | None, typer.Option("--assignee")] = None,
     jql: Annotated[str | None, typer.Option("--jql")] = None,
     meeting_id: Annotated[str | None, typer.Option("--meeting-id")] = None,
+    search: Annotated[
+        str | None,
+        typer.Option("--search", help="Provider-side file search text"),
+    ] = None,
+    folder_path: Annotated[
+        str | None,
+        typer.Option("--folder", help="Drive folder path to list, relative to the drive root"),
+    ] = None,
+    item_id: Annotated[
+        str | None,
+        typer.Option("--item-id", help="Drive item ID, required by files.get"),
+    ] = None,
+    site: Annotated[
+        str | None,
+        typer.Option("--site", help="SharePoint site ID or host:/sites/name; omit for OneDrive"),
+    ] = None,
+    with_content: Annotated[
+        bool | None,
+        typer.Option("--with-content/--without-content", help="Include file content, base64"),
+    ] = None,
+    max_content_bytes: Annotated[
+        int,
+        typer.Option("--max-content-bytes", min=1, help="Reject files larger than this"),
+    ] = 10_485_760,
     limit: Annotated[int, typer.Option(min=1, max=1000)] = 50,
     browser_fallback: Annotated[
         bool,
@@ -221,8 +246,15 @@ def run_capability(
             "assignee": assignee,
             "jql": jql,
             "meeting_id": meeting_id,
+            "search": search,
+            "folder_path": folder_path,
+            "item_id": item_id,
+            "site": site,
+            "max_content_bytes": max_content_bytes,
             "limit": limit,
         }
+        if with_content is not None:
+            payload["include_content"] = with_content
         payload["allow_browser_fallback"] = browser_fallback
         envelope = run_application(payload)
         normalized_account = envelope.account
@@ -600,7 +632,12 @@ def _query_payload(
     meeting_id: str | None,
     limit: int,
 ) -> QueryPayload:
-    window = _window(start, end) if capability is not Capability.MEETING_TRANSCRIPT_GET else None
+    window = (
+        None
+        if capability
+        in {Capability.MEETING_TRANSCRIPT_GET, Capability.FILES_SEARCH, Capability.FILES_GET}
+        else _window(start, end)
+    )
     if capability is Capability.MAIL_SENT_LIST:
         return MailQuery(_require_window(window), account, min(limit, 100))
     if capability is Capability.CALENDAR_EVENTS_LIST:
@@ -619,6 +656,18 @@ def _query_payload(
         if not meeting_id:
             raise _InputError("--meeting-id is required for Teams transcript capabilities")
         return TranscriptQuery(meeting_id, window, account, min(limit, 50))
+    if capability in {Capability.FILES_SEARCH, Capability.FILES_GET}:
+        return FileQuery(
+            None,
+            None,
+            None,
+            None,
+            window,
+            account,
+            capability is Capability.FILES_GET,
+            10_485_760,
+            min(limit, 500),
+        )
     if capability is Capability.EXTERNAL_ISSUES_SEARCH:
         return IssueQuery(_require_window(window), assignee, jql, min(limit, 100))
     return TicketQuery(_require_window(window), min(limit, 1000))

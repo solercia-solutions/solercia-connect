@@ -66,6 +66,12 @@ class RunRequest(BaseModel):
     assignee: str | None = None
     jql: str | None = None
     meeting_id: str | None = None
+    search: str | None = None
+    folder_path: str | None = None
+    item_id: str | None = None
+    site: str | None = None
+    include_content: bool | None = None
+    max_content_bytes: int = Field(default=10_485_760, ge=1)
     limit: int = Field(default=50, ge=1, le=1000)
     allow_browser_fallback: bool = False
 
@@ -96,6 +102,7 @@ class RunRequest(BaseModel):
             in {
                 ConnectionType.OUTLOOK,
                 ConnectionType.TEAMS,
+                ConnectionType.ONEDRIVE,
                 ConnectionType.GMAIL,
                 ConnectionType.GOOGLE_CALENDAR,
             }
@@ -105,6 +112,7 @@ class RunRequest(BaseModel):
         if self.allow_browser_fallback and self.type not in {
             ConnectionType.OUTLOOK,
             ConnectionType.TEAMS,
+            ConnectionType.ONEDRIVE,
         }:
             raise ValueError("browser fallback is available only for Microsoft targets")
         return self
@@ -120,8 +128,14 @@ class RunRequest(BaseModel):
             "assignee": self.assignee,
             "jql": self.jql,
             "meeting_id": self.meeting_id,
+            "search": self.search,
+            "folder_path": self.folder_path,
+            "item_id": self.item_id,
+            "site": self.site,
+            "max_content_bytes": self.max_content_bytes,
             "limit": self.limit,
             "allow_browser_fallback": self.allow_browser_fallback,
+            **({} if self.include_content is None else {"include_content": self.include_content}),
         }
 
 

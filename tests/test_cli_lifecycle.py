@@ -242,6 +242,11 @@ def test_run_command_maps_targets_flags_and_input_errors(monkeypatch: pytest.Mon
             "assignee": None,
             "jql": None,
             "meeting_id": "meeting-1",
+            "search": None,
+            "folder_path": None,
+            "item_id": None,
+            "site": None,
+            "max_content_bytes": 10_485_760,
             "limit": 50,
             "allow_browser_fallback": True,
         }

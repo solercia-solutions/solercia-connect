@@ -35,6 +35,20 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "Known-meeting list/content contract; tenant scope and live stability still pending",
     ),
     CapabilityRow(
+        "Microsoft Graph",
+        "official",
+        "files.search",
+        "implemented",
+        "OneDrive and SharePoint drives, root/folder listing, provider search, window filter",
+    ),
+    CapabilityRow(
+        "Microsoft Graph",
+        "official",
+        "files.get",
+        "implemented",
+        "Single drive item with optional content, capped by an explicit byte budget",
+    ),
+    CapabilityRow(
         "Gmail API",
         "official",
         "mail.sent.list",
