@@ -94,14 +94,23 @@ The root wrapper is only a convenience alias and contains no provider logic:
 | `mail.sent.list` (with attachments) | yes | yes |
 | `calendar.events.list` | yes | yes |
 | `files.search` / `files.get` | yes | yes |
-| `meeting.transcripts.*` | yes | no — see below |
+| `meeting.transcripts.*` | yes | yes — different selector, see below |
 
 Records are identical across routes; `provenance` is the only field that names the route.
 
-Meeting transcripts are not readable over the browser route. A transcript is stored in the
-*organizer's* drive, and the session's authorization is scoped to the drive and mailbox hosts, not
-to the Graph audience that serves the transcript collection. When a transcript has been shared as
-a file, `files.search --site` reaches it like any other document.
+The two routes reach the same transcript by different names. The official route addresses the
+online meeting, so it needs a meeting ID. The browser route reads the recording that carries the
+transcript, which is a drive item, so it takes `--drive-id` with `--item-id` — or just a window,
+which lists every recording in that period and reads each one.
+
+That is also why a meeting the account merely attended is readable: the site cookie covers every
+`personal/` path on the drive host, not only this account's, and the shared collection hands back
+the organizer's `driveId` and item id directly. Recordings the account owns and recordings shared
+with it are both reported, and `include_shared: false` narrows the read to its own.
+
+Both routes answer with speaker-named WebVTT. The drive-backed rendition that carries speakers is
+JSON, so it is converted rather than passed through — the WebVTT that surface serves directly has
+no speaker markers at all, which collapses consecutive turns into one unattributed block.
 
 Browser file search walks the drive rather than calling the provider's search endpoint, which
 answers that surface with an empty collection even for items that exist. The walk is bounded in
@@ -143,7 +152,7 @@ interchangeable: a mail token is never reused for a drive call.
 | Target | Official local contract | Browser route | Live evidence |
 | --- | --- | --- | --- |
 | Outlook | Device-code OAuth; Graph identity, sent mail, and calendar reads | Session identity via exact read-only Outlook REST `/api/v2.0/me`; extraction remains `not_implemented` | REST identity shape verified for UAECD; Connect live command remains tenant-gated |
-| Teams | Device-code OAuth; known-meeting transcript list/download using `OnlineMeetingTranscript.Read.All` | Versioned DOM session identity only; extraction remains `not_implemented` | Pending work/school tenant/admin proof |
+| Teams | Device-code OAuth; known-meeting transcript list/download using `OnlineMeetingTranscript.Read.All` | Recording transcripts over the SharePoint drive, own and shared, by item or by period | Drive transcript contract verified live against a work tenant; official route pending admin proof |
 | Gmail | Desktop OAuth loopback with state + PKCE; read-only sent-mail capability | None | Pending dedicated account proof |
 | Google Calendar | Desktop OAuth loopback with state + PKCE; read-only event capability | None | Pending dedicated account proof |
 | Jira | Existing API-token/JQL compatibility | None | Pending supported-site proof |
@@ -207,14 +216,32 @@ solercia-connect run \
   --account user@example.com
 ```
 
-Teams reads require a known meeting ID:
+Transcripts accept whichever selector the route can use — a meeting, a recording, or a period:
 
 ```bash
+# Official route: the online meeting itself.
 solercia-connect run \
   --provider microsoft.graph \
   --capability meeting.transcript.get \
   --meeting-id MEETING_ID \
   --account user@example.com
+
+# Browser route: every recording in the period, own and shared.
+solercia-connect run \
+  --provider microsoft.graph \
+  --capability meeting.transcript.get \
+  --start '2026-08-01T00:00:00-05:00' \
+  --end '2026-09-01T00:00:00-05:00' \
+  --account user@example.com \
+  --allow-browser-fallback
+
+# Browser route: one known recording.
+solercia-connect run \
+  --provider microsoft.graph \
+  --capability meeting.transcript.get \
+  --drive-id DRIVE_ID --item-id ITEM_ID \
+  --account user@example.com \
+  --allow-browser-fallback
 ```
 
 ## Loopback HTTP adapter
