@@ -202,6 +202,10 @@ def run_capability(
         str | None,
         typer.Option("--item-id", help="Drive item ID, required by files.get"),
     ] = None,
+    drive_id: Annotated[
+        str | None,
+        typer.Option("--drive-id", help="Drive ID holding a recording; pair with --item-id"),
+    ] = None,
     site: Annotated[
         str | None,
         typer.Option("--site", help="SharePoint site ID or host:/sites/name; omit for OneDrive"),
@@ -257,6 +261,7 @@ def run_capability(
             "search": search,
             "folder_path": folder_path,
             "item_id": item_id,
+            "drive_id": drive_id,
             "site": site,
             "max_content_bytes": max_content_bytes,
             "include_attachments": with_attachments,
@@ -640,14 +645,19 @@ def _query_payload(
     assignee: str | None,
     jql: str | None,
     meeting_id: str | None,
+    drive_id: str | None = None,
+    item_id: str | None = None,
     limit: int,
 ) -> QueryPayload:
-    window = (
-        None
-        if capability
-        in {Capability.MEETING_TRANSCRIPT_GET, Capability.FILES_SEARCH, Capability.FILES_GET}
-        else _window(start, end)
-    )
+    transcripts = {Capability.MEETING_TRANSCRIPTS_LIST, Capability.MEETING_TRANSCRIPT_GET}
+    if capability in transcripts:
+        # A transcript is selected by meeting, by recording, or by period, so a window is one
+        # option among three rather than a requirement.
+        window = _optional_window(start, end)
+    elif capability in {Capability.FILES_SEARCH, Capability.FILES_GET}:
+        window = None
+    else:
+        window = _window(start, end)
     if capability is Capability.MAIL_SENT_LIST:
         return MailQuery(_require_window(window), account, min(limit, 100))
     if capability is Capability.CALENDAR_EVENTS_LIST:
@@ -659,13 +669,23 @@ def _query_payload(
             (),
             min(limit, 1000),
         )
-    if capability in {
-        Capability.MEETING_TRANSCRIPTS_LIST,
-        Capability.MEETING_TRANSCRIPT_GET,
-    }:
-        if not meeting_id:
-            raise _InputError("--meeting-id is required for Teams transcript capabilities")
-        return TranscriptQuery(meeting_id, window, account, min(limit, 50))
+    if capability in transcripts:
+        if (drive_id is None) != (item_id is None):
+            raise _InputError("--drive-id and --item-id must be given together")
+        if not meeting_id and drive_id is None and window is None:
+            raise _InputError(
+                "transcript capabilities need one of: --meeting-id, "
+                "--drive-id with --item-id, or --start with --end"
+            )
+        return TranscriptQuery(
+            meeting_id,
+            drive_id,
+            item_id,
+            window,
+            account,
+            True,
+            min(limit, 500),
+        )
     if capability in {Capability.FILES_SEARCH, Capability.FILES_GET}:
         return FileQuery(
             None,
@@ -681,6 +701,13 @@ def _query_payload(
     if capability is Capability.EXTERNAL_ISSUES_SEARCH:
         return IssueQuery(_require_window(window), assignee, jql, min(limit, 100))
     return TicketQuery(_require_window(window), min(limit, 1000))
+
+
+def _optional_window(start: str | None, end: str | None) -> DateWindow | None:
+    """Parse a window that the capability treats as one selector among several."""
+    if not start and not end:
+        return None
+    return _window(start, end)
 
 
 def _window(start: str | None, end: str | None) -> DateWindow:

@@ -131,10 +131,31 @@ class CalendarQuery:
 
 @dataclass(frozen=True, slots=True)
 class TranscriptQuery:
+    """Select meeting transcripts by meeting, by recording, or by period.
+
+    The two routes address the same transcript by different names. The official route knows an
+    online meeting id; the supervised browser route reads the recording that carries the
+    transcript, which is a drive item. A caller that supplies neither selector asks for every
+    recording in the window, which is how a period is reported without knowing ids in advance.
+    """
+
     meeting_id: str | None = None
+    drive_id: str | None = None
+    item_id: str | None = None
     window: DateWindow | None = None
     account_id: str | None = None
+    include_shared: bool = True
     limit: int = 50
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.limit <= 500:
+            raise ValueError("TranscriptQuery limit must be between 1 and 500")
+        for name in ("meeting_id", "drive_id", "item_id"):
+            value: str | None = getattr(self, name)
+            if value is not None and not value.strip():
+                raise ValueError(f"TranscriptQuery {name} cannot be blank")
+        if (self.drive_id is None) != (self.item_id is None):
+            raise ValueError("TranscriptQuery drive_id and item_id must be given together")
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,13 +286,32 @@ class CalendarEvent:
 
 @dataclass(frozen=True, slots=True)
 class MeetingTranscript:
+    """One meeting transcript, however it was reached.
+
+    Both routes fill the leading fields. The trailing fields describe the recording a transcript
+    was read from, which only the drive-backed route observes; the official route leaves them
+    unset rather than inventing them.
+    """
+
     id: str
-    meeting_id: str
+    meeting_id: str | None
     content: str
     content_format: str
     speaker_count: int | None
     last_cue_seconds: float | None
     provenance: Provenance
+    display_name: str | None = None
+    recorded_at: datetime | None = None
+    drive_id: str | None = None
+    item_id: str | None = None
+    organizer: str | None = None
+    speakers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.id.strip():
+            raise ValueError("MeetingTranscript id cannot be empty")
+        if self.speaker_count is not None and self.speaker_count < 0:
+            raise ValueError("MeetingTranscript speaker_count cannot be negative")
 
 
 @dataclass(frozen=True, slots=True)

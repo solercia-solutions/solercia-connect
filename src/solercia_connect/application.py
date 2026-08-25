@@ -108,6 +108,7 @@ def run_application(
         registry = registry_from_environment(
             connection_type=type_value,
             account=account,
+            capability=capability,
             include_browser=interactive and fallback,
             settings_override=active_settings,
         )
@@ -266,6 +267,7 @@ def _query(
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
         raise ValueError("limit must be an integer between 1 and 1000")
     optional_window_capabilities = {
+        Capability.MEETING_TRANSCRIPTS_LIST,
         Capability.MEETING_TRANSCRIPT_GET,
         Capability.FILES_SEARCH,
         Capability.FILES_GET,
@@ -275,7 +277,7 @@ def _query(
         if capability in optional_window_capabilities
         else _window(payload.get("start"), payload.get("end"))
     )
-    if capability in {Capability.FILES_SEARCH, Capability.FILES_GET}:
+    if capability in optional_window_capabilities:
         window = _window(payload.get("start"), payload.get("end"), optional=True)
     if capability is Capability.MAIL_SENT_LIST:
         include_attachments = payload.get("include_attachments", False)
@@ -309,8 +311,30 @@ def _query(
         Capability.MEETING_TRANSCRIPTS_LIST,
         Capability.MEETING_TRANSCRIPT_GET,
     }:
-        meeting_id = _required_string(payload, "meeting_id")
-        return TranscriptQuery(meeting_id, window, account, min(limit, 50))
+        # The two routes name the same transcript differently: the official one by online
+        # meeting, the drive-backed one by the recording that carries it. A window alone is a
+        # third selector, which is how a whole period is read without knowing ids in advance.
+        meeting_id = _optional_string(payload.get("meeting_id"))
+        drive_id = _optional_string(payload.get("drive_id"))
+        item_id = _optional_string(payload.get("item_id"))
+        if (drive_id is None) != (item_id is None):
+            raise ValueError("drive_id and item_id must be given together")
+        if meeting_id is None and drive_id is None and window is None:
+            raise ValueError(
+                "transcript capabilities need meeting_id, drive_id with item_id, or a window"
+            )
+        include_shared = payload.get("include_shared", True)
+        if not isinstance(include_shared, bool):
+            raise ValueError("include_shared must be a boolean")
+        return TranscriptQuery(
+            meeting_id,
+            drive_id,
+            item_id,
+            window,
+            account,
+            include_shared,
+            min(limit, 500),
+        )
     if capability in {Capability.FILES_SEARCH, Capability.FILES_GET}:
         include_content = payload.get("include_content", capability is Capability.FILES_GET)
         if not isinstance(include_content, bool):

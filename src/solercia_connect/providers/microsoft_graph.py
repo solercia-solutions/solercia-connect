@@ -317,9 +317,11 @@ class MicrosoftGraphAdapter:
         first_only: bool = False,
     ) -> tuple[MeetingTranscript, ...]:
         if not query.meeting_id or not query.meeting_id.strip():
+            # The browser route selects a transcript by the recording that carries it, which the
+            # Graph transcript collection cannot address; this route needs the meeting itself.
             raise ConnectorFailure(
                 ReasonCode.INVALID_INPUT,
-                "A known Microsoft Teams online meeting ID is required",
+                "A known Microsoft Teams online meeting ID is required by the official route",
             )
         meeting_id = query.meeting_id.strip()
         account_id = self._identity()
@@ -401,6 +403,7 @@ class MicrosoftGraphAdapter:
                         account_id,
                         "/me/onlineMeetings/{onlineMeetingId}/transcripts/{id}/content",
                     ),
+                    speakers=_vtt_speakers(content),
                 )
             )
         return tuple(records)
@@ -541,12 +544,20 @@ def _graph_addresses(value: Any) -> tuple[EmailAddress, ...]:
     return tuple(result)
 
 
+def _vtt_speakers(content: str) -> tuple[str, ...]:
+    """Name each speaker once, in the order the transcript first hears them."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for match in re.findall(r"<v\s+([^>]+)>", content, flags=re.IGNORECASE):
+        speaker = match.strip()
+        if speaker and speaker.casefold() not in seen:
+            seen.add(speaker.casefold())
+            ordered.append(speaker)
+    return tuple(ordered)
+
+
 def _vtt_speaker_count(content: str) -> int | None:
-    speakers = {
-        match.strip().casefold()
-        for match in re.findall(r"<v\s+([^>]+)>", content, flags=re.IGNORECASE)
-        if match.strip()
-    }
+    speakers = _vtt_speakers(content)
     return len(speakers) if speakers else None
 
 

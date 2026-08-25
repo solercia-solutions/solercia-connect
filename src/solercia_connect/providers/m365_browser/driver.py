@@ -27,9 +27,11 @@ from solercia_connect.domain import (
     FileQuery,
     MailMessage,
     MailQuery,
+    MeetingTranscript,
     QueryPayload,
     ReasonCode,
     RouteKind,
+    TranscriptQuery,
     utc_now,
 )
 from solercia_connect.errors import ConnectorFailure
@@ -40,6 +42,8 @@ from solercia_connect.providers._microsoft import (
     normalize_drive_item,
     normalize_mail_attachment,
     normalize_mail_message,
+    normalize_stream_transcript,
+    optional_microsoft_datetime,
 )
 from solercia_connect.providers._shared import unique_canonical_account_identity
 from solercia_connect.providers.m365_browser.selectors import ENDPOINTS, Microsoft365Selectors
@@ -60,6 +64,12 @@ _OUTLOOK_PAGE_SIZE = 50
 _OUTLOOK_MAX_PAGES = 20
 _DRIVE_WALK_MAX_DEPTH = 4
 _DRIVE_WALK_MAX_FOLDERS = 60
+# Teams names the recordings folder in the language the account created it with, and the other
+# name is a 404 rather than an empty collection, so both are asked for and misses are expected.
+_RECORDING_FOLDER_NAMES = ("Recordings", "Grabaciones")
+_RECORDING_SELECT = "id,name,lastModifiedDateTime,createdDateTime,parentReference,createdBy"
+_SHARED_SELECT = "id,name,lastModifiedDateTime,remoteItem,createdBy"
+_MAX_TRANSCRIPT_BYTES = 8_388_608
 _SENT_MAIL_SELECT = (
     "Id,Subject,SentDateTime,From,ToRecipients,CcRecipients,Body,ConversationId,HasAttachments"
 )
@@ -67,6 +77,21 @@ _BEARER_AUTHORIZATION = re.compile(
     r"Bearer[ \t]+([A-Z0-9._~+/-]+=*)",
     re.IGNORECASE,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _Recording:
+    """One meeting recording, wherever it lives, addressed the way transcripts require."""
+
+    drive_id: str
+    item_id: str
+    name: str | None
+    recorded_at: datetime | None
+    organizer: str | None
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.drive_id, self.item_id)
 
 
 class _TransientBearer:
@@ -393,6 +418,15 @@ class PlaywrightBrowserDriver:
                 payload,
                 timeout_ms=timeout_ms,
                 with_content=capability is Capability.FILES_GET,
+            )
+        if capability in {
+            Capability.MEETING_TRANSCRIPTS_LIST,
+            Capability.MEETING_TRANSCRIPT_GET,
+        } and isinstance(payload, TranscriptQuery):
+            return self._read_transcripts(
+                payload,
+                timeout_ms=timeout_ms,
+                with_content=capability is Capability.MEETING_TRANSCRIPT_GET,
             )
         raise ConnectorFailure(
             ReasonCode.BROWSER_CAPABILITY_NOT_IMPLEMENTED,
@@ -740,6 +774,190 @@ class PlaywrightBrowserDriver:
             )
         return replace(item, content_base64=base64.b64encode(content).decode("ascii"))
 
+    def _read_transcripts(
+        self,
+        query: TranscriptQuery,
+        *,
+        timeout_ms: int,
+        with_content: bool,
+    ) -> tuple[MeetingTranscript, ...]:
+        """Read meeting transcripts over the supervised SharePoint session.
+
+        A transcript is not a Teams resource here. It hangs off the recording in whichever drive
+        holds it, which is why a shared meeting the account merely attended is readable at all:
+        the site cookie covers every ``personal/`` path on the host, not just this account's.
+        """
+        origin = self._drive_origin(timeout_ms=timeout_ms)
+        bearer = self._await_files_bearer(timeout_ms=timeout_ms)
+        try:
+            recordings = self._transcript_recordings(
+                origin, query, bearer=bearer, timeout_ms=timeout_ms
+            )
+            transcripts: list[MeetingTranscript] = []
+            for recording in recordings:
+                if len(transcripts) >= query.limit:
+                    break
+                for entry in self._transcript_manifest(
+                    origin, recording, bearer=bearer, timeout_ms=timeout_ms
+                ):
+                    transcript = self._transcript_record(
+                        origin,
+                        recording,
+                        entry,
+                        bearer=bearer,
+                        timeout_ms=timeout_ms,
+                        with_content=with_content,
+                        meeting_id=query.meeting_id,
+                    )
+                    if transcript is not None:
+                        transcripts.append(transcript)
+            return tuple(transcripts[: query.limit])
+        finally:
+            bearer.clear()
+
+    def _transcript_recordings(
+        self,
+        origin: str,
+        query: TranscriptQuery,
+        *,
+        bearer: _TransientBearer,
+        timeout_ms: int,
+    ) -> tuple[_Recording, ...]:
+        """Resolve which recordings to read, either named outright or discovered for a period."""
+        if query.drive_id is not None and query.item_id is not None:
+            return (_Recording(query.drive_id, query.item_id, None, None, None),)
+
+        found: list[_Recording] = []
+        seen: set[tuple[str, str]] = set()
+
+        for folder in _RECORDING_FOLDER_NAMES:
+            payload = self._authorized_files_get(
+                f"{origin}/_api/v2.0/me/drive/root:/{folder}:/children",
+                params={"$select": _RECORDING_SELECT, "$top": "200"},
+                timeout_ms=timeout_ms,
+                bearer=bearer,
+                # The folder Teams did not create answers 404, which is an absence, not a fault.
+                optional=True,
+            )
+            for item in _collection(payload):
+                recording = _own_recording(item)
+                if recording is not None and recording.key not in seen:
+                    seen.add(recording.key)
+                    found.append(recording)
+
+        if query.include_shared:
+            payload = self._authorized_files_get(
+                f"{origin}/_api/v2.0/me/drive/sharedWithMe",
+                params={"$select": _SHARED_SELECT},
+                timeout_ms=timeout_ms,
+                bearer=bearer,
+                optional=True,
+            )
+            for item in _collection(payload):
+                recording = _shared_recording(item)
+                if recording is not None and recording.key not in seen:
+                    seen.add(recording.key)
+                    found.append(recording)
+
+        within = [item for item in found if _recording_in_window(item, query.window)]
+        within.sort(key=_recording_order, reverse=True)
+        return tuple(within)
+
+    def _transcript_manifest(
+        self,
+        origin: str,
+        recording: _Recording,
+        *,
+        bearer: _TransientBearer,
+        timeout_ms: int,
+    ) -> tuple[Mapping[str, object], ...]:
+        """List the transcripts attached to one recording.
+
+        The collection hangs off ``drives/{driveId}/items/{itemId}``. The account-relative
+        ``me/drive/items/{itemId}`` form that serves file reads answers 404 here, so the drive is
+        always named explicitly even when the recording belongs to this account.
+        """
+        payload = self._authorized_files_get(
+            f"{origin}/_api/v2.0/drives/{quote(recording.drive_id, safe='')}"
+            f"/items/{quote(recording.item_id, safe='')}/media/transcripts",
+            params=None,
+            timeout_ms=timeout_ms,
+            bearer=bearer,
+            # A meeting that was recorded without transcription has no collection to read.
+            optional=True,
+        )
+        return _collection(payload)
+
+    def _transcript_record(
+        self,
+        origin: str,
+        recording: _Recording,
+        entry: Mapping[str, object],
+        *,
+        bearer: _TransientBearer,
+        timeout_ms: int,
+        with_content: bool,
+        meeting_id: str | None,
+    ) -> MeetingTranscript | None:
+        transcript_id = field(entry, "id", "Id")
+        if not isinstance(transcript_id, str) or not transcript_id.strip():
+            return None
+
+        content: Mapping[str, object] = {}
+        if with_content:
+            content = self._transcript_content(
+                origin, recording, transcript_id, bearer=bearer, timeout_ms=timeout_ms
+            )
+
+        display_name = field(entry, "displayName", "DisplayName")
+        record = normalize_stream_transcript(
+            content,
+            transcript_id=transcript_id,
+            provenance=microsoft_provenance(
+                provider_id="microsoft365.browser",
+                route=RouteKind.BROWSER,
+                source_id=transcript_id,
+                fetched_at=utc_now(),
+                account_id=None,
+                endpoint="sharepoint-rest-v2",
+            ),
+            display_name=display_name if isinstance(display_name, str) else recording.name,
+            recorded_at=recording.recorded_at,
+            drive_id=recording.drive_id,
+            item_id=recording.item_id,
+            organizer=recording.organizer,
+            meeting_id=meeting_id,
+        )
+        if len(record.content.encode("utf-8")) > _MAX_TRANSCRIPT_BYTES:
+            raise ConnectorFailure(
+                ReasonCode.BROWSER_EXTRACTION_FAILED,
+                "Microsoft Teams transcript exceeds the fixed offline processing bound",
+            )
+        return record
+
+    def _transcript_content(
+        self,
+        origin: str,
+        recording: _Recording,
+        transcript_id: str,
+        *,
+        bearer: _TransientBearer,
+        timeout_ms: int,
+    ) -> Mapping[str, object]:
+        """Download one transcript in the only rendition that names its speakers.
+
+        ``streamContent`` defaults to WebVTT with no speaker markers, and asking for
+        ``text/vtt`` outright is rejected, so ``format=json`` is the single usable request.
+        """
+        return self._authorized_files_get(
+            f"{origin}/_api/v2.0/drives/{quote(recording.drive_id, safe='')}"
+            f"/items/{quote(recording.item_id, safe='')}"
+            f"/media/transcripts/{quote(transcript_id, safe='')}/streamContent",
+            params={"format": "json"},
+            timeout_ms=timeout_ms,
+            bearer=bearer,
+        )
+
     def _drive_base_url(self, site: str | None, *, timeout_ms: int) -> str:
         bearer_origin = self._drive_origin(timeout_ms=timeout_ms)
         if site is None:
@@ -754,12 +972,18 @@ class PlaywrightBrowserDriver:
         params: Mapping[str, str] | None,
         timeout_ms: int,
         bearer: _TransientBearer | None = None,
+        optional: bool = False,
     ) -> Mapping[str, object]:
         """Issue one read-only drive call.
 
         A caller doing many reads in one operation passes a single authorization and clears it
         once at the end. Re-capturing per call meant renavigating the drive for every folder,
         which turned a bounded walk into something that could not finish.
+
+        ``optional`` marks a surface whose absence is an ordinary answer: a recordings folder
+        named in the other language, or a recording that carries no transcript. Only 404 is read
+        that way, so a rejected authorization or a broken surface still fails loudly instead of
+        being reported as an empty result.
         """
         held = bearer if bearer is not None else self._await_files_bearer(timeout_ms=timeout_ms)
         try:
@@ -773,6 +997,8 @@ class PlaywrightBrowserDriver:
         finally:
             if bearer is None:
                 held.clear()
+        if optional and outcome.get("kind") == "http_error" and outcome.get("status") == 404:
+            return {}
         return _require_rest_payload(outcome)
 
     def _await_files_bearer(self, *, timeout_ms: int) -> _TransientBearer:
@@ -1130,6 +1356,89 @@ def _normalize_outlook_message(item: Mapping[str, object]) -> MailMessage:
             endpoint="outlook-rest-v2",
         ),
     )
+
+
+def _collection(payload: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
+    raw = payload.get("value")
+    if not isinstance(raw, list):
+        return ()
+    return tuple(item for item in raw if isinstance(item, Mapping))
+
+
+def _own_recording(item: Mapping[str, object]) -> _Recording | None:
+    identifier = field(item, "id", "Id")
+    drive = _drive_id_of(field(item, "parentReference", "ParentReference"))
+    if not isinstance(identifier, str) or drive is None:
+        return None
+    name = field(item, "name", "Name")
+    return _Recording(
+        drive,
+        identifier,
+        name if isinstance(name, str) else None,
+        optional_microsoft_datetime(field(item, "lastModifiedDateTime", "LastModifiedDateTime")),
+        # `createdBy` on a recording in this account's own folder is the Teams service that wrote
+        # the file, not whoever convened the meeting. Reporting it as the organizer would state
+        # something the surface never said, so an own recording simply has none.
+        None,
+    )
+
+
+def _shared_recording(item: Mapping[str, object]) -> _Recording | None:
+    """Read one entry of the shared collection, which nests the real identifiers.
+
+    A shared item's own id addresses the link in this account's drive, not the file. The pair
+    that reaches the transcript lives under ``remoteItem``, which is why the sharer's drive is
+    read from there rather than from the entry itself.
+    """
+    remote = field(item, "remoteItem", "RemoteItem")
+    if not isinstance(remote, Mapping):
+        return None
+    identifier = field(remote, "id", "Id")
+    drive = _drive_id_of(field(remote, "parentReference", "ParentReference"))
+    if not isinstance(identifier, str) or drive is None:
+        return None
+    name = field(item, "name", "Name")
+    shared = field(remote, "shared", "Shared")
+    organizer = None
+    if isinstance(shared, Mapping):
+        organizer = _user_display_name(field(shared, "sharedBy", "SharedBy"))
+    return _Recording(
+        drive,
+        identifier,
+        name if isinstance(name, str) else None,
+        optional_microsoft_datetime(field(item, "lastModifiedDateTime", "LastModifiedDateTime")),
+        organizer or _user_display_name(field(item, "createdBy", "CreatedBy")),
+    )
+
+
+def _drive_id_of(reference: object) -> str | None:
+    if not isinstance(reference, Mapping):
+        return None
+    drive = field(reference, "driveId", "DriveId")
+    return drive if isinstance(drive, str) and drive.strip() else None
+
+
+def _user_display_name(container: object) -> str | None:
+    if not isinstance(container, Mapping):
+        return None
+    user = field(container, "user", "User")
+    if not isinstance(user, Mapping):
+        return None
+    name = field(user, "displayName", "DisplayName")
+    return name if isinstance(name, str) and name.strip() else None
+
+
+def _recording_order(recording: _Recording) -> datetime:
+    """Sort newest first, with undated recordings last rather than incomparable."""
+    return recording.recorded_at or datetime.min.replace(tzinfo=UTC)
+
+
+def _recording_in_window(recording: _Recording, window: DateWindow | None) -> bool:
+    if window is None:
+        return True
+    if recording.recorded_at is None:
+        return False
+    return window.start <= recording.recorded_at < window.end
 
 
 def _require_rest_payload(outcome: Mapping[str, object]) -> Mapping[str, object]:

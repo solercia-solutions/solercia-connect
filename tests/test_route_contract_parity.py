@@ -15,16 +15,55 @@ from typing import Any
 
 import pytest
 
-from solercia_connect.domain import Capability, RouteKind
+from solercia_connect.domain import Capability, MeetingTranscript, RouteKind
+from solercia_connect.providers import microsoft_graph as graph_module
 from solercia_connect.providers._microsoft import (
     microsoft_provenance,
     normalize_drive_item,
     normalize_mail_message,
+    normalize_stream_transcript,
 )
 from solercia_connect.providers.m365_browser import Microsoft365BrowserAdapter
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
 
 _FETCHED = datetime(2026, 8, 24, 12, 0, tzinfo=UTC)
+
+# What the official transcript endpoint serves: WebVTT that already names its speakers.
+_GRAPH_TRANSCRIPT_VTT = (
+    "WEBVTT\n"
+    "\n"
+    "1\n"
+    "00:00:04.798 --> 00:00:12.000\n"
+    "<v Carmen Torres>Hicimos las pruebas anoche.\n"
+    "\n"
+    "2\n"
+    "00:00:12.000 --> 00:00:20.400\n"
+    "<v Camilo Calderón>Perfecto, reviso el caso.\n"
+)
+
+# What the drive-backed endpoint serves for the same meeting, with sub-millisecond offsets.
+_BROWSER_TRANSCRIPT_JSON: dict[str, Any] = {
+    "$schema": "stream-transcript",
+    "version": "1.0",
+    "type": "Transcript",
+    "entries": [
+        {
+            "id": "cue-1",
+            "text": "Hicimos las pruebas anoche.",
+            "speakerDisplayName": "Carmen Torres",
+            "startOffset": "00:00:04.7977753",
+            "endOffset": "00:00:12.0000000",
+        },
+        {
+            "id": "cue-2",
+            "text": "Perfecto, reviso el caso.",
+            "speakerDisplayName": "Camilo Calderón",
+            "startOffset": "00:00:12.0000000",
+            "endOffset": "00:00:20.4000000",
+        },
+    ],
+    "events": [],
+}
 
 _GRAPH_MESSAGE: dict[str, Any] = {
     "id": "AAMk-1",
@@ -117,6 +156,46 @@ def test_a_file_record_is_identical_whichever_route_produced_it() -> None:
     assert official.size_bytes == browser.size_bytes == 20480
     assert official.path == browser.path == "/drive/root:/Documentos/Acta 2026-08.docx"
     assert official.is_folder is browser.is_folder is False
+
+
+def _graph_transcript(content: str) -> MeetingTranscript:
+    """Build the record the official route builds, from the same helpers it uses."""
+    return MeetingTranscript(
+        "t-1",
+        "meeting-1",
+        content,
+        "text/vtt",
+        graph_module._vtt_speaker_count(content),
+        graph_module._vtt_last_cue_seconds(content),
+        _provenance(RouteKind.OFFICIAL, "graph-transcript-v1"),
+        speakers=graph_module._vtt_speakers(content),
+    )
+
+
+def test_a_transcript_record_is_identical_whichever_route_produced_it() -> None:
+    """The two routes are handed the two renditions the two surfaces actually serve.
+
+    The official route receives WebVTT and the drive-backed route receives Stream's JSON, which
+    is the only rendition of that surface carrying speakers at all. A caller must not be able to
+    tell them apart, so the JSON is rendered as the same speaker-named WebVTT.
+    """
+    official = _graph_transcript(_GRAPH_TRANSCRIPT_VTT)
+    browser = normalize_stream_transcript(
+        _BROWSER_TRANSCRIPT_JSON,
+        transcript_id="t-1",
+        provenance=_provenance(RouteKind.BROWSER, "sharepoint-rest-v2"),
+        meeting_id="meeting-1",
+    )
+
+    assert official.content_format == browser.content_format == "text/vtt"
+    assert official.content == browser.content
+    assert official.speakers == browser.speakers == ("Carmen Torres", "Camilo Calderón")
+    assert official.speaker_count == browser.speaker_count == 2
+    assert official.last_cue_seconds == browser.last_cue_seconds == pytest.approx(20.4)
+
+    # Only the drive-backed route observes the recording, so the official one leaves it unset
+    # rather than inventing identifiers that surface does not have.
+    assert official.drive_id is None and official.item_id is None
 
 
 def test_provenance_is_the_only_place_the_route_is_visible() -> None:

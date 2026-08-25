@@ -18,6 +18,7 @@ from solercia_connect.domain import (
     ProviderFamily,
     ReasonCode,
     RouteKind,
+    TranscriptQuery,
 )
 from solercia_connect.envelope import ResultEnvelope
 from solercia_connect.errors import ConnectorFailure
@@ -245,6 +246,7 @@ def test_run_command_maps_targets_flags_and_input_errors(monkeypatch: pytest.Mon
             "search": None,
             "folder_path": None,
             "item_id": None,
+            "drive_id": None,
             "site": None,
             "max_content_bytes": 10_485_760,
             "include_attachments": False,
@@ -361,10 +363,34 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
         query = cli._query_payload(capability, **common)
         assert query is not None
 
-    with pytest.raises(cli._InputError, match="meeting-id"):
+    # A transcript is selected by meeting, by recording, or by period. Dropping the meeting id
+    # while a window stands is still a complete request; dropping every selector is not.
+    by_window = cli._query_payload(
+        Capability.MEETING_TRANSCRIPT_GET,
+        **{**common, "meeting_id": None},
+    )
+    assert isinstance(by_window, TranscriptQuery)
+    assert by_window.meeting_id is None and by_window.window is not None
+
+    by_recording = cli._query_payload(
+        Capability.MEETING_TRANSCRIPT_GET,
+        **{**common, "meeting_id": None, "start": None, "end": None},
+        drive_id="drive-1",
+        item_id="item-1",
+    )
+    assert isinstance(by_recording, TranscriptQuery)
+    assert by_recording.drive_id == "drive-1" and by_recording.item_id == "item-1"
+
+    with pytest.raises(cli._InputError, match="together"):
         cli._query_payload(
             Capability.MEETING_TRANSCRIPT_GET,
             **{**common, "meeting_id": None},
+            drive_id="drive-1",
+        )
+    with pytest.raises(cli._InputError, match="need one of"):
+        cli._query_payload(
+            Capability.MEETING_TRANSCRIPT_GET,
+            **{**common, "meeting_id": None, "start": None, "end": None},
         )
     with pytest.raises(cli._InputError, match="required"):
         cli._window(None, None)

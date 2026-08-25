@@ -38,9 +38,31 @@ _OUTLOOK_IDENTITY_PROBE_ATTEMPTS = 2
 # Single source of truth for what the browser route can actually extract today.
 _BROWSER_EXTRACTION_CAPABILITIES: dict[ConnectionType, tuple[Capability, ...]] = {
     ConnectionType.OUTLOOK: (Capability.MAIL_SENT_LIST, Capability.CALENDAR_EVENTS_LIST),
+    # The Teams client itself extracts nothing over this route: it degrades under automation and
+    # its transcripts are not stored there anyway.
     ConnectionType.TEAMS: (),
-    ConnectionType.ONEDRIVE: (Capability.FILES_SEARCH, Capability.FILES_GET),
+    # A meeting transcript is a drive item, hanging off the recording, so it is read from the
+    # same SharePoint session that serves files rather than from the Teams surface.
+    ConnectionType.ONEDRIVE: (
+        Capability.FILES_SEARCH,
+        Capability.FILES_GET,
+        Capability.MEETING_TRANSCRIPTS_LIST,
+        Capability.MEETING_TRANSCRIPT_GET,
+    ),
 }
+
+
+def browser_surface_for_capability(capability: Capability) -> ConnectionType | None:
+    """Return which session surface actually serves a capability over the browser route.
+
+    A capability's target names where it belongs to the caller, which is not always where its
+    records live. A meeting transcript belongs to Teams and is stored in the drive, so asking for
+    one has to open the drive session, not the Teams client.
+    """
+    for connection_type, capabilities in _BROWSER_EXTRACTION_CAPABILITIES.items():
+        if capability in capabilities:
+            return connection_type
+    return None
 
 
 def browser_extraction_report(connection_type: str | ConnectionType) -> dict[str, object]:

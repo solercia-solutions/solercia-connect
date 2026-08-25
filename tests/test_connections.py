@@ -765,6 +765,8 @@ def test_browser_connection_status_and_mismatch_are_identity_bound(tmp_path: Pat
         allow_browser_fallback=True,
     )
     assert connected.status == "connected_browser"
+    # The Teams client extracts nothing over this route. Transcripts are readable, but from the
+    # drive that stores the recording, which is the onedrive target's surface.
     assert connected.data["extraction_status"] == "not_implemented"
 
     mismatch_service = ConnectionService(

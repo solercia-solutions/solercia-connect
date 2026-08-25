@@ -19,6 +19,7 @@ from solercia_connect.domain import (
     EmailAddress,
     MailAttachment,
     MailMessage,
+    MeetingTranscript,
     Provenance,
     ProviderFamily,
     ReasonCode,
@@ -260,4 +261,104 @@ def microsoft_provenance(
         fetched_at,
         account_id,
         endpoint,
+    )
+
+
+def transcript_offset_seconds(value: object) -> float | None:
+    """Read one Stream offset, which is ``HH:MM:SS.fffffff`` rather than a number."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    parts = value.strip().split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        hours, minutes, seconds = int(parts[0]), int(parts[1]), float(parts[2])
+    except ValueError:
+        return None
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _vtt_timestamp(seconds: float) -> str:
+    hours, rest = divmod(max(seconds, 0.0), 3600)
+    minutes, secs = divmod(rest, 60)
+    return f"{int(hours):02d}:{int(minutes):02d}:{secs:06.3f}"
+
+
+def stream_transcript_to_vtt(
+    payload: Mapping[str, Any],
+) -> tuple[str, tuple[str, ...], float | None]:
+    """Render Stream's transcript JSON as WebVTT that names each speaker.
+
+    The same endpoint also serves WebVTT directly, but that rendition carries no speaker at all,
+    so consecutive turns collapse into a single unattributed block. The JSON rendition is the only
+    one that names who spoke, and every route is expected to answer with the same cue format, so
+    the naming is restored here rather than left for each caller to reinvent.
+    """
+    raw_entries = payload.get("entries")
+    entries: list[Mapping[str, Any]] = (
+        [entry for entry in raw_entries if isinstance(entry, Mapping)]
+        if isinstance(raw_entries, list)
+        else []
+    )
+
+    lines = ["WEBVTT", ""]
+    speakers: list[str] = []
+    last_cue: float | None = None
+
+    for index, entry in enumerate(entries, start=1):
+        text = entry.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        start = transcript_offset_seconds(entry.get("startOffset"))
+        end = transcript_offset_seconds(entry.get("endOffset"))
+        if start is None or end is None:
+            continue
+        last_cue = end if last_cue is None else max(last_cue, end)
+
+        raw_speaker = entry.get("speakerDisplayName")
+        speaker = raw_speaker.strip() if isinstance(raw_speaker, str) else ""
+        if speaker and speaker not in speakers:
+            speakers.append(speaker)
+
+        lines.append(str(index))
+        lines.append(f"{_vtt_timestamp(start)} --> {_vtt_timestamp(end)}")
+        lines.append(f"<v {speaker}>{text.strip()}" if speaker else text.strip())
+        lines.append("")
+
+    return "\n".join(lines), tuple(speakers), last_cue
+
+
+def normalize_stream_transcript(
+    payload: Mapping[str, Any],
+    *,
+    transcript_id: str,
+    provenance: Provenance,
+    display_name: str | None = None,
+    recorded_at: datetime | None = None,
+    drive_id: str | None = None,
+    item_id: str | None = None,
+    organizer: str | None = None,
+    meeting_id: str | None = None,
+) -> MeetingTranscript:
+    """Build the shared transcript record from Stream's JSON rendition."""
+    if not transcript_id.strip():
+        raise ConnectorFailure(
+            ReasonCode.MALFORMED_PROVIDER_DATA,
+            "Microsoft transcript is missing a usable identifier",
+        )
+    content, speakers, last_cue = stream_transcript_to_vtt(payload)
+    return MeetingTranscript(
+        transcript_id,
+        meeting_id,
+        content,
+        "text/vtt",
+        len(speakers) or None,
+        last_cue,
+        provenance,
+        display_name=display_name,
+        recorded_at=recorded_at,
+        drive_id=drive_id,
+        item_id=item_id,
+        organizer=organizer,
+        speakers=speakers,
     )

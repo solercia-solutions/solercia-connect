@@ -17,7 +17,7 @@ from solercia_connect.config import (
     normalize_account,
 )
 from solercia_connect.connections import oauth_provider_from_settings
-from solercia_connect.domain import ReasonCode
+from solercia_connect.domain import Capability, ReasonCode
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.oauth import KeyringOAuthTokenStore, OAuthTokenStore
 from solercia_connect.providers.glpi import GlpiAdapter
@@ -26,6 +26,7 @@ from solercia_connect.providers.jira import JiraAdapter
 from solercia_connect.providers.m365_browser import (
     Microsoft365BrowserAdapter,
     PlaywrightBrowserDriver,
+    browser_surface_for_capability,
 )
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
 from solercia_connect.registry import ProviderRegistry
@@ -37,6 +38,7 @@ def registry_from_environment(
     *,
     connection_type: str | ConnectionType | None = None,
     account: str | None = None,
+    capability: Capability | None = None,
     token_store: OAuthTokenStore | None = None,
     environ: Mapping[str, str] | None = None,
     include_browser: bool = True,
@@ -166,9 +168,15 @@ def registry_from_environment(
             )
         )
 
+    # Where a capability's records live is not always where the capability belongs. Transcripts
+    # belong to Teams and are stored in the drive, so the session to open — and the profile that
+    # proves it was opened — are the drive's, not the Teams client's.
+    browser_type = (
+        browser_surface_for_capability(capability) if capability is not None else None
+    ) or parsed_type
     browser_profile = (
-        profiles.get(parsed_type, normalized_account)
-        if parsed_type in MICROSOFT_TARGETS and normalized_account is not None
+        profiles.get(browser_type, normalized_account)
+        if browser_type in MICROSOFT_TARGETS and normalized_account is not None
         else None
     )
     if (
@@ -187,7 +195,7 @@ def registry_from_environment(
         registry.register(
             browser_adapter_from_environment(
                 account=normalized_account,
-                connection_type=parsed_type,
+                connection_type=browser_type,
                 environ=values,
             )
         )
