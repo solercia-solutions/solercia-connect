@@ -16,6 +16,7 @@ from typing import Any
 from solercia_connect.domain import (
     DriveFile,
     EmailAddress,
+    MailAttachment,
     MailMessage,
     Provenance,
     ProviderFamily,
@@ -117,6 +118,27 @@ def normalize_mail_message(
         conversation if isinstance(conversation, str) and conversation.strip() else None,
         bool(field(item, "hasAttachments", "HasAttachments")),
         provenance,
+    )
+
+
+def normalize_mail_attachment(item: Mapping[str, Any]) -> MailAttachment | None:
+    """Normalize one attachment; unsupported kinds without a name are skipped, not invented."""
+    identifier = field(item, "id", "Id")
+    name = field(item, "name", "Name")
+    if not isinstance(identifier, str) or not identifier.strip():
+        return None
+    if not isinstance(name, str) or not name.strip():
+        return None
+    size = field(item, "size", "Size")
+    content_type = field(item, "contentType", "ContentType")
+    content = field(item, "contentBytes", "ContentBytes")
+    return MailAttachment(
+        identifier,
+        name,
+        content_type if isinstance(content_type, str) and content_type.strip() else None,
+        int(size) if isinstance(size, int) else None,
+        bool(field(item, "isInline", "IsInline")),
+        content if isinstance(content, str) and content else None,
     )
 
 

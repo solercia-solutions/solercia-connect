@@ -34,6 +34,7 @@ from solercia_connect.providers._microsoft import (
     field,
     microsoft_provenance,
     normalize_drive_item,
+    normalize_mail_attachment,
     normalize_mail_message,
 )
 from solercia_connect.providers._shared import unique_canonical_account_identity
@@ -428,7 +429,44 @@ class PlaywrightBrowserDriver:
             url = next_link if isinstance(next_link, str) else None
             params = None
 
+        if query.include_attachments:
+            messages = [
+                self._message_with_attachments(message, query, timeout_ms=timeout_ms)
+                for message in messages
+            ]
         return tuple(messages)
+
+    def _message_with_attachments(
+        self,
+        message: MailMessage,
+        query: MailQuery,
+        *,
+        timeout_ms: int,
+    ) -> MailMessage:
+        """Attach the message's own files, skipping any that exceed the caller's byte budget."""
+        if not message.has_attachments:
+            return message
+        url = f"{ENDPOINTS.outlook_messages}/{quote(message.id, safe='')}/attachments"
+        # ContentBytes belongs to a subtype and cannot be projected: asking for it in $select is
+        # rejected outright, and any $select silently drops it. The collection is requested whole.
+        payload = self._authorized_outlook_get(url, params=None, timeout_ms=timeout_ms)
+        raw = payload.get("value")
+        if not isinstance(raw, list):
+            return message
+        attachments = []
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            attachment = normalize_mail_attachment(item)
+            if attachment is None:
+                continue
+            if (
+                attachment.size_bytes is not None
+                and attachment.size_bytes > query.max_attachment_bytes
+            ):
+                attachment = replace(attachment, content_base64=None)
+            attachments.append(attachment)
+        return replace(message, attachments=tuple(attachments))
 
     def observed_session_authorization(self) -> bool:
         """Report whether the session has already issued an authorized provider call.

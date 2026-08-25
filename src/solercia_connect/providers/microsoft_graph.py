@@ -35,6 +35,8 @@ from solercia_connect.ports import HTTPTransport, ProviderDescriptor
 from solercia_connect.providers._microsoft import (
     microsoft_provenance,
     normalize_drive_item,
+    normalize_mail_attachment,
+    normalize_mail_message,
 )
 from solercia_connect.providers._shared import (
     as_string,
@@ -152,7 +154,39 @@ class MicrosoftGraphAdapter:
         items = self._paged_values(
             f"{self._base_url}/me/mailFolders/sentitems/messages", params, query.limit
         )
-        return tuple(self._normalize_message(item, account_id) for item in items)
+        messages = [self._normalize_message(item, account_id) for item in items]
+        if query.include_attachments:
+            messages = [self._message_with_attachments(message, query) for message in messages]
+        return tuple(messages)
+
+    def _message_with_attachments(self, message: MailMessage, query: MailQuery) -> MailMessage:
+        """Attach the message's own files, dropping content that exceeds the byte budget."""
+        if not message.has_attachments:
+            return message
+        payload = request_json(
+            self._transport,
+            "GET",
+            f"{self._base_url}/me/messages/{quote(message.id, safe='')}/attachments",
+            headers=self._headers(),
+            # contentBytes belongs to a subtype, so any projection drops the very content the
+            # caller asked for. The collection is requested whole.
+            params=None,
+        )
+        data = require_mapping(payload, "microsoft.attachments")
+        attachments = []
+        for raw in require_list(data.get("value"), "microsoft.attachment.value"):
+            if not isinstance(raw, dict):
+                continue
+            attachment = normalize_mail_attachment(raw)
+            if attachment is None:
+                continue
+            if (
+                attachment.size_bytes is not None
+                and attachment.size_bytes > query.max_attachment_bytes
+            ):
+                attachment = replace(attachment, content_base64=None)
+            attachments.append(attachment)
+        return replace(message, attachments=tuple(attachments))
 
     def list_files(self, query: FileQuery, *, with_content: bool = False) -> tuple[DriveFile, ...]:
         """List, search or fetch drive items from OneDrive or a SharePoint document library."""
@@ -428,27 +462,17 @@ class MicrosoftGraphAdapter:
         return items
 
     def _normalize_message(self, item: dict[str, Any], account_id: str) -> MailMessage:
+        """Normalize through the shared Microsoft layer, exactly like the browser route."""
         source_id = require_string(item.get("id"), "message.id")
-        body = require_mapping(item.get("body") or {}, "message.body")
-        return MailMessage(
-            source_id,
-            str(item.get("subject") or ""),
-            parse_datetime(item.get("sentDateTime"), "message.sentDateTime"),
-            _graph_address(item.get("from") or item.get("sender")),
-            _graph_addresses(item.get("toRecipients") or []),
-            _graph_addresses(item.get("ccRecipients") or []),
-            str(body.get("content") or ""),
-            str(body.get("contentType") or "unknown").lower(),
-            as_string(item.get("conversationId")),
-            bool(item.get("hasAttachments")),
-            Provenance(
-                self.descriptor.provider_id,
-                self.descriptor.family,
-                self.descriptor.route,
-                source_id,
-                self._clock(),
-                account_id,
-                "/me/mailFolders/sentitems/messages",
+        return normalize_mail_message(
+            item,
+            provenance=microsoft_provenance(
+                provider_id=self.descriptor.provider_id,
+                route=self.descriptor.route,
+                source_id=source_id,
+                fetched_at=self._clock(),
+                account_id=account_id,
+                endpoint="/me/mailFolders/sentitems/messages",
             ),
         )
 

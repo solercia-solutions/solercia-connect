@@ -278,7 +278,23 @@ def _query(
     if capability in {Capability.FILES_SEARCH, Capability.FILES_GET}:
         window = _window(payload.get("start"), payload.get("end"), optional=True)
     if capability is Capability.MAIL_SENT_LIST:
-        return MailQuery(_required_window(window), account, min(limit, 100))
+        include_attachments = payload.get("include_attachments", False)
+        if not isinstance(include_attachments, bool):
+            raise ValueError("include_attachments must be a boolean")
+        max_attachment_bytes = payload.get("max_attachment_bytes", 10_485_760)
+        if (
+            isinstance(max_attachment_bytes, bool)
+            or not isinstance(max_attachment_bytes, int)
+            or max_attachment_bytes <= 0
+        ):
+            raise ValueError("max_attachment_bytes must be a positive integer")
+        return MailQuery(
+            _required_window(window),
+            account,
+            min(limit, 100),
+            include_attachments,
+            max_attachment_bytes,
+        )
     if capability is Capability.CALENDAR_EVENTS_LIST:
         calendar_id = str(payload.get("calendar_id") or "primary")
         return CalendarQuery(

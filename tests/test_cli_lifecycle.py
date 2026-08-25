@@ -247,6 +247,8 @@ def test_run_command_maps_targets_flags_and_input_errors(monkeypatch: pytest.Mon
             "item_id": None,
             "site": None,
             "max_content_bytes": 10_485_760,
+            "include_attachments": False,
+            "max_attachment_bytes": 10_485_760,
             "limit": 50,
             "allow_browser_fallback": True,
         }

@@ -206,6 +206,14 @@ def run_capability(
         str | None,
         typer.Option("--site", help="SharePoint site ID or host:/sites/name; omit for OneDrive"),
     ] = None,
+    with_attachments: Annotated[
+        bool,
+        typer.Option("--with-attachments", help="Include message attachments with their content"),
+    ] = False,
+    max_attachment_bytes: Annotated[
+        int,
+        typer.Option("--max-attachment-bytes", min=1, help="Drop attachment content above this"),
+    ] = 10_485_760,
     with_content: Annotated[
         bool | None,
         typer.Option("--with-content/--without-content", help="Include file content, base64"),
@@ -251,6 +259,8 @@ def run_capability(
             "item_id": item_id,
             "site": site,
             "max_content_bytes": max_content_bytes,
+            "include_attachments": with_attachments,
+            "max_attachment_bytes": max_attachment_bytes,
             "limit": limit,
         }
         if with_content is not None:

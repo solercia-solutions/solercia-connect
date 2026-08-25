@@ -71,6 +71,8 @@ class RunRequest(BaseModel):
     item_id: str | None = None
     site: str | None = None
     include_content: bool | None = None
+    include_attachments: bool = False
+    max_attachment_bytes: int = Field(default=10_485_760, ge=1)
     max_content_bytes: int = Field(default=10_485_760, ge=1)
     limit: int = Field(default=50, ge=1, le=1000)
     allow_browser_fallback: bool = False
@@ -133,6 +135,8 @@ class RunRequest(BaseModel):
             "item_id": self.item_id,
             "site": self.site,
             "max_content_bytes": self.max_content_bytes,
+            "include_attachments": self.include_attachments,
+            "max_attachment_bytes": self.max_attachment_bytes,
             "limit": self.limit,
             "allow_browser_fallback": self.allow_browser_fallback,
             **({} if self.include_content is None else {"include_content": self.include_content}),

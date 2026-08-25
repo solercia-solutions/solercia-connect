@@ -103,10 +103,14 @@ class MailQuery:
     window: DateWindow
     account_id: str | None = None
     limit: int = 50
+    include_attachments: bool = False
+    max_attachment_bytes: int = 10_485_760
 
     def __post_init__(self) -> None:
         if not 1 <= self.limit <= 100:
             raise ValueError("MailQuery limit must be between 1 and 100")
+        if self.max_attachment_bytes <= 0:
+            raise ValueError("MailQuery max_attachment_bytes must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +214,26 @@ class Provenance:
 
 
 @dataclass(frozen=True, slots=True)
+class MailAttachment:
+    """One file carried by a message, with content present only when it was requested."""
+
+    id: str
+    name: str
+    content_type: str | None
+    size_bytes: int | None
+    is_inline: bool
+    content_base64: str | None
+
+    def __post_init__(self) -> None:
+        if not self.id.strip():
+            raise ValueError("MailAttachment id cannot be empty")
+        if not self.name.strip():
+            raise ValueError("MailAttachment name cannot be empty")
+        if self.size_bytes is not None and self.size_bytes < 0:
+            raise ValueError("MailAttachment size_bytes cannot be negative")
+
+
+@dataclass(frozen=True, slots=True)
 class MailMessage:
     id: str
     subject: str
@@ -222,6 +246,7 @@ class MailMessage:
     conversation_id: str | None
     has_attachments: bool
     provenance: Provenance
+    attachments: tuple[MailAttachment, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
