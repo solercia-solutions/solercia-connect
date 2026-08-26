@@ -192,3 +192,30 @@ def test_doctor_reports_loopback_api_security_and_profile_state(tmp_path: Path) 
     assert report["service"]["host"] == "127.0.0.1"
     assert report["service"]["api_key_configured"] is True
     assert "local-test-key" not in str(report)
+
+
+def test_doctor_advertises_the_inbox_capability_for_both_outlook_routes(
+    tmp_path: Path,
+) -> None:
+    settings = load_settings(
+        environ={
+            "XDG_CONFIG_HOME": str(tmp_path / "config"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+            "SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID": "client-id",
+        }
+    )
+    service = DoctorService(
+        settings,
+        ProfileStore.from_settings(settings),
+        module_available=lambda name: True,
+        keyring_probe=lambda: (True, "test-backend"),
+        browser_probe=lambda: (False, "not installed"),
+    )
+
+    payload = service.inspect("outlook", "user@example.com").to_dict()
+
+    assert payload["capabilities"] == [
+        "mail.sent.list",
+        "mail.inbox.list",
+        "calendar.events.list",
+    ]

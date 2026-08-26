@@ -435,6 +435,35 @@ def test_inbox_mail_reports_zero_records_without_widening_the_window_when_the_wi
     )
 
 
+def test_inbox_mail_pagination_stops_at_the_browsers_structural_ceiling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pages = driver_module._OUTLOOK_MAX_PAGES
+    page_size = driver_module._OUTLOOK_PAGE_SIZE
+    links = [f"{_INBOX}?%24skip={page_size * (index + 1)}" for index in range(pages)]
+    responses = [
+        _FakeResponse(
+            200,
+            {
+                "value": [_inbox_message(1, Id=f"p{page}-{i}") for i in range(page_size)],
+                "@odata.nextLink": links[page],
+            },
+        )
+        for page in range(pages)
+    ]
+    driver, page, request = _driver(tmp_path, monkeypatch, *responses)
+    page.emit_request("https://outlook.office.com/owa/first", f"Bearer {_TOKEN}")
+
+    records = _read_inbox(driver, limit=1000)
+    driver.close()
+
+    assert len(records) == pages * page_size
+    assert len(request.calls) == pages
+    assert [call["url"] for call in request.calls] == [_INBOX, *links[:-1]]
+    assert request.calls[0]["params"]["$top"] == str(page_size)
+
+
 @pytest.mark.parametrize("status", [401, 403])
 def test_rejected_authorization_is_typed_as_identity_unavailable(
     status: int,
