@@ -8,7 +8,11 @@ import pytest
 from solercia_connect.config import ConnectionType
 from solercia_connect.domain import Capability, ConnectorRequest, DateWindow, MailQuery, ReasonCode
 from solercia_connect.errors import ConnectorFailure
-from solercia_connect.providers.m365_browser import Microsoft365BrowserAdapter
+from solercia_connect.providers.m365_browser import (
+    Microsoft365BrowserAdapter,
+    browser_extraction_report,
+    browser_surface_for_capability,
+)
 from solercia_connect.providers.m365_browser.driver import (
     BrowserSnapshot,
     PlaywrightBrowserDriver,
@@ -221,6 +225,18 @@ def authenticated_shell_without_identity(*, url: str = ENDPOINTS.teams_home) -> 
         False,
         True,
     )
+
+
+def test_browser_extraction_report_declares_inbox_for_outlook() -> None:
+    report = browser_extraction_report(ConnectionType.OUTLOOK)
+
+    assert report["extraction_status"] == "available"
+    assert report["capabilities"] == [
+        "mail.sent.list",
+        "mail.inbox.list",
+        "calendar.events.list",
+    ]
+    assert browser_surface_for_capability(Capability.MAIL_INBOX_LIST) is ConnectionType.OUTLOOK
 
 
 def test_outlook_navigates_outlook_endpoint_not_teams(tmp_path: Path) -> None:

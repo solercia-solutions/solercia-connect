@@ -20,6 +20,7 @@ from solercia_connect.serialization import to_json
 
 _TOKEN = "opaque-browser-bearer-that-must-never-escape"
 _SENT = ENDPOINTS.outlook_sent_messages
+_INBOX = ENDPOINTS.outlook_inbox_messages
 _WINDOW = DateWindow(datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 9, 1, tzinfo=UTC))
 
 
@@ -34,6 +35,25 @@ def _message(index: int, **overrides: Any) -> dict[str, Any]:
         "Body": {"ContentType": "HTML", "Content": f"<p>cuerpo {index}</p>"},
         "ConversationId": f"conv-{index}",
         "HasAttachments": index % 2 == 0,
+        "InternetMessageId": f"<msg-{index}@contoso.com>",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _inbox_message(index: int, **overrides: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "Id": f"AAMk{index}",
+        "Subject": f"Solicitud {index}",
+        "SentDateTime": f"2026-08-{index:02d}T14:20:00Z",
+        "ReceivedDateTime": f"2026-08-{index:02d}T14:23:11Z",
+        "From": {"EmailAddress": {"Name": "Camilo", "Address": "USER@Example.com"}},
+        "ToRecipients": [{"EmailAddress": {"Name": "Mesa", "Address": "mesa@example.com"}}],
+        "CcRecipients": [{"EmailAddress": {"Address": "jefe@example.com"}}],
+        "Body": {"ContentType": "HTML", "Content": f"<p>cuerpo {index}</p>"},
+        "ConversationId": f"conv-{index}",
+        "HasAttachments": index % 2 == 0,
+        "InternetMessageId": f"<msg-{index}@contoso.com>",
     }
     payload.update(overrides)
     return payload
@@ -171,6 +191,15 @@ def _read(driver: PlaywrightBrowserDriver, limit: int = 50) -> tuple[Any, ...]:
     )
 
 
+def _read_inbox(driver: PlaywrightBrowserDriver, limit: int = 50) -> tuple[Any, ...]:
+    return driver.read_records(
+        Capability.MAIL_INBOX_LIST,
+        MailQuery(_WINDOW, limit=limit),
+        SELECTORS,
+        timeout_ms=9_000,
+    )
+
+
 def test_sent_mail_is_normalized_from_the_documented_rest_collection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -228,7 +257,27 @@ def test_sent_mail_query_is_end_exclusive_and_asks_only_for_needed_fields(
         "Body",
         "ConversationId",
         "HasAttachments",
+        "InternetMessageId",
     }
+
+
+def test_sent_mail_record_has_no_received_instant_over_the_browser_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, page, _ = _driver(
+        tmp_path,
+        monkeypatch,
+        _FakeResponse(200, {"value": [_message(6)]}),
+    )
+    page.emit_request("https://outlook.office.com/owa/first", f"Bearer {_TOKEN}")
+
+    records = _read(driver)
+    driver.close()
+
+    assert records[0].folder == "sent"
+    assert records[0].received_at is None
+    assert records[0].internet_message_id == "<msg-6@contoso.com>"
 
 
 def test_sent_mail_follows_the_provider_next_link(
@@ -268,6 +317,122 @@ def test_sent_mail_stops_at_the_requested_limit(
     driver.close()
 
     assert [record.id for record in records] == ["AAMk1", "AAMk2"]
+
+
+def test_inbox_mail_is_normalized_from_the_documented_rest_collection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, page, request = _driver(
+        tmp_path,
+        monkeypatch,
+        _FakeResponse(200, {"value": [_inbox_message(4), _inbox_message(5)]}),
+    )
+    page.emit_request("https://outlook.office.com/owa/first", f"Bearer {_TOKEN}")
+
+    records = _read_inbox(driver)
+    driver.close()
+
+    assert len(records) == 2
+    first = records[0]
+    assert first.id == "AAMk4"
+    assert first.subject == "Solicitud 4"
+    assert first.folder == "inbox"
+    assert first.received_at == datetime(2026, 8, 4, 14, 23, 11, tzinfo=UTC)
+    assert first.internet_message_id == "<msg-4@contoso.com>"
+    assert records[1].folder == "inbox"
+    assert request.calls[0]["url"] == _INBOX
+    assert request.calls[0]["authorized"] is True
+
+
+def test_inbox_mail_query_is_end_exclusive_and_asks_only_for_needed_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, page, request = _driver(tmp_path, monkeypatch, _FakeResponse(200, {"value": []}))
+    page.emit_request("https://outlook.office.com/owa/first", f"Bearer {_TOKEN}")
+
+    assert _read_inbox(driver) == ()
+    driver.close()
+
+    params = request.calls[0]["params"]
+    assert params is not None
+    assert params["$filter"] == (
+        "ReceivedDateTime ge 2026-08-01T00:00:00Z and ReceivedDateTime lt 2026-09-01T00:00:00Z"
+    )
+    assert params["$orderby"] == "ReceivedDateTime asc"
+    assert set(params["$select"].split(",")) == {
+        "Id",
+        "Subject",
+        "SentDateTime",
+        "From",
+        "ToRecipients",
+        "CcRecipients",
+        "Body",
+        "ConversationId",
+        "HasAttachments",
+        "InternetMessageId",
+        "ReceivedDateTime",
+    }
+
+
+def test_inbox_mail_follows_the_provider_next_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    next_link = f"{_INBOX}?%24skip=50"
+    driver, page, request = _driver(
+        tmp_path,
+        monkeypatch,
+        _FakeResponse(200, {"value": [_inbox_message(1)], "@odata.nextLink": next_link}),
+        _FakeResponse(200, {"value": [_inbox_message(2)]}),
+    )
+    page.emit_request("https://outlook.office.com/owa/first", f"Bearer {_TOKEN}")
+
+    records = _read_inbox(driver)
+    driver.close()
+
+    assert [record.id for record in records] == ["AAMk1", "AAMk2"]
+    assert [call["url"] for call in request.calls] == [_INBOX, next_link]
+    assert request.calls[1]["params"] is None
+    assert all(call["authorized"] for call in request.calls)
+
+
+def test_inbox_mail_stops_at_the_requested_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, page, _ = _driver(
+        tmp_path,
+        monkeypatch,
+        _FakeResponse(
+            200,
+            {"value": [_inbox_message(1), _inbox_message(2), _inbox_message(3)]},
+        ),
+    )
+    page.emit_request("https://outlook.office.com/owa/first", f"Bearer {_TOKEN}")
+
+    records = _read_inbox(driver, limit=2)
+    driver.close()
+
+    assert [record.id for record in records] == ["AAMk1", "AAMk2"]
+
+
+def test_inbox_mail_reports_zero_records_without_widening_the_window_when_the_window_is_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, page, request = _driver(tmp_path, monkeypatch, _FakeResponse(200, {"value": []}))
+    page.emit_request("https://outlook.office.com/owa/first", f"Bearer {_TOKEN}")
+
+    records = _read_inbox(driver)
+    driver.close()
+
+    assert records == ()
+    assert len(request.calls) == 1
+    assert request.calls[0]["params"]["$filter"] == (
+        "ReceivedDateTime ge 2026-08-01T00:00:00Z and ReceivedDateTime lt 2026-09-01T00:00:00Z"
+    )
 
 
 @pytest.mark.parametrize("status", [401, 403])

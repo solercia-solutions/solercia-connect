@@ -37,7 +37,11 @@ _OUTLOOK_IDENTITY_PROBE_ATTEMPTS = 2
 
 # Single source of truth for what the browser route can actually extract today.
 _BROWSER_EXTRACTION_CAPABILITIES: dict[ConnectionType, tuple[Capability, ...]] = {
-    ConnectionType.OUTLOOK: (Capability.MAIL_SENT_LIST, Capability.CALENDAR_EVENTS_LIST),
+    ConnectionType.OUTLOOK: (
+        Capability.MAIL_SENT_LIST,
+        Capability.MAIL_INBOX_LIST,
+        Capability.CALENDAR_EVENTS_LIST,
+    ),
     # The Teams client itself extracts nothing over this route: it degrades under automation and
     # its transcripts are not stored there anyway.
     ConnectionType.TEAMS: (),
@@ -83,6 +87,7 @@ class Microsoft365BrowserAdapter:
         frozenset(
             {
                 Capability.MAIL_SENT_LIST,
+                Capability.MAIL_INBOX_LIST,
                 Capability.CALENDAR_EVENTS_LIST,
                 Capability.MEETING_TRANSCRIPTS_LIST,
                 Capability.MEETING_TRANSCRIPT_GET,

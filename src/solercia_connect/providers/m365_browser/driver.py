@@ -9,7 +9,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlsplit
 
 from solercia_connect.browser_profile import (
@@ -36,6 +36,7 @@ from solercia_connect.domain import (
 )
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.providers._microsoft import (
+    MailFolderName,
     field,
     microsoft_provenance,
     normalize_calendar_event,
@@ -70,9 +71,27 @@ _RECORDING_FOLDER_NAMES = ("Recordings", "Grabaciones")
 _RECORDING_SELECT = "id,name,lastModifiedDateTime,createdDateTime,parentReference,createdBy"
 _SHARED_SELECT = "id,name,lastModifiedDateTime,remoteItem,createdBy"
 _MAX_TRANSCRIPT_BYTES = 8_388_608
-_SENT_MAIL_SELECT = (
-    "Id,Subject,SentDateTime,From,ToRecipients,CcRecipients,Body,ConversationId,HasAttachments"
+_OUTLOOK_MAIL_SELECT_BASE = (
+    "Id",
+    "Subject",
+    "SentDateTime",
+    "From",
+    "ToRecipients",
+    "CcRecipients",
+    "Body",
+    "ConversationId",
+    "HasAttachments",
+    "InternetMessageId",
 )
+_SENT_MAIL_SELECT = ",".join(_OUTLOOK_MAIL_SELECT_BASE)
+_INBOX_MAIL_SELECT = ",".join((*_OUTLOOK_MAIL_SELECT_BASE, "ReceivedDateTime"))
+_OutlookTimeField = Literal["SentDateTime", "ReceivedDateTime"]
+# Single source of truth: the time field a folder is filtered/ordered by determines both its
+# `$select` projection and the `folder` value stamped on each normalized record.
+_OUTLOOK_MAIL_READS: dict[_OutlookTimeField, tuple[str, MailFolderName]] = {
+    "SentDateTime": (_SENT_MAIL_SELECT, "sent"),
+    "ReceivedDateTime": (_INBOX_MAIL_SELECT, "inbox"),
+}
 _BEARER_AUTHORIZATION = re.compile(
     r"Bearer[ \t]+([A-Z0-9._~+/-]+=*)",
     re.IGNORECASE,
@@ -409,6 +428,13 @@ class PlaywrightBrowserDriver:
         del selectors
         if capability is Capability.MAIL_SENT_LIST and isinstance(payload, MailQuery):
             return self._read_sent_mail(payload, timeout_ms=timeout_ms)
+        if capability is Capability.MAIL_INBOX_LIST and isinstance(payload, MailQuery):
+            return self._read_folder_mail(
+                payload,
+                url=ENDPOINTS.outlook_inbox_messages,
+                time_field="ReceivedDateTime",
+                timeout_ms=timeout_ms,
+            )
         if capability is Capability.CALENDAR_EVENTS_LIST and isinstance(payload, CalendarQuery):
             return self._read_calendar(payload, timeout_ms=timeout_ms)
         if capability in {Capability.FILES_SEARCH, Capability.FILES_GET} and isinstance(
@@ -440,35 +466,52 @@ class PlaywrightBrowserDriver:
         timeout_ms: int,
     ) -> tuple[MailMessage, ...]:
         """List sent mail through the documented read-only Outlook REST collection."""
+        return self._read_folder_mail(
+            query,
+            url=ENDPOINTS.outlook_sent_messages,
+            time_field="SentDateTime",
+            timeout_ms=timeout_ms,
+        )
+
+    def _read_folder_mail(
+        self,
+        query: MailQuery,
+        *,
+        url: str,
+        time_field: _OutlookTimeField,
+        timeout_ms: int,
+    ) -> tuple[MailMessage, ...]:
+        """List one Outlook mail folder through its documented read-only REST collection."""
+        select, folder = _OUTLOOK_MAIL_READS[time_field]
         messages: list[MailMessage] = []
-        url: str | None = ENDPOINTS.outlook_sent_messages
+        next_url: str | None = url
         params: Mapping[str, str] | None = {
             "$filter": (
-                f"SentDateTime ge {_outlook_timestamp(query.window.start)}"
-                f" and SentDateTime lt {_outlook_timestamp(query.window.end)}"
+                f"{time_field} ge {_outlook_timestamp(query.window.start)}"
+                f" and {time_field} lt {_outlook_timestamp(query.window.end)}"
             ),
-            "$select": _SENT_MAIL_SELECT,
-            "$orderby": "SentDateTime asc",
+            "$select": select,
+            "$orderby": f"{time_field} asc",
             "$top": str(min(_OUTLOOK_PAGE_SIZE, query.limit)),
         }
 
         for _ in range(_OUTLOOK_MAX_PAGES):
-            if url is None or len(messages) >= query.limit:
+            if next_url is None or len(messages) >= query.limit:
                 break
-            payload = self._authorized_outlook_get(url, params=params, timeout_ms=timeout_ms)
+            payload = self._authorized_outlook_get(next_url, params=params, timeout_ms=timeout_ms)
             items = payload.get("value")
             if not isinstance(items, list):
                 raise ConnectorFailure(
                     ReasonCode.BROWSER_EXTRACTION_FAILED,
-                    "Outlook sent-mail collection returned an unexpected payload shape",
+                    "Outlook mail collection returned an unexpected payload shape",
                 )
             for item in items:
                 if len(messages) >= query.limit:
                     break
                 if isinstance(item, Mapping):
-                    messages.append(_normalize_outlook_message(item))
+                    messages.append(_normalize_outlook_message(item, folder=folder))
             next_link = payload.get("@odata.nextLink")
-            url = next_link if isinstance(next_link, str) else None
+            next_url = next_link if isinstance(next_link, str) else None
             params = None
 
         if query.include_attachments:
@@ -1341,7 +1384,11 @@ def _outlook_timestamp(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _normalize_outlook_message(item: Mapping[str, object]) -> MailMessage:
+def _normalize_outlook_message(
+    item: Mapping[str, object],
+    *,
+    folder: MailFolderName,
+) -> MailMessage:
     """Normalize through the shared Microsoft layer so both routes return one record shape."""
     identifier = field(item, "id", "Id")
     source_id = identifier if isinstance(identifier, str) else ""
@@ -1355,7 +1402,7 @@ def _normalize_outlook_message(item: Mapping[str, object]) -> MailMessage:
             account_id=None,
             endpoint="outlook-rest-v2",
         ),
-        folder="sent",
+        folder=folder,
     )
 
 
