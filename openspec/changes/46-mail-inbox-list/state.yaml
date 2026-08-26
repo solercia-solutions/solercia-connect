@@ -1,0 +1,107 @@
+change: 46-mail-inbox-list
+artifact_store: hybrid
+depends_on: []
+phases:
+  proposal: done
+  spec: done
+  design: done
+  tasks: pending
+  apply: pending
+  verify: pending
+  archive: pending
+artifacts:
+  proposal: true
+  design: true
+  specs: true
+  tasks: false
+capabilities:
+  new:
+    - mail-inbox-list
+  modified:
+    - mail-record-contract
+    - mail-query-limits
+    - capability-advertisement
+target_capabilities:
+  - mail-inbox-list
+  - mail-record-contract
+  - mail-query-limits
+  - capability-advertisement
+constraints:
+  - ambas-rutas-en-el-mismo-cambio-oficial-y-navegador
+  - paridad-de-registro-entre-rutas-verificada-por-prueba
+  - campos-aditivos-con-default-despues-de-attachments
+  - sin-subida-de-version-de-esquema-solercia-connect-v1
+  - request-id-y-receipt-id-de-mail-sent-list-sin-cambio
+  - sin-scope-nuevo-mail-read-ya-cubre-la-bandeja
+  - sin-reason-code-nuevo
+  - allowlist-de-hosts-del-navegador-sin-cambio
+  - fallback-navegador-sigue-siendo-opt-in-en-cinco-capas
+  - endpoints-declarados-nunca-construidos-con-datos-del-usuario
+  - rangos-horarios-con-fin-exclusivo-vacio-permanece-vacio
+  - tdd-estricto-rojo-antes-que-verde
+  - artefactos-en-espanol-neutro-profesional-identificadores-tal-cual
+boundary:
+  - "Capacidad nueva mail.inbox.list para Outlook declarada en los siete puntos fail-closed (enum Capability, _CAPABILITY_RECORD_TYPES, TARGET_SPECS, descriptor Graph, descriptor navegador, RoutePolicy.browser_fallback_capabilities, _BROWSER_EXTRACTION_CAPABILITIES) más cuatro sitios de despacho (microsoft_graph.execute, driver.read_records, application._query, cli._query_payload)"
+  - "Lectura de bandeja en ambas rutas: Graph /me/mailFolders/inbox/messages y navegador outlook.office.com/api/v2.0/me/MailFolders/Inbox/messages"
+  - "Tres campos aditivos con default al final de MailMessage: internet_message_id, folder (inbox|sent), received_at"
+  - "internetMessageId agregado al $select de mail.sent.list en ambas rutas"
+  - "MailQuery.limit sube de 100 a 1000, con ajuste del recorte en application.py"
+  - "$orderby ascendente en bandeja en ambas rutas; el orden de mail.sent.list NO cambia"
+  - "Matriz de capacidades, README.md, docs/runbooks/outlook.md, docs/USO-CON-AGENTES.md y agents/skills/solercia-connect/SKILL.md"
+  - "Fuera de alcance: bandeja de entrada de Gmail (declarado explícitamente)"
+  - "Fuera de alcance: carpetas Archive/Drafts o carpeta arbitraria por parámetro"
+  - "Fuera de alcance: consumo del lado de Command (mapeo de Capability.mail a ambas capacidades y transporte por archivo) -> cambio 47 de Command"
+  - "Fuera de alcance: subir _OUTLOOK_PAGE_SIZE o _OUTLOOK_MAX_PAGES; 1000 es el techo estructural del navegador"
+  - "Fuera de alcance: cambiar el orden de mail.sent.list, la allowlist de hosts del navegador o cualquier ReasonCode"
+module_decision:
+  - "Eje A -> A3: la carpeta se resuelve DENTRO de cada adaptador con un helper privado parametrizado (_list_folder_mail en Graph, _read_folder_mail en el driver del navegador); ports.py documenta la segunda operación sin firmar un método nuevo. Evita duplicar el constructor de petición y preserva request_id/receipt_id de las peticiones de correo existentes"
+  - "Eje B -> B2: tres campos aditivos con default DESPUÉS de attachments (MailMessage se construye posicionalmente en _microsoft.py, google.py y tests/fakes.py); normalize_mail_message recibe folder como argumento de palabra clave porque NO se puede derivar de provenance.endpoint (el adaptador del navegador lo sobrescribe con la evidencia de identidad outlook-rest-v2-me)"
+  - "Eje C -> C2 + C3: MailQuery.limit a 1000 (alinea CalendarQuery, CLI y servicio HTTP, que ya aceptan 1000, y coincide con el techo estructural del navegador) y $orderby ascendente en bandeja para que la truncación sea determinista y reanudable estrechando la ventana"
+  - "Eje D -> D1: ambas rutas en el mismo cambio; la paridad de registros es contrato publicado en cuatro documentos y verificado por tests/test_route_contract_parity.py"
+  - "El $select de bandeja DEBE conservar sentDateTime/SentDateTime: MailMessage.sent_at es no opcional y normalize_mail_message falla cerrado con malformed_provider_data si falta"
+  - "cli._query_payload se cubre para la capacidad nueva fallando cerrado, en lugar de dejar la ruta muerta devolviendo un TicketQuery"
+facts_verified:
+  - "MailQuery.limit: default 50, rango 1..100 con ValueError fuera de rango (domain.py:105,110-111) — verificado en esta fase"
+  - "CalendarQuery.limit: rango 1..1000 (domain.py:128-129) — verificado; 1000 es el valor de alineación"
+  - "Los siete puntos de declaración existen y son independientes: domain.py:12 (enum), domain.py:448 (_CAPABILITY_RECORD_TYPES), config.py:84 (TARGET_SPECS Outlook), microsoft_graph.py:63 (descriptor Graph), m365_browser/adapter.py:85 (descriptor navegador), runtime.py:56 (RoutePolicy), m365_browser/adapter.py:40 (_BROWSER_EXTRACTION_CAPABILITIES) — verificado en esta fase"
+  - "Despacho en cuatro sitios: microsoft_graph.py:106, m365_browser/driver.py:410, application.py:282, cli.py:661 — verificado en esta fase"
+  - "CAPABILITY_MATRIX tiene tres filas que referencian mail.sent.list (matrix.py:19, :54, :89) — verificado en esta fase"
+  - "openspec/specs/ NO existe en este repositorio: no hay línea base contra la cual generar deltas; cada capacidad modificada se especifica como spec propio dentro de la carpeta del cambio"
+  - "to_primitive recorre fields(dataclass) (serialization.py:19-20): todo campo nuevo aparece automáticamente como clave nueva del JSON, sin necesidad de subir la versión del esquema"
+  - "receipt_fingerprint mezcla sólo request + steps (domain.py:487-504): no depende del orden ni del contenido de los registros"
+  - "service.RunRequest.capability es str libre (service.py:62): no requiere cambio de esquema HTTP"
+  - "outlook.office.com ya está en la allowlist de hosts del navegador (driver.py:51-55): la bandeja vive en ese mismo origen"
+  - "Techo estructural del navegador: 20 páginas x $top 50 = 1000 (driver.py:63-64); techo efectivo actual en ambas rutas: 100 mensajes por invocación"
+  - "Línea base de pruebas: 402 pruebas en verde (contexto sdd-init, Engram #3691)"
+  - "Rama feat/46-mail-inbox-list, HEAD 71aea46, árbol limpio"
+dependency_gating:
+  - "Este cambio NO está bloqueado por ninguna dependencia: no hay depends_on"
+  - "El cambio 47 de Solercia Command (mapeo de Capability.mail a ambas capacidades y transporte por archivo) depende de éste, no al revés; se declara como dependencia de integración aguas abajo"
+  - "La validación viva de InternetMessageId en Outlook REST v2 es opt-in (marcador live) y NO bloquea apply ni verify: si el proveedor lo rechaza, internet_message_id queda None sin romper el registro"
+open_questions:
+  - "Comportamiento al alcanzar el tope de 1000: reportar el corte de forma observable en el sobre o mantenerlo silencioso como hoy (supuesto: mantener el contrato actual y documentar que el orden ascendente hace la truncación reanudable estrechando la ventana)"
+  - "Validación viva de la rama Graph: la cuenta cccalderon@sdmujer.gov.co sólo tiene ruta navegador (sin SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID) (supuesto: cobertura hermética completa y validación viva de Graph diferida o con cuenta dedicada)"
+  - "Nombre canónico de las tres capacidades modificadas al no existir openspec/specs/ (supuesto: mail-record-contract, mail-query-limits, capability-advertisement)"
+last_updated: 2026-08-26
+spec_counts:
+  mail-inbox-list:
+    requirements_added: 8
+    scenarios: 11
+  mail-record-contract:
+    requirements_added: 6
+    scenarios: 7
+  mail-query-limits:
+    requirements_added: 5
+    scenarios: 6
+  capability-advertisement:
+    requirements_added: 6
+    scenarios: 7
+spec_notes:
+  - "Capacidad nueva: mail-inbox-list (spec nuevo). Requisitos a especificar: enrutamiento oficial-primero con fallback navegador explícito; ventana horaria con fin exclusivo; orden ascendente por instante de recepción; paridad de registro entre rutas; atestación de identidad canónica previa a la lectura; validación por registro en el runtime; vacío permanece vacío; comportamiento al alcanzar el tope de limit"
+  - "Capacidad modificada mail-record-contract: MailMessage gana internet_message_id, folder (inbox|sent) y received_at, todos opcionales con default y DESPUÉS de attachments; internetMessageId entra al $select de mail.sent.list en ambas rutas; received_at es None en enviados y en Gmail; adición pura sin subida de versión de esquema"
+  - "Capacidad modificada mail-query-limits: MailQuery.limit pasa de 1..100 a 1..1000, aplicable también a mail.sent.list; 1001 sigue siendo rechazado; el recorte de application.py se ajusta en consecuencia"
+  - "Capacidad modificada capability-advertisement: doctor, providers, CAPABILITY_MATRIX, README.md, docs/runbooks/outlook.md, docs/USO-CON-AGENTES.md y agents/skills/solercia-connect/SKILL.md deben anunciar mail.inbox.list por ambas rutas"
+  - "Escenarios en formato Dado/Cuando/Entonces con palabras clave RFC 2119 en español (DEBE, DEBERÍA, PUEDE), según openspec/config.yaml rules.specs"
+  - "Escenario obligatorio: el $select de bandeja DEBE incluir el instante de envío; si se omite, cada registro falla cerrado con malformed_provider_data"
+  - "Escenario obligatorio: una petición mail.sent.list equivalente DEBE conservar el mismo request_id/receipt_id que antes del cambio"
+  - "Sin delta a los puertos: ports.py documenta la segunda operación de correo pero no cambia ninguna firma pública"
