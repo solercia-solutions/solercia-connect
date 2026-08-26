@@ -151,17 +151,20 @@ CLI/Servicio ──► application._query ──► ConnectorRequest(MAIL_INBOX_
 class InboxMailProviderPort(Protocol):
     """Read the mailbox's received collection. Segregated from MailProviderPort because a
     provider can serve sent mail without serving inbox mail."""
+
     def list_inbox_mail(self, query: MailQuery) -> tuple[MailMessage, ...]: ...
+
 
 # providers/_microsoft.py
 MailFolderName = Literal["inbox", "sent"]
+
 
 def normalize_mail_message(
     item: Mapping[str, Any], *, provenance: Provenance, folder: MailFolderName
 ) -> MailMessage:
     ...
     return MailMessage(
-        ...,                                   # posicionales existentes, sin reordenar
+        ...,  # posicionales existentes, sin reordenar
         provenance,
         internet_message_id=(
             value.strip()
@@ -175,12 +178,22 @@ def normalize_mail_message(
         ),
     )
 
+
 # providers/microsoft_graph.py
 _GRAPH_MAIL_SELECT_BASE = (
-    "id", "subject", "sentDateTime", "from", "sender", "toRecipients", "ccRecipients",
-    "body", "conversationId", "hasAttachments", "internetMessageId",
+    "id",
+    "subject",
+    "sentDateTime",
+    "from",
+    "sender",
+    "toRecipients",
+    "ccRecipients",
+    "body",
+    "conversationId",
+    "hasAttachments",
+    "internetMessageId",
 )
-_GRAPH_SENT_SELECT = ",".join(_GRAPH_MAIL_SELECT_BASE)                       # 11 nombres
+_GRAPH_SENT_SELECT = ",".join(_GRAPH_MAIL_SELECT_BASE)  # 11 nombres
 _GRAPH_INBOX_SELECT = ",".join((*_GRAPH_MAIL_SELECT_BASE, "receivedDateTime"))  # 12 nombres
 
 _GraphMailFolder = Literal["inbox", "sentitems"]
@@ -191,15 +204,16 @@ _GRAPH_MAIL_FOLDERS: dict[_GraphMailFolder, tuple[str, MailFolderName]] = {
     "inbox": (_GRAPH_INBOX_SELECT, "inbox"),
 }
 
+
 def list_sent_mail(self, query: MailQuery) -> tuple[MailMessage, ...]:
     return self._list_folder_mail(
         query, folder="sentitems", time_field="sentDateTime", order="desc"
     )
 
+
 def list_inbox_mail(self, query: MailQuery) -> tuple[MailMessage, ...]:
-    return self._list_folder_mail(
-        query, folder="inbox", time_field="receivedDateTime", order="asc"
-    )
+    return self._list_folder_mail(query, folder="inbox", time_field="receivedDateTime", order="asc")
+
 
 def _list_folder_mail(
     self,
@@ -209,10 +223,10 @@ def _list_folder_mail(
     time_field: _GraphMailTimeField,
     order: Literal["asc", "desc"],
 ) -> tuple[MailMessage, ...]:
-    account_id = self._identity()          # identidad canónica ANTES de cualquier lectura
-    ...                                    # frontera de cuenta, idéntica a hoy
+    account_id = self._identity()  # identidad canónica ANTES de cualquier lectura
+    ...  # frontera de cuenta, idéntica a hoy
     select, record_folder = _GRAPH_MAIL_FOLDERS[folder]
-    endpoint = f"/me/mailFolders/{folder}/messages"   # `folder` es Literal, nunca dato de usuario
+    endpoint = f"/me/mailFolders/{folder}/messages"  # `folder` es Literal, nunca dato de usuario
     params: dict[str, Any] = {
         "$filter": (
             f"{time_field} ge {_graph_datetime(query.window.start)} "
@@ -225,15 +239,24 @@ def _list_folder_mail(
     items = self._paged_values(f"{self._base_url}{endpoint}", params, query.limit)
     ...
 
+
 # providers/m365_browser/selectors.py
 outlook_inbox_messages: str = "https://outlook.office.com/api/v2.0/me/MailFolders/Inbox/messages"
 
 # providers/m365_browser/driver.py
 _OUTLOOK_MAIL_SELECT_BASE = (
-    "Id", "Subject", "SentDateTime", "From", "ToRecipients", "CcRecipients",
-    "Body", "ConversationId", "HasAttachments", "InternetMessageId",
+    "Id",
+    "Subject",
+    "SentDateTime",
+    "From",
+    "ToRecipients",
+    "CcRecipients",
+    "Body",
+    "ConversationId",
+    "HasAttachments",
+    "InternetMessageId",
 )
-_SENT_MAIL_SELECT = ",".join(_OUTLOOK_MAIL_SELECT_BASE)                        # 10 nombres
+_SENT_MAIL_SELECT = ",".join(_OUTLOOK_MAIL_SELECT_BASE)  # 10 nombres
 _INBOX_MAIL_SELECT = ",".join((*_OUTLOOK_MAIL_SELECT_BASE, "ReceivedDateTime"))  # 11 nombres
 
 _OutlookTimeField = Literal["SentDateTime", "ReceivedDateTime"]
@@ -242,6 +265,7 @@ _OUTLOOK_MAIL_READS: dict[_OutlookTimeField, tuple[str, MailFolderName]] = {
     "SentDateTime": (_SENT_MAIL_SELECT, "sent"),
     "ReceivedDateTime": (_INBOX_MAIL_SELECT, "inbox"),
 }
+
 
 def _read_folder_mail(
     self, query: MailQuery, *, url: str, time_field: _OutlookTimeField, timeout_ms: int
@@ -253,10 +277,10 @@ def _read_folder_mail(
             f" and {time_field} lt {_outlook_timestamp(query.window.end)}"
         ),
         "$select": select,
-        "$orderby": f"{time_field} asc",     # enviados ya era asc: el orden no cambia
+        "$orderby": f"{time_field} asc",  # enviados ya era asc: el orden no cambia
         "$top": str(min(_OUTLOOK_PAGE_SIZE, query.limit)),
     }
-    ...                                       # paginación, allowlist y cortes idénticos a hoy
+    ...  # paginación, allowlist y cortes idénticos a hoy
 ```
 
 `cli._query_payload` cierra la cola: rama explícita `Capability.TICKETS_SEARCH → TicketQuery` y
