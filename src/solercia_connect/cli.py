@@ -658,8 +658,8 @@ def _query_payload(
         window = None
     else:
         window = _window(start, end)
-    if capability is Capability.MAIL_SENT_LIST:
-        return MailQuery(_require_window(window), account, min(limit, 100))
+    if capability in {Capability.MAIL_SENT_LIST, Capability.MAIL_INBOX_LIST}:
+        return MailQuery(_require_window(window), account, min(limit, 1000))
     if capability is Capability.CALENDAR_EVENTS_LIST:
         return CalendarQuery(
             _require_window(window),
@@ -700,7 +700,12 @@ def _query_payload(
         )
     if capability is Capability.EXTERNAL_ISSUES_SEARCH:
         return IssueQuery(_require_window(window), assignee, jql, min(limit, 100))
-    return TicketQuery(_require_window(window), min(limit, 1000))
+    if capability is Capability.TICKETS_SEARCH:
+        return TicketQuery(_require_window(window), min(limit, 1000))
+    # Every capability the enum can hold has an explicit branch above. Falling through here means
+    # a new capability was declared without teaching this legacy test helper its query shape, so
+    # it fails closed instead of silently handing back a query built for a different capability.
+    raise _InputError(f"Unsupported capability: {capability}")
 
 
 def _optional_window(start: str | None, end: str | None) -> DateWindow | None:

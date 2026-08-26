@@ -54,6 +54,7 @@ browser session rather than official OAuth.
 | Capability | Official (Graph/Google) | Browser (supervised session) |
 | --- | --- | --- |
 | `mail.sent.list` | yes | yes |
+| `mail.inbox.list` (Outlook only) | yes | yes |
 | `calendar.events.list` | yes | yes |
 | `files.search` / `files.get` | yes | yes |
 | `meeting.transcripts.list` / `meeting.transcript.get` | yes, needs tenant scopes | yes |

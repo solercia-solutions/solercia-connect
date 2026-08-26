@@ -21,7 +21,7 @@ from solercia_connect.domain import (
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.providers.m365_browser import Microsoft365BrowserAdapter
 from solercia_connect.registry import ProviderRegistry
-from solercia_connect.runtime import ConnectorRuntime
+from solercia_connect.runtime import ConnectorRuntime, RoutePolicy
 from tests.fakes import (
     NOW,
     FakeAdapter,
@@ -41,6 +41,27 @@ def request() -> ConnectorRequest:
         Capability.MAIL_SENT_LIST,
         MailQuery(window, account_id="user@example.com"),
     )
+
+
+def test_inbox_mail_is_allowlisted_for_the_microsoft_browser_fallback() -> None:
+    window = DateWindow(
+        datetime(2026, 8, 1, tzinfo=UTC),
+        datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    inbox_request = ConnectorRequest.create(
+        "microsoft.graph",
+        Capability.MAIL_INBOX_LIST,
+        MailQuery(window, account_id="user@example.com"),
+    )
+    failure = ConnectorFailure(
+        ReasonCode.OFFICIAL_CAPABILITY_UNAVAILABLE,
+        "Official adapter does not expose the requested capability",
+    )
+    policy = RoutePolicy()
+
+    assert Capability.MAIL_INBOX_LIST in policy.browser_fallback_capabilities
+    assert policy.allows_browser(inbox_request, failure, ProviderFamily.MICROSOFT) is True
+    assert policy.allows_browser(inbox_request, failure, ProviderFamily.GOOGLE) is False
 
 
 def test_official_success_never_calls_browser(tmp_path: Path) -> None:

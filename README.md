@@ -40,7 +40,8 @@ closes and the synchronous command returns to the console; no daemon or backgrou
 
 ```json
 {"status": "connected_browser", "route": "browser",
- "data": {"extraction_status": "available", "capabilities": ["mail.sent.list"]}}
+ "data": {"extraction_status": "available",
+          "capabilities": ["mail.sent.list", "mail.inbox.list"]}}
 ```
 
 Once connected, sent mail is read over the same supervised session through the documented
@@ -92,6 +93,7 @@ The root wrapper is only a convenience alias and contains no provider logic:
 | Capability | Official (Graph) | Browser (supervised session) |
 |---|---|---|
 | `mail.sent.list` (with attachments) | yes | yes |
+| `mail.inbox.list` (Outlook only) | yes | yes |
 | `calendar.events.list` | yes | yes |
 | `files.search` / `files.get` | yes | yes |
 | `meeting.transcripts.*` | yes | yes — different selector, see below |

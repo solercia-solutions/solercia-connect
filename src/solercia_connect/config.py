@@ -81,7 +81,7 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
     TargetSpec(
         ConnectionType.OUTLOOK,
         "microsoft.graph",
-        ("mail.sent.list", "calendar.events.list"),
+        ("mail.sent.list", "mail.inbox.list", "calendar.events.list"),
         ("SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID",),
         ("openid", "profile", "User.Read", "Mail.Read", "Calendars.Read"),
         ("Microsoft work or school account", "Tenant consent for delegated read scopes"),

@@ -69,8 +69,10 @@ solercia-connect run \
   --output correos.json
 ```
 
-Cambia `--capability` por `calendar.events.list` o `meeting.transcript.get`
-según lo que necesites.
+Cambia `--capability` por `mail.inbox.list`, `calendar.events.list` o
+`meeting.transcript.get` según lo que necesites. Con `mail.inbox.list`, si el
+número de registros devueltos es igual a `--limit` (hasta 1000), la lectura
+pudo quedar truncada: estrecha la ventana y vuelve a leer.
 
 ## 5. Instalar el skill para tu agente
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from typer.testing import CliRunner
@@ -12,17 +12,35 @@ import solercia_connect.cli as cli
 from solercia_connect.config import ConnectionProfile, ConnectionType, ProfileStore, load_settings
 from solercia_connect.doctor import DoctorCheck, DoctorReport
 from solercia_connect.domain import (
+    CalendarQuery,
     Capability,
+    FileQuery,
     HealthReport,
     HealthState,
+    IssueQuery,
+    MailQuery,
     ProviderFamily,
+    QueryPayload,
     ReasonCode,
     RouteKind,
+    TicketQuery,
     TranscriptQuery,
 )
 from solercia_connect.envelope import ResultEnvelope
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.ports import ProviderDescriptor
+
+_EXPECTED_QUERY_TYPES: dict[Capability, type[QueryPayload]] = {
+    Capability.MAIL_SENT_LIST: MailQuery,
+    Capability.MAIL_INBOX_LIST: MailQuery,
+    Capability.CALENDAR_EVENTS_LIST: CalendarQuery,
+    Capability.MEETING_TRANSCRIPTS_LIST: TranscriptQuery,
+    Capability.MEETING_TRANSCRIPT_GET: TranscriptQuery,
+    Capability.FILES_SEARCH: FileQuery,
+    Capability.FILES_GET: FileQuery,
+    Capability.EXTERNAL_ISSUES_SEARCH: IssueQuery,
+    Capability.TICKETS_SEARCH: TicketQuery,
+}
 
 runner = CliRunner()
 
@@ -361,7 +379,7 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
     }
     for capability in Capability:
         query = cli._query_payload(capability, **common)
-        assert query is not None
+        assert isinstance(query, _EXPECTED_QUERY_TYPES[capability])
 
     # A transcript is selected by meeting, by recording, or by period. Dropping the meeting id
     # while a window stands is still a complete request; dropping every selector is not.
@@ -407,11 +425,32 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
         cli._target_for_provider("microsoft.graph", Capability.MEETING_TRANSCRIPTS_LIST)
         is ConnectionType.TEAMS
     )
+    assert (
+        cli._target_for_provider("microsoft.graph", Capability.MAIL_INBOX_LIST)
+        is ConnectionType.OUTLOOK
+    )
     assert cli._target_for_provider("google.gmail", None) is ConnectionType.GMAIL
     assert cli._target_for_provider("google.calendar", None) is ConnectionType.GOOGLE_CALENDAR
     assert cli._target_for_provider("jira.cloud", None) is ConnectionType.JIRA
     assert cli._target_for_provider("glpi.rest", None) is ConnectionType.GLPI
     assert cli._target_for_provider("unknown", None) is None
+
+
+def test_legacy_query_helper_fails_closed_on_an_unknown_capability() -> None:
+    unknown = cast(Capability, "mail.archive.list")
+
+    with pytest.raises(cli._InputError, match="Unsupported capability"):
+        cli._query_payload(
+            unknown,
+            start="2026-08-01T00:00:00+00:00",
+            end="2026-09-01T00:00:00+00:00",
+            account="user@example.com",
+            calendar_id="primary",
+            assignee=None,
+            jql=None,
+            meeting_id=None,
+            limit=50,
+        )
 
 
 @pytest.mark.parametrize(

@@ -166,6 +166,55 @@ def test_run_uses_typed_post_body_api_key_and_same_application_result(tmp_path: 
     assert calls[0]["end"] == "2026-09-01T00:00:00+00:00"
 
 
+def test_service_runs_the_inbox_capability_and_rejects_the_browser_route(tmp_path: Path) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def run_handler(payload: dict[str, Any]) -> ResultEnvelope:
+        calls.append(payload)
+        return ResultEnvelope.success(
+            operation="run",
+            provider=payload["type"],
+            account=payload["account"],
+            route="official",
+            data={"records": []},
+        )
+
+    client = TestClient(create_app(settings=_settings(tmp_path), run_handler=run_handler))
+
+    official = client.post(
+        "/v1/run",
+        headers={"X-Solercia-Connect-Key": "local-api-key"},
+        json={
+            "type": "outlook",
+            "account": "user@example.com",
+            "capability": "mail.inbox.list",
+            "start": "2026-08-01T00:00:00Z",
+            "end": "2026-09-01T00:00:00Z",
+            "limit": 1000,
+        },
+    )
+    browser = client.post(
+        "/v1/run",
+        headers={"X-Solercia-Connect-Key": "local-api-key"},
+        json={
+            "type": "outlook",
+            "account": "user@example.com",
+            "capability": "mail.inbox.list",
+            "start": "2026-08-01T00:00:00Z",
+            "end": "2026-09-01T00:00:00Z",
+            "allow_browser_fallback": True,
+        },
+    )
+
+    assert official.status_code == 200
+    assert calls[0]["capability"] == "mail.inbox.list"
+    assert calls[0]["limit"] == 1000
+    assert browser.status_code == 409
+    assert browser.json()["error"]["remediation"] == [
+        "solercia-connect connect outlook user@example.com --allow-browser-fallback"
+    ]
+
+
 def test_unhandled_service_errors_are_safe_and_openapi_uses_post_bodies(tmp_path: Path) -> None:
     def broken(_: dict[str, Any]) -> ResultEnvelope:
         raise RuntimeError("internal sensitive detail")

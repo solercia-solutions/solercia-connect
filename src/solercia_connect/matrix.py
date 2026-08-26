@@ -23,6 +23,13 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
     CapabilityRow(
         "Microsoft Graph",
         "official",
+        "mail.inbox.list",
+        "implemented",
+        "Identity validation, strict range on receivedDateTime, ascending order, paging",
+    ),
+    CapabilityRow(
+        "Microsoft Graph",
+        "official",
         "calendar.events.list",
         "implemented",
         "calendarView, paging, accepted/organizer and cancellation filters",
@@ -89,6 +96,13 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "mail.sent.list",
         "implemented",
         "Documented read-only Outlook REST collection, strict range, paging, full message body",
+    ),
+    CapabilityRow(
+        "Microsoft 365 Web",
+        "browser",
+        "mail.inbox.list",
+        "implemented",
+        "Same documented Outlook REST collection scoped to Inbox, strict range, ascending order",
     ),
     CapabilityRow(
         "Microsoft 365 Web",

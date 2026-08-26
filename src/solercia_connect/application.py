@@ -279,7 +279,7 @@ def _query(
     )
     if capability in optional_window_capabilities:
         window = _window(payload.get("start"), payload.get("end"), optional=True)
-    if capability is Capability.MAIL_SENT_LIST:
+    if capability in {Capability.MAIL_SENT_LIST, Capability.MAIL_INBOX_LIST}:
         include_attachments = payload.get("include_attachments", False)
         if not isinstance(include_attachments, bool):
             raise ValueError("include_attachments must be a boolean")
@@ -293,7 +293,7 @@ def _query(
         return MailQuery(
             _required_window(window),
             account,
-            min(limit, 100),
+            min(limit, 1000),
             include_attachments,
             max_attachment_bytes,
         )

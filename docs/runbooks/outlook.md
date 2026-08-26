@@ -38,9 +38,9 @@ solercia-connect connect outlook user@example.com --allow-browser-fallback
 
 The user performs login/MFA in the dedicated profile. `connected_browser` means the account-bound
 session was verified. The envelope's `extraction_status` and `capabilities` fields are
-authoritative about what that route can read: `outlook` reports `mail.sent.list` and
-`calendar.events.list`, and `onedrive` reports `files.search`/`files.get` plus
-`meeting.transcripts.*`.
+authoritative about what that route can read: `outlook` reports `mail.sent.list`,
+`mail.inbox.list` and `calendar.events.list`, and `onedrive` reports `files.search`/`files.get`
+plus `meeting.transcripts.*`.
 
 Transcripts answer to the `onedrive` target rather than to `teams`, because a transcript is a
 drive item hanging off the recording. That is also why a meeting the account merely attended is
@@ -61,6 +61,30 @@ solercia-connect run \
 
 The loopback service does not offer this route: interactive authorization is CLI-only by design,
 so a connector reading through the local API needs an account connected over the official route.
+
+## Read the inbox
+
+`mail.inbox.list` dispatches over the official route first; only an explicit
+`--allow-browser-fallback` retries it over the supervised session after an allowlisted official
+failure. The two routes normalize to identical records: same fields, ascending order by receipt
+instant, only `provenance` names which route answered.
+
+```bash
+solercia-connect run \
+  --provider microsoft.graph \
+  --capability mail.inbox.list \
+  --account cccalderon@sdmujer.gov.co \
+  --start 2026-06-01T00:00:00-05:00 \
+  --end 2026-07-01T00:00:00-05:00 \
+  --limit 1000 \
+  --allow-browser-fallback \
+  --output bandeja-junio.json
+```
+
+**Mandatory guidance:** if the returned record count equals `--limit`, the read may have been
+truncated — narrow the window and read again. The ascending order guarantees the returned records
+are the oldest prefix of the window, so narrowing to a later start resumes deterministically.
+**Empty stays empty:** zero records is reported as zero, never as a reason to widen the window.
 
 ## Validate a dedicated account
 

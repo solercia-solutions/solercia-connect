@@ -54,6 +54,7 @@ class RoutePolicy:
     browser_fallback_capabilities: frozenset[Capability] = frozenset(
         {
             Capability.MAIL_SENT_LIST,
+            Capability.MAIL_INBOX_LIST,
             Capability.CALENDAR_EVENTS_LIST,
             Capability.MEETING_TRANSCRIPTS_LIST,
             Capability.MEETING_TRANSCRIPT_GET,
