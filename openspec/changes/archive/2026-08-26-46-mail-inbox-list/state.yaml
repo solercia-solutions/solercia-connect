@@ -6,9 +6,9 @@ phases:
   spec: done
   design: done
   tasks: done
-  apply: pending
+  apply: done
   verify: done
-  archive: pending
+  archive: done
 artifacts:
   proposal: true
   design: true
