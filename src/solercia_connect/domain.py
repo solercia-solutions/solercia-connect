@@ -10,6 +10,7 @@ from typing import Any
 
 class Capability(StrEnum):
     MAIL_SENT_LIST = "mail.sent.list"
+    MAIL_INBOX_LIST = "mail.inbox.list"
     CALENDAR_EVENTS_LIST = "calendar.events.list"
     MEETING_TRANSCRIPTS_LIST = "meeting.transcripts.list"
     MEETING_TRANSCRIPT_GET = "meeting.transcript.get"
@@ -107,8 +108,8 @@ class MailQuery:
     max_attachment_bytes: int = 10_485_760
 
     def __post_init__(self) -> None:
-        if not 1 <= self.limit <= 100:
-            raise ValueError("MailQuery limit must be between 1 and 100")
+        if not 1 <= self.limit <= 1000:
+            raise ValueError("MailQuery limit must be between 1 and 1000")
         if self.max_attachment_bytes <= 0:
             raise ValueError("MailQuery max_attachment_bytes must be positive")
 
@@ -268,6 +269,9 @@ class MailMessage:
     has_attachments: bool
     provenance: Provenance
     attachments: tuple[MailAttachment, ...] = ()
+    internet_message_id: str | None = None
+    folder: str | None = None
+    received_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,6 +450,7 @@ class HealthReport:
 
 _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.MAIL_SENT_LIST: MailMessage,
+    Capability.MAIL_INBOX_LIST: MailMessage,
     Capability.CALENDAR_EVENTS_LIST: CalendarEvent,
     Capability.MEETING_TRANSCRIPTS_LIST: MeetingTranscript,
     Capability.MEETING_TRANSCRIPT_GET: MeetingTranscript,

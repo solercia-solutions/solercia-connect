@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from solercia_connect.domain import (
     CalendarEvent,
@@ -26,6 +26,8 @@ from solercia_connect.domain import (
     RouteKind,
 )
 from solercia_connect.errors import ConnectorFailure
+
+MailFolderName = Literal["inbox", "sent"]
 
 
 def field(item: Mapping[str, Any], *names: str) -> Any:
@@ -87,6 +89,7 @@ def normalize_mail_message(
     item: Mapping[str, Any],
     *,
     provenance: Provenance,
+    folder: MailFolderName,
 ) -> MailMessage:
     identifier = field(item, "id", "Id")
     if not isinstance(identifier, str) or not identifier.strip():
@@ -108,6 +111,13 @@ def normalize_mail_message(
     sender = microsoft_address(field(item, "from", "From")) or microsoft_address(
         field(item, "sender", "Sender")
     )
+    raw_internet_message_id = field(item, "internetMessageId", "InternetMessageId")
+    internet_message_id = (
+        raw_internet_message_id.strip()
+        if isinstance(raw_internet_message_id, str) and raw_internet_message_id.strip()
+        else None
+    )
+    received_at = optional_microsoft_datetime(field(item, "receivedDateTime", "ReceivedDateTime"))
     return MailMessage(
         identifier,
         subject if isinstance(subject, str) else "",
@@ -120,6 +130,9 @@ def normalize_mail_message(
         conversation if isinstance(conversation, str) and conversation.strip() else None,
         bool(field(item, "hasAttachments", "HasAttachments")),
         provenance,
+        internet_message_id=internet_message_id,
+        folder=folder,
+        received_at=received_at,
     )
 
 

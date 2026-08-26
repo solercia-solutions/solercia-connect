@@ -204,6 +204,7 @@ class GoogleGmailAdapter:
                 account,
                 "/users/me/messages/{id}",
             ),
+            folder="sent",
         )
 
     def _headers(self) -> dict[str, str]:

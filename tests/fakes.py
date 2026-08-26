@@ -228,6 +228,9 @@ def mail_record(
     family: ProviderFamily = ProviderFamily.MICROSOFT,
     route: RouteKind = RouteKind.OFFICIAL,
     account_id: str | None = "user@example.com",
+    folder: str | None = None,
+    internet_message_id: str | None = None,
+    received_at: datetime | None = None,
 ) -> MailMessage:
     return MailMessage(
         "message-1",
@@ -241,6 +244,9 @@ def mail_record(
         "thread-1",
         False,
         Provenance(provider_id, family, route, "message-1", NOW, account_id),
+        internet_message_id=internet_message_id,
+        folder=folder,
+        received_at=received_at,
     )
 
 

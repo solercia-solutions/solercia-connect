@@ -85,8 +85,153 @@ def test_microsoft_graph_normalizes_full_sent_message() -> None:
     assert messages[0].body == "Complete message body"
     assert messages[0].to[0].address == "recipient@example.com"
     assert messages[0].provenance.source_id == "m-1"
+    assert messages[0].folder == "sent"
+    assert messages[0].received_at is None
     assert transport.requests[1].params is not None
     assert "sentDateTime lt 2026-09-01T00:00:00Z" in str(transport.requests[1].params["$filter"])
+    assert transport.requests[1].params["$orderby"] == "sentDateTime desc"
+    select = str(transport.requests[1].params["$select"])
+    assert "internetMessageId" in select
+    assert "receivedDateTime" not in select
+
+
+def test_microsoft_graph_inbox_reads_the_declared_inbox_folder_collection() -> None:
+    transport = FakeTransport(
+        json_response(
+            200,
+            {"id": "user-1", "mail": "user@example.com", "userPrincipalName": "user@example.com"},
+        ),
+        json_response(200, {"value": []}),
+    )
+    adapter = MicrosoftGraphAdapter(
+        transport,
+        BearerTokenProvider(SecretValue("graph-secret")),
+        expected_account="user@example.com",
+        clock=lambda: NOW,
+    )
+
+    adapter.list_inbox_mail(MailQuery(utc_window(), "user@example.com", limit=500))
+
+    assert transport.requests[1].url == (
+        "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
+    )
+    params = transport.requests[1].params
+    assert params is not None
+    assert params["$filter"] == (
+        "receivedDateTime ge 2026-08-01T00:00:00Z and receivedDateTime lt 2026-09-01T00:00:00Z"
+    )
+    assert params["$orderby"] == "receivedDateTime asc"
+    assert params["$top"] == 100
+    assert params["$select"] == (
+        "id,subject,sentDateTime,from,sender,toRecipients,ccRecipients,body,"
+        "conversationId,hasAttachments,internetMessageId,receivedDateTime"
+    )
+
+
+def test_microsoft_graph_inbox_record_carries_folder_message_id_and_received_instant() -> None:
+    transport = FakeTransport(
+        json_response(
+            200,
+            {"id": "user-1", "mail": "user@example.com", "userPrincipalName": "user@example.com"},
+        ),
+        json_response(
+            200,
+            {
+                "value": [
+                    {
+                        "id": "m-inbox-1",
+                        "subject": "Entrada",
+                        "sentDateTime": "2026-08-14T09:31:00Z",
+                        "receivedDateTime": "2026-08-14T09:35:00Z",
+                        "from": {
+                            "emailAddress": {
+                                "name": "Remitente",
+                                "address": "remitente@example.com",
+                            }
+                        },
+                        "toRecipients": [],
+                        "ccRecipients": [],
+                        "body": {"contentType": "text", "content": "cuerpo"},
+                        "conversationId": "conv-inbox-1",
+                        "hasAttachments": False,
+                        "internetMessageId": "<inbox-1@contoso.com>",
+                    }
+                ]
+            },
+        ),
+    )
+    adapter = MicrosoftGraphAdapter(
+        transport,
+        BearerTokenProvider(SecretValue("graph-secret")),
+        expected_account="user@example.com",
+        clock=lambda: NOW,
+    )
+
+    messages = adapter.list_inbox_mail(MailQuery(utc_window(), "user@example.com"))
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert message.folder == "inbox"
+    assert message.internet_message_id == "<inbox-1@contoso.com>"
+    assert message.received_at is not None
+    assert message.received_at != message.sent_at
+    assert message.provenance.endpoint == "/me/mailFolders/inbox/messages"
+
+
+def test_microsoft_graph_inbox_refuses_a_mailbox_that_is_not_the_authenticated_account() -> None:
+    transport = FakeTransport(
+        json_response(200, {"id": "user-1", "mail": "user@example.com"}),
+    )
+    adapter = MicrosoftGraphAdapter(
+        transport,
+        BearerTokenProvider(SecretValue("graph-secret")),
+        expected_account="user@example.com",
+    )
+
+    with pytest.raises(ConnectorFailure) as captured:
+        adapter.list_inbox_mail(MailQuery(utc_window(), "otro@example.com"))
+
+    assert captured.value.reason is ReasonCode.AUTHORIZATION_BOUNDARY_VIOLATION
+    assert len(transport.requests) == 1
+
+
+def test_microsoft_graph_inbox_without_sent_instant_fails_closed() -> None:
+    transport = FakeTransport(
+        json_response(
+            200,
+            {"id": "user-1", "mail": "user@example.com", "userPrincipalName": "user@example.com"},
+        ),
+        json_response(
+            200,
+            {
+                "value": [
+                    {
+                        "id": "m-inbox-2",
+                        "subject": "Sin instante de envío",
+                        "receivedDateTime": "2026-08-14T09:35:00Z",
+                        "from": {"emailAddress": {"address": "remitente@example.com"}},
+                        "toRecipients": [],
+                        "ccRecipients": [],
+                        "body": {"contentType": "text", "content": "cuerpo"},
+                        "conversationId": "conv-inbox-2",
+                        "hasAttachments": False,
+                        "internetMessageId": "<inbox-2@contoso.com>",
+                    }
+                ]
+            },
+        ),
+    )
+    adapter = MicrosoftGraphAdapter(
+        transport,
+        BearerTokenProvider(SecretValue("graph-secret")),
+        expected_account="user@example.com",
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(ConnectorFailure) as captured:
+        adapter.list_inbox_mail(MailQuery(utc_window(), "user@example.com"))
+
+    assert captured.value.reason is ReasonCode.MALFORMED_PROVIDER_DATA
 
 
 def test_microsoft_graph_calendar_filters_cancelled_and_unaccepted() -> None:

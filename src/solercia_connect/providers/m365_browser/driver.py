@@ -1355,6 +1355,7 @@ def _normalize_outlook_message(item: Mapping[str, object]) -> MailMessage:
             account_id=None,
             endpoint="outlook-rest-v2",
         ),
+        folder="sent",
     )
 
 

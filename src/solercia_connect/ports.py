@@ -65,6 +65,10 @@ class MailProviderPort(Protocol):
     def list_sent_mail(self, query: MailQuery) -> tuple[MailMessage, ...]: ...
 
 
+class InboxMailProviderPort(Protocol):
+    def list_inbox_mail(self, query: MailQuery) -> tuple[MailMessage, ...]: ...
+
+
 class CalendarProviderPort(Protocol):
     def list_events(self, query: CalendarQuery) -> tuple[CalendarEvent, ...]: ...
 
