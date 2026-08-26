@@ -5,7 +5,7 @@ phases:
   proposal: done
   spec: done
   design: done
-  tasks: pending
+  tasks: done
   apply: pending
   verify: pending
   archive: pending
@@ -13,7 +13,7 @@ artifacts:
   proposal: true
   design: true
   specs: true
-  tasks: false
+  tasks: true
 capabilities:
   new:
     - mail-inbox-list
@@ -83,6 +83,36 @@ open_questions:
   - "Validación viva de la rama Graph: la cuenta cccalderon@sdmujer.gov.co sólo tiene ruta navegador (sin SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID) (supuesto: cobertura hermética completa y validación viva de Graph diferida o con cuenta dedicada)"
   - "Nombre canónico de las tres capacidades modificadas al no existir openspec/specs/ (supuesto: mail-record-contract, mail-query-limits, capability-advertisement)"
 last_updated: 2026-08-26
+tasks_summary:
+  total_tasks: 79
+  phases:
+    - name: "Fase 0: Verificación previa (gate)"
+      tasks: 13
+    - name: "Fase 1: Bandeja por Graph con paridad de contrato [PR1]"
+      tasks: 16
+    - name: "Fase 2: Bandeja por navegador con la misma paridad [PR2]"
+      tasks: 16
+    - name: "Fase 3: Enrutamiento, política, límites y documentación [PR3]"
+      tasks: 18
+    - name: "Fase 4: Cierre y validación manual diferida"
+      tasks: 8
+  review_workload_forecast:
+    estimated_changed_lines: "≈ 900-990"
+    budget_risk: Medium
+    chained_prs_recommended: true
+    chain_strategy: feature-branch-chain
+    decision_needed_before_apply: false
+    slices:
+      - pr: PR1
+        content: "domain.py, ports.py, providers/_microsoft.py, providers/microsoft_graph.py, providers/google.py, tests/fakes.py, tests/test_route_contract_parity.py, tests/test_provider_contracts.py"
+        estimated_lines: "280-320"
+      - pr: PR2
+        content: "providers/m365_browser/{selectors,driver,adapter}.py, tests/test_browser_mail_extraction.py, tests/test_browser_foundation.py, tests/test_outlook_browser_identity.py, tests/test_connections.py"
+        estimated_lines: "260-300"
+      - pr: PR3
+        content: "runtime.py, config.py, application.py, cli.py, matrix.py, docs (5), tests/test_application.py, tests/test_cli_lifecycle.py, tests/test_runtime_policy.py, tests/test_service.py, tests/test_cli_and_docs.py"
+        estimated_lines: "330-420"
+        contingency: "split into PR3a (wiring: runtime/config/application/cli + their tests) and PR3b (matrix.py + docs + test_cli_and_docs.py) if actual diff exceeds 400 lines"
 spec_counts:
   mail-inbox-list:
     requirements_added: 8
