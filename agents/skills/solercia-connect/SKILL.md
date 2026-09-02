@@ -57,7 +57,7 @@ browser session rather than official OAuth.
 | `mail.inbox.list` (Outlook only) | yes | yes |
 | `calendar.events.list` | yes | yes |
 | `files.search` / `files.get` | yes | yes |
-| `meeting.transcripts.list` / `meeting.transcript.get` | yes, needs tenant scopes | yes |
+| `meeting.transcripts.list` / `meeting.transcript.get` | yes, needs tenant scopes | yes (Microsoft only) |
 
 Records are identical across routes; `provenance` is the only field naming the route.
 
@@ -66,6 +66,13 @@ tenant-granted scopes. The browser route reads the recording that carries the tr
 a drive item, so it takes `--drive-id` with `--item-id`, or just a window that reads every
 recording in the period — including meetings the account only attended, not organized. Both routes
 answer with speaker-named WebVTT.
+
+**Google Meet.** The `google-meet` target (alias `meet`) is official-only: Calendar event attachments
+are discovered with `calendar.events.readonly` and transcript Docs are exported through Drive with
+`drive.readonly`. It accepts `--meeting-id` or an exact timezone-aware end-exclusive window. Drive
+item selectors are Microsoft-only and fail closed. Records use `text/plain` speaker turns and
+`last_cue_seconds` is `None`; no timestamps are synthesized. Empty windows stay empty, and
+Playwright is never offered for Google Meet.
 
 ## Decision gates
 

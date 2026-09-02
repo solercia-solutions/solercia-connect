@@ -9,6 +9,7 @@ from solercia_connect.bootstrap import (
     registry_from_environment,
 )
 from solercia_connect.config import ConnectionProfile, ConnectionType, ProfileStore, load_settings
+from solercia_connect.domain import Capability
 from solercia_connect.oauth import OAuthTokenSet
 
 
@@ -57,6 +58,7 @@ def test_bootstrap_registers_every_legacy_token_provider_without_exposing_secret
         "glpi.rest",
         "google.calendar",
         "google.gmail",
+        "google.meet",
         "jira.cloud",
         "microsoft.graph",
     ]
@@ -74,6 +76,7 @@ def test_bootstrap_registers_official_oauth_profiles_by_selected_target(tmp_path
     profiles = ProfileStore.from_settings(settings)
     profiles.save(ConnectionProfile.create("outlook", "user@example.com"))
     profiles.save(ConnectionProfile.create("gmail", "user@example.com"))
+    profiles.save(ConnectionProfile.create("google-meet", "user@example.com"))
 
     microsoft = registry_from_environment(
         connection_type="outlook",
@@ -87,9 +90,47 @@ def test_bootstrap_registers_official_oauth_profiles_by_selected_target(tmp_path
         token_store=MemoryTokenStore(),
         environ=values,
     )
+    meet = registry_from_environment(
+        connection_type="google-meet",
+        account="user@example.com",
+        token_store=MemoryTokenStore(),
+        environ=values,
+    )
 
     assert [item.provider_id for item in microsoft.descriptors()] == ["microsoft.graph"]
     assert [item.provider_id for item in gmail.descriptors()] == ["google.gmail"]
+    assert [item.provider_id for item in meet.descriptors()] == ["google.meet"]
+
+
+def test_google_meet_never_registers_a_microsoft_browser_adapter(
+    tmp_path: Path,
+) -> None:
+    values = {
+        **_base(tmp_path),
+        "GOOGLE_ACCESS_TOKEN": "google-bootstrap-token",
+        "GOOGLE_EXPECTED_ACCOUNT": "user@example.com",
+        "SOLERCIA_CONNECT_BROWSER_FALLBACK": "true",
+        "SOLERCIA_CONNECT_M365_PROFILE_DIR": str(tmp_path / "m365"),
+    }
+
+    settings = load_settings(environ=values)
+    ProfileStore.from_settings(settings).save(
+        ConnectionProfile.create("onedrive", "user@example.com", route="browser")
+    )
+    registry = registry_from_environment(
+        connection_type="google-meet",
+        account="user@example.com",
+        capability=Capability.MEETING_TRANSCRIPT_GET,
+        token_store=MemoryTokenStore(),
+        environ=values,
+    )
+
+    assert [item.provider_id for item in registry.descriptors()] == [
+        "google.calendar",
+        "google.gmail",
+        "google.meet",
+    ]
+    assert all(item.family.value == "google" for item in registry.descriptors())
 
 
 def test_browser_registration_requires_real_profile_or_explicit_ready_directory(

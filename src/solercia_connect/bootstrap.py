@@ -22,6 +22,7 @@ from solercia_connect.errors import ConnectorFailure
 from solercia_connect.oauth import KeyringOAuthTokenStore, OAuthTokenStore
 from solercia_connect.providers.glpi import GlpiAdapter
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
+from solercia_connect.providers.google_meet import GoogleMeetAdapter
 from solercia_connect.providers.jira import JiraAdapter
 from solercia_connect.providers.m365_browser import (
     Microsoft365BrowserAdapter,
@@ -116,8 +117,14 @@ def registry_from_environment(
                 health_calendar_id=_value(values, "GOOGLE_CALENDAR_ID") or "primary",
             )
         )
+        registry.register(GoogleMeetAdapter(transport, auth, expected_account=expected))
     elif (
-        parsed_type in {ConnectionType.GMAIL, ConnectionType.GOOGLE_CALENDAR}
+        parsed_type
+        in {
+            ConnectionType.GMAIL,
+            ConnectionType.GOOGLE_CALENDAR,
+            ConnectionType.GOOGLE_MEET,
+        }
         and normalized_account is not None
         and (profile := profiles.get(parsed_type, normalized_account)) is not None
         and profile.route == "official"
@@ -133,13 +140,21 @@ def registry_from_environment(
             registry.register(
                 GoogleGmailAdapter(transport, auth, expected_account=normalized_account)
             )
-        else:
+        elif parsed_type is ConnectionType.GOOGLE_CALENDAR:
             registry.register(
                 GoogleCalendarAdapter(
                     transport,
                     auth,
                     expected_account=normalized_account,
                     health_calendar_id=_value(values, "GOOGLE_CALENDAR_ID") or "primary",
+                )
+            )
+        else:
+            registry.register(
+                GoogleMeetAdapter(
+                    transport,
+                    auth,
+                    expected_account=normalized_account,
                 )
             )
 
@@ -172,7 +187,9 @@ def registry_from_environment(
     # belong to Teams and are stored in the drive, so the session to open — and the profile that
     # proves it was opened — are the drive's, not the Teams client's.
     browser_type = (
-        browser_surface_for_capability(capability) if capability is not None else None
+        browser_surface_for_capability(capability)
+        if capability is not None and (parsed_type is None or parsed_type in MICROSOFT_TARGETS)
+        else None
     ) or parsed_type
     browser_profile = (
         profiles.get(browser_type, normalized_account)

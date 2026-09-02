@@ -70,6 +70,16 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "Recurring expansion, paging, exact account/calendar boundary",
     ),
     CapabilityRow(
+        "Google Calendar + Drive APIs",
+        "official",
+        "meeting.transcripts.*",
+        "implemented-offline",
+        (
+            "Google Meet target; Calendar attachment discovery and Drive text export; live proof "
+            "pending"
+        ),
+    ),
+    CapabilityRow(
         "Jira Cloud REST v3",
         "official",
         "external.issues.search",

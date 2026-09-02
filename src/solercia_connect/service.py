@@ -109,6 +109,7 @@ class RunRequest(BaseModel):
                 ConnectionType.ONEDRIVE,
                 ConnectionType.GMAIL,
                 ConnectionType.GOOGLE_CALENDAR,
+                ConnectionType.GOOGLE_MEET,
             }
             and self.account is None
         ):

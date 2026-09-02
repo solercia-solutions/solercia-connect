@@ -334,6 +334,30 @@ def test_run_request_rejects_empty_or_incoherent_typed_values(changes: dict[str,
         RunRequest.model_validate(values)
 
 
+def test_run_request_requires_account_for_google_meet() -> None:
+    with pytest.raises(ValidationError, match="account is required"):
+        RunRequest.model_validate(
+            {
+                "type": "google-meet",
+                "capability": "meeting.transcript.get",
+                "meeting_id": "meeting-1",
+            }
+        )
+
+
+def test_run_request_rejects_google_meet_browser_fallback() -> None:
+    with pytest.raises(ValidationError, match="Microsoft targets"):
+        RunRequest.model_validate(
+            {
+                "type": "google-meet",
+                "account": "user@example.com",
+                "capability": "meeting.transcript.get",
+                "meeting_id": "meeting-1",
+                "allow_browser_fallback": True,
+            }
+        )
+
+
 def test_run_request_payload_preserves_safe_optional_fields() -> None:
     request = RunRequest.model_validate(
         {

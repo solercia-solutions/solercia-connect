@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from solercia_connect.domain import Capability, MeetingTranscript, RouteKind
+from solercia_connect.matrix import CAPABILITY_MATRIX
 from solercia_connect.providers import microsoft_graph as graph_module
 from solercia_connect.providers._microsoft import (
     microsoft_provenance,
@@ -23,6 +24,7 @@ from solercia_connect.providers._microsoft import (
     normalize_mail_message,
     normalize_stream_transcript,
 )
+from solercia_connect.providers.google_meet import GoogleMeetAdapter
 from solercia_connect.providers.m365_browser import Microsoft365BrowserAdapter
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
 
@@ -237,6 +239,25 @@ def test_provenance_is_the_only_place_the_route_is_visible() -> None:
     assert official.provenance.route is RouteKind.OFFICIAL
     assert browser.provenance.route is RouteKind.BROWSER
     assert official.provenance.family is browser.provenance.family
+
+
+def test_google_meet_matrix_row_is_official_and_offline_honest() -> None:
+    rows = [row for row in CAPABILITY_MATRIX if row.capability == "meeting.transcripts.*"]
+    assert [(row.provider, row.channel, row.v0_1_status) for row in rows] == [
+        ("Microsoft Graph", "official", "implemented-offline"),
+        ("Google Calendar + Drive APIs", "official", "implemented-offline"),
+        ("Microsoft 365 Web", "browser", "implemented"),
+    ]
+
+
+def test_google_meet_is_official_only_and_declares_both_transcript_capabilities() -> None:
+    assert GoogleMeetAdapter.descriptor.provider_id == "google.meet"
+    assert GoogleMeetAdapter.descriptor.family.value == "google"
+    assert GoogleMeetAdapter.descriptor.route is RouteKind.OFFICIAL
+    assert GoogleMeetAdapter.descriptor.capabilities == {
+        Capability.MEETING_TRANSCRIPTS_LIST,
+        Capability.MEETING_TRANSCRIPT_GET,
+    }
 
 
 def test_both_microsoft_adapters_answer_the_same_port() -> None:

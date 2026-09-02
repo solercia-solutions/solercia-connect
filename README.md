@@ -96,7 +96,8 @@ The root wrapper is only a convenience alias and contains no provider logic:
 | `mail.inbox.list` (Outlook only) | yes | yes |
 | `calendar.events.list` | yes | yes |
 | `files.search` / `files.get` | yes | yes |
-| `meeting.transcripts.*` | yes | yes — different selector, see below |
+| `meeting.transcripts.*` (Microsoft) | yes | yes — different selector, see below |
+| `meeting.transcripts.*` (`google-meet`) | yes — Calendar + Drive APIs | no (official-only) |
 
 Records are identical across routes; `provenance` is the only field that names the route.
 
@@ -110,7 +111,15 @@ That is also why a meeting the account merely attended is readable: the site coo
 the organizer's `driveId` and item id directly. Recordings the account owns and recordings shared
 with it are both reported, and `include_shared: false` narrows the read to its own.
 
-Both routes answer with speaker-named WebVTT. The drive-backed rendition that carries speakers is
+Google Meet is a separate official-only target (`google-meet`, alias `meet`). It discovers
+transcript Google Docs from Calendar event attachments and exports them with Drive using
+`calendar.events.readonly` and `drive.readonly`. Use `--meeting-id` or an exact end-exclusive
+`--start`/`--end` window; `--drive-id` and `--item-id` are rejected. Results are `text/plain`
+speaker turns, with no synthesized timestamps. Missing permissions are typed failures with
+remediation to reconnect the Google OAuth profile; a zero-result window remains empty. Google
+Meet never uses Playwright, even when browser fallback is enabled.
+
+Both Microsoft routes answer with speaker-named WebVTT. The drive-backed rendition that carries speakers is
 JSON, so it is converted rather than passed through — the WebVTT that surface serves directly has
 no speaker markers at all, which collapses consecutive turns into one unattributed block.
 
@@ -157,6 +166,7 @@ interchangeable: a mail token is never reused for a drive call.
 | Teams | Device-code OAuth; known-meeting transcript list/download using `OnlineMeetingTranscript.Read.All` | Recording transcripts over the SharePoint drive, own and shared, by item or by period | Drive transcript contract verified live against a work tenant; official route pending admin proof |
 | Gmail | Desktop OAuth loopback with state + PKCE; read-only sent-mail capability | None | Pending dedicated account proof |
 | Google Calendar | Desktop OAuth loopback with state + PKCE; read-only event capability | None | Pending dedicated account proof |
+| Google Meet | Desktop OAuth loopback with state + PKCE; Calendar attachment discovery and Drive text export (`text/plain`) | None (official-only) | Offline contract verified; third-party transcript export pending |
 | Jira | Existing API-token/JQL compatibility | None | Pending supported-site proof |
 | GLPI | Existing app/user-token session compatibility | None | Pending supported-installation proof |
 
@@ -237,13 +247,20 @@ solercia-connect run \
   --account user@example.com \
   --allow-browser-fallback
 
-# Browser route: one known recording.
+# Browser route: one known recording (Microsoft only).
 solercia-connect run \
   --provider microsoft.graph \
   --capability meeting.transcript.get \
   --drive-id DRIVE_ID --item-id ITEM_ID \
   --account user@example.com \
   --allow-browser-fallback
+
+# Official Google Meet route: Calendar event attachment -> Drive text export.
+solercia-connect run \
+  --provider google.meet \
+  --capability meeting.transcript.get \
+  --meeting-id EVENT_ID \
+  --account user@example.com
 ```
 
 ## Loopback HTTP adapter

@@ -208,6 +208,77 @@ def test_inbox_mail_request_for_gmail_is_rejected_before_any_capability_dispatch
     assert result.error is not None and result.error.cause_category == "input"
 
 
+def test_noninteractive_google_meet_requires_an_account() -> None:
+    result = application.run_application(
+        _payload(
+            type="google-meet",
+            capability="meeting.transcript.get",
+            account=None,
+            start=None,
+            end=None,
+            meeting_id="meeting-1",
+        ),
+        interactive=False,
+    )
+
+    assert result.status == "invalid_input"
+    assert result.error is not None and result.error.cause_category == "input"
+
+
+def test_google_meet_rejects_browser_fallback_before_registry_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    def unexpected_registry(**_: object) -> object:
+        nonlocal called
+        called = True
+        raise AssertionError("Google Meet must never use a browser registry route")
+
+    monkeypatch.setattr(application, "registry_from_environment", unexpected_registry)
+    result = application.run_application(
+        _payload(
+            type="google-meet",
+            capability="meeting.transcript.get",
+            start=None,
+            end=None,
+            meeting_id="meeting-1",
+            allow_browser_fallback=True,
+        )
+    )
+
+    assert result.status == "invalid_input"
+    assert result.error is not None and result.error.cause_category == "input"
+    assert called is False
+
+
+def test_google_meet_transcript_dispatch_uses_the_declared_official_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    outcome = ExecutionOutcome(
+        True,
+        (),
+        _receipt(ok=True, reason=ReasonCode.SUCCESS, route=RouteKind.OFFICIAL),
+    )
+    monkeypatch.setattr(application, "registry_from_environment", lambda **_: "registry")
+    monkeypatch.setattr(application, "ConnectorRuntime", _capturing_runtime(outcome, captured))
+
+    result = application.run_application(
+        _payload(
+            type="google-meet",
+            capability="meeting.transcripts.list",
+            start=None,
+            end=None,
+            meeting_id="meeting-1",
+        )
+    )
+
+    assert result.ok is True
+    assert captured["request"].provider_id == "google.meet"
+    assert captured["request"].payload.meeting_id == "meeting-1"
+
+
 def test_inbox_mail_runs_end_to_end_over_the_official_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

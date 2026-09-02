@@ -354,7 +354,7 @@ def test_doctor_ready_branch_and_config_validation_failure_are_uniform(
     ready = runner.invoke(cli.app, ["doctor"])
 
     assert ready.exit_code == 0
-    assert len(json.loads(ready.stdout)["data"]["reports"]) == 7
+    assert len(json.loads(ready.stdout)["data"]["reports"]) == 8
 
     monkeypatch.setattr(
         cli,
@@ -431,9 +431,37 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
     )
     assert cli._target_for_provider("google.gmail", None) is ConnectionType.GMAIL
     assert cli._target_for_provider("google.calendar", None) is ConnectionType.GOOGLE_CALENDAR
+    assert (
+        cli._target_for_provider("google.meet", Capability.MEETING_TRANSCRIPT_GET)
+        is ConnectionType.GOOGLE_MEET
+    )
     assert cli._target_for_provider("jira.cloud", None) is ConnectionType.JIRA
     assert cli._target_for_provider("glpi.rest", None) is ConnectionType.GLPI
     assert cli._target_for_provider("unknown", None) is None
+
+
+def test_cli_rejects_google_meet_browser_fallback() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "--provider",
+            "google.meet",
+            "--capability",
+            "meeting.transcript.get",
+            "--account",
+            "user@example.com",
+            "--meeting-id",
+            "meeting-1",
+            "--allow-browser-fallback",
+        ],
+        env={},
+    )
+
+    assert result.exit_code == 2
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "invalid_input"
+    assert "browser" in payload["error"]["message"].casefold()
 
 
 def test_legacy_query_helper_fails_closed_on_an_unknown_capability() -> None:

@@ -58,6 +58,8 @@ def run_application(
         fallback = payload.get("allow_browser_fallback", False)
         if not isinstance(fallback, bool):
             raise ValueError("allow_browser_fallback must be a boolean")
+        if fallback and type_value is ConnectionType.GOOGLE_MEET:
+            raise ValueError("Browser fallback is not available for Google Meet")
         if not interactive and type_value in _OAUTH_TYPES and account is None:
             raise ValueError("account is required for OAuth provider runs")
     except (KeyError, TypeError, ValueError) as failure:
@@ -178,6 +180,7 @@ _OAUTH_TYPES = frozenset(
         ConnectionType.ONEDRIVE,
         ConnectionType.GMAIL,
         ConnectionType.GOOGLE_CALENDAR,
+        ConnectionType.GOOGLE_MEET,
     }
 )
 _INTERACTIVE_REASONS = frozenset(
