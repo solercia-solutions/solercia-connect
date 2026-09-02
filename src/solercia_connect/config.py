@@ -32,6 +32,7 @@ class ConnectionType(StrEnum):
     ONEDRIVE = "onedrive"
     GMAIL = "gmail"
     GOOGLE_CALENDAR = "google-calendar"
+    GOOGLE_MEET = "google-meet"
     JIRA = "jira"
     GLPI = "glpi"
 
@@ -48,9 +49,10 @@ class ConnectionType(StrEnum):
             "microsoft-sharepoint": cls.ONEDRIVE,
             "google-calendar": cls.GOOGLE_CALENDAR,
             "calendar": cls.GOOGLE_CALENDAR,
+            "meet": cls.GOOGLE_MEET,
         }
         try:
-            return aliases.get(candidate, cls(candidate))
+            return aliases[candidate] if candidate in aliases else cls(candidate)
         except ValueError as exc:
             allowed = ", ".join(item.value for item in cls)
             raise ValueError(f"Unsupported provider type; expected one of: {allowed}") from exc
@@ -130,6 +132,23 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
             "https://www.googleapis.com/auth/calendar.events.readonly",
         ),
         ("Google OAuth Desktop app client", "Workspace admin approval when policy requires it"),
+    ),
+    TargetSpec(
+        ConnectionType.GOOGLE_MEET,
+        "google.meet",
+        ("meeting.transcripts.list", "meeting.transcript.get"),
+        ("SOLERCIA_CONNECT_GOOGLE_CLIENT_ID",),
+        (
+            "openid",
+            "email",
+            "https://www.googleapis.com/auth/calendar.events.readonly",
+            "https://www.googleapis.com/auth/drive.readonly",
+        ),
+        (
+            "Google OAuth Desktop app client",
+            "Google Workspace account with Google Meet transcription enabled",
+            "Workspace admin approval when policy requires it",
+        ),
     ),
     TargetSpec(
         ConnectionType.JIRA,

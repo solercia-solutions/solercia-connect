@@ -794,7 +794,11 @@ def oauth_provider_from_settings(
             store=token_store,
             store_key=key,
         )
-    if parsed in {ConnectionType.GMAIL, ConnectionType.GOOGLE_CALENDAR}:
+    if parsed in {
+        ConnectionType.GMAIL,
+        ConnectionType.GOOGLE_CALENDAR,
+        ConnectionType.GOOGLE_MEET,
+    }:
         client_id = settings.google_client_id
         if client_id is None:
             raise ValueError("Google client ID is not configured")

@@ -12,7 +12,7 @@ from solercia_connect.config import ConnectionProfile, ConnectionType, ProfileSt
 from solercia_connect.connections import ConnectionService, oauth_provider_from_settings
 from solercia_connect.domain import ReasonCode
 from solercia_connect.errors import ConnectorFailure
-from solercia_connect.oauth import DeviceAuthorization, OAuthTokenSet
+from solercia_connect.oauth import DeviceAuthorization, GoogleOAuthProvider, OAuthTokenSet
 from solercia_connect.providers.m365_browser import Microsoft365BrowserAdapter
 from solercia_connect.providers.m365_browser.driver import BrowserSnapshot
 from solercia_connect.secrets import SecretValue
@@ -1057,8 +1057,23 @@ def test_oauth_factory_enforces_provider_specific_configuration_and_scopes(
         ConnectionType.GOOGLE_CALENDAR,
         "user@example.com",
     )
+    meet = oauth_provider_from_settings(
+        settings,
+        store,
+        ConnectionType.GOOGLE_MEET,
+        "user@example.com",
+    )
 
-    assert microsoft is not None and google is not None
+    assert microsoft is not None and google is not None and meet is not None
+    assert isinstance(meet, GoogleOAuthProvider)
+    assert meet._store_key == "google-meet:user@example.com"
+    assert meet._store_key != google._store_key
+    assert meet._scopes == (
+        "openid",
+        "email",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
+        "https://www.googleapis.com/auth/drive.readonly",
+    )
     with pytest.raises(ValueError, match="does not use"):
         oauth_provider_from_settings(settings, store, ConnectionType.JIRA, "user@example.com")
 

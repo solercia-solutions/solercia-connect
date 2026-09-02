@@ -12,6 +12,7 @@ from solercia_connect.config import (
     ProfileStore,
     load_settings,
     normalize_account,
+    target_spec,
 )
 from solercia_connect.envelope import ErrorDetail, ResultEnvelope
 from solercia_connect.output import SecureOutputError, write_secure_json
@@ -24,16 +25,50 @@ def test_connection_types_are_ordered_and_accounts_are_validated_before_use() ->
         "onedrive",
         "gmail",
         "google-calendar",
+        "google-meet",
         "jira",
         "glpi",
     ]
     assert ConnectionType.parse("GOOGLE_CALENDAR") is ConnectionType.GOOGLE_CALENDAR
+    assert ConnectionType.parse(" CALENDAR ") is ConnectionType.GOOGLE_CALENDAR
+    assert ConnectionType.parse(" Meet ") is ConnectionType.GOOGLE_MEET
+    assert ConnectionType.parse("GOOGLE_MEET") is ConnectionType.GOOGLE_MEET
     assert normalize_account(" User@Example.com ") == "user@example.com"
+
+    meet = target_spec("google-meet")
+    assert meet.provider_id == "google.meet"
+    assert meet.capabilities == (
+        "meeting.transcripts.list",
+        "meeting.transcript.get",
+    )
+    assert meet.oauth_scopes == (
+        "openid",
+        "email",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
+        "https://www.googleapis.com/auth/drive.readonly",
+    )
+    assert meet.external_prerequisites == (
+        "Google OAuth Desktop app client",
+        "Google Workspace account with Google Meet transcription enabled",
+        "Workspace admin approval when policy requires it",
+    )
+    assert target_spec(" MEET ") == meet
+    assert target_spec("gmail").oauth_scopes == (
+        "openid",
+        "email",
+        "https://www.googleapis.com/auth/gmail.readonly",
+    )
+    assert target_spec("google-calendar").oauth_scopes == (
+        "openid",
+        "email",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
+    )
 
     with pytest.raises(ValueError, match="account"):
         normalize_account("not-an-account")
+    assert ConnectionType.parse(" SHAREPOINT ") is ConnectionType.ONEDRIVE
     with pytest.raises(ValueError, match="provider type"):
-        ConnectionType.parse("sharepoint")
+        ConnectionType.parse("unsupported")
 
 
 def test_settings_only_load_an_explicit_env_file(
