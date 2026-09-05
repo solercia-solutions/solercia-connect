@@ -14,21 +14,31 @@ from solercia_connect import __version__
 from solercia_connect.application import run_application
 from solercia_connect.bootstrap import registry_from_environment
 from solercia_connect.config import (
+    MICROSOFT_TARGETS,
     TARGET_SPECS,
     ConnectionType,
     ConnectSettings,
     ProfileStore,
+    http_interactive_allowed,
     load_settings,
     normalize_account,
 )
 from solercia_connect.connections import ConnectionService, connect_command
 from solercia_connect.doctor import DoctorService
 from solercia_connect.envelope import ErrorDetail, ResultEnvelope
+from solercia_connect.interactive_sessions import InteractiveSessionRegistry
 from solercia_connect.matrix import CAPABILITY_MATRIX
 from solercia_connect.oauth import KeyringOAuthTokenStore, OAuthTokenStore
 from solercia_connect.serialization import to_json, to_primitive
 
-_PROTECTED_POST_PATHS = frozenset({"/v1/connections/test", "/v1/run"})
+_PROTECTED_POST_PATHS = frozenset(
+    {"/v1/connections/test", "/v1/run", "/v1/connections/connect"},
+)
+_PROTECTED_GET_PREFIXES = ("/v1/connections/sessions/",)
+_HTTP_INTERACTIVE_REMEDIATION = (
+    "Set SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN=true (with SOLERCIA_CONNECT_BROWSER_FALLBACK=true "
+    "and an API key) to allow the loopback service to start the supervised browser."
+)
 
 
 class ConnectionTester(Protocol):
@@ -38,6 +48,17 @@ class ConnectionTester(Protocol):
         account: str,
         *,
         allow_browser_fallback: bool = False,
+    ) -> ResultEnvelope: ...
+
+    def connect_browser(self, type_value: str, account: str) -> ResultEnvelope: ...
+
+
+class RunHandler(Protocol):
+    def __call__(
+        self,
+        payload: dict[str, Any],
+        *,
+        browser_via_http: bool = False,
     ) -> ResultEnvelope: ...
 
 
@@ -52,6 +73,25 @@ class ConnectionTestRequest(BaseModel):
     @classmethod
     def validate_account(cls, value: str) -> str:
         return normalize_account(value)
+
+
+class ConnectionConnectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: ConnectionType
+    account: str
+    allow_browser_fallback: bool = False
+
+    @field_validator("account")
+    @classmethod
+    def validate_account(cls, value: str) -> str:
+        return normalize_account(value)
+
+    @model_validator(mode="after")
+    def validate_browser_target(self) -> ConnectionConnectRequest:
+        if self.allow_browser_fallback and self.type not in MICROSOFT_TARGETS:
+            raise ValueError("browser fallback is available only for Microsoft targets")
+        return self
 
 
 class RunRequest(BaseModel):
@@ -153,8 +193,10 @@ def create_app(
     settings: ConnectSettings | None = None,
     connection_service: ConnectionTester | None = None,
     doctor_service: DoctorService | None = None,
-    run_handler: Callable[[dict[str, Any]], ResultEnvelope] | None = None,
+    run_handler: RunHandler | None = None,
     token_store: OAuthTokenStore | None = None,
+    browser_connector: Callable[[str, str], ResultEnvelope] | None = None,
+    session_registry: InteractiveSessionRegistry | None = None,
 ) -> FastAPI:
     startup_error: ValueError | None = None
     if settings is None:
@@ -171,26 +213,37 @@ def create_app(
         tokens,
     )
     doctor = doctor_service or DoctorService(settings, profiles)
-    execute_run = run_handler or (
-        lambda payload: run_application(
+    sessions = session_registry or InteractiveSessionRegistry()
+
+    def default_run(payload: dict[str, Any], *, browser_via_http: bool = False) -> ResultEnvelope:
+        return run_application(
             payload,
             interactive=False,
             settings=settings,
             token_store=tokens,
+            browser_via_http=browser_via_http,
         )
-    )
+
+    execute_run: RunHandler = run_handler or default_run
+
+    def start_browser_login(type_value: str, account: str) -> ResultEnvelope:
+        connector = browser_connector or connections.connect_browser
+        return connector(type_value, account)
 
     application = FastAPI(
         title="Solercia Connect",
         version=__version__,
-        description="Loopback-only, non-interactive adapter over Solercia Connect services.",
+        description=(
+            "Loopback-only adapter over Solercia Connect services. Interactive browser login is "
+            "available only behind an explicit local switch."
+        ),
     )
     application.state.settings = settings
     application.state.startup_error = startup_error
 
     @application.middleware("http")
     async def require_local_api_key(request: Request, call_next: Any) -> Any:
-        if request.method == "POST" and request.url.path in _PROTECTED_POST_PATHS:
+        if _requires_api_key(request.method, request.url.path):
             error_response = _api_key_error(request, settings)
             if error_response is not None:
                 return error_response
@@ -272,7 +325,7 @@ def create_app(
                 data={
                     "version": __version__,
                     "bind_host": settings.api_host,
-                    "interactive_login": False,
+                    "interactive_login": http_interactive_allowed(settings),
                 },
             ),
             200,
@@ -353,7 +406,7 @@ def create_app(
 
     @application.post("/v1/connections/test")
     def test_connection(body: ConnectionTestRequest) -> JSONResponse:
-        if body.allow_browser_fallback:
+        if body.allow_browser_fallback and not http_interactive_allowed(settings):
             envelope = _http_action_required(
                 "connections.test",
                 body.type,
@@ -364,25 +417,154 @@ def create_app(
         envelope = connections.test_connection(
             body.type.value,
             body.account,
-            allow_browser_fallback=False,
+            allow_browser_fallback=body.allow_browser_fallback,
         )
         return _response(envelope, _http_status(envelope))
 
-    @application.post("/v1/run")
-    def run(body: RunRequest) -> JSONResponse:
-        if body.allow_browser_fallback:
-            assert body.account is not None
+    @application.post("/v1/connections/connect", status_code=202)
+    def connect(body: ConnectionConnectRequest) -> JSONResponse:
+        if not body.allow_browser_fallback:
+            envelope = ResultEnvelope.failure(
+                operation="connections.connect",
+                status="invalid_input",
+                provider=body.type.value,
+                account=body.account,
+                data={"interactive_flow_started": False},
+                error=ErrorDetail(
+                    "invalid_input",
+                    "The loopback service starts only the supervised browser route",
+                    False,
+                    remediation=(
+                        "Use the CLI for the official device-code route.",
+                        connect_command(body.type, body.account),
+                    ),
+                    cause_category="input",
+                ),
+            )
+            return _response(envelope, 422)
+        if not http_interactive_allowed(settings):
             envelope = _http_action_required(
-                "run",
+                "connections.connect",
                 body.type,
                 body.account,
                 browser_fallback=True,
             )
             return _response(envelope, 409)
-        envelope = execute_run(body.application_payload())
+        type_value = body.type.value
+        account = body.account
+        session_id = sessions.start(
+            type_value,
+            account,
+            lambda: start_browser_login(type_value, account),
+        )
+        if session_id is None:
+            running = sessions.active()
+            envelope = ResultEnvelope.failure(
+                operation="connections.connect",
+                status="busy",
+                provider=type_value,
+                account=account,
+                route="browser",
+                data={
+                    "session_id": running.session_id if running is not None else None,
+                    "interactive_flow_started": False,
+                },
+                error=ErrorDetail(
+                    "interactive_session_busy",
+                    "Another interactive browser session is still running",
+                    True,
+                    remediation=(
+                        "Poll GET /v1/connections/sessions/{session_id} until it finishes, "
+                        "then retry.",
+                    ),
+                    cause_category="interactive_authorization",
+                ),
+            )
+            return _response(envelope, 409)
+        envelope = ResultEnvelope.success(
+            operation="connections.connect",
+            status="started",
+            provider=type_value,
+            account=account,
+            route="browser",
+            data={
+                "session_id": session_id,
+                "interactive_flow_started": True,
+                "expires_in_seconds": sessions.retention_seconds,
+            },
+        )
+        return _response(envelope, 202)
+
+    @application.get("/v1/connections/sessions/{session_id}")
+    def inspect_session(session_id: str) -> JSONResponse:
+        session = sessions.get(session_id)
+        if session is None:
+            envelope = ResultEnvelope.failure(
+                operation="connections.session",
+                status="not_found",
+                error=ErrorDetail(
+                    "session_not_found",
+                    "No interactive session with that id is known to this service process",
+                    False,
+                    remediation=("Start a new login with POST /v1/connections/connect.",),
+                    cause_category="input",
+                ),
+            )
+            return _response(envelope, 404)
+        timestamps = {
+            "session_id": session.session_id,
+            "started_at": session.started_at.isoformat(),
+        }
+        if session.result is None:
+            envelope = ResultEnvelope.success(
+                operation="connections.session",
+                status="running",
+                provider=session.type_value,
+                account=session.account,
+                route="browser",
+                data={**timestamps, "interactive_flow_started": True},
+            )
+            return _response(envelope, 200)
+        result = session.result
+        finished_at = session.finished_at.isoformat() if session.finished_at is not None else None
+        data = result.data if isinstance(result.data, dict) else {}
+        envelope = ResultEnvelope(
+            result.ok,
+            "connections.session",
+            result.status,
+            result.provider,
+            result.account,
+            result.route,
+            {**data, **timestamps, "finished_at": finished_at},
+            result.receipt,
+            result.error,
+        )
+        return _response(envelope, 200)
+
+    @application.post("/v1/run")
+    def run(body: RunRequest) -> JSONResponse:
+        if body.allow_browser_fallback:
+            assert body.account is not None
+            if not http_interactive_allowed(settings):
+                envelope = _http_action_required(
+                    "run",
+                    body.type,
+                    body.account,
+                    browser_fallback=True,
+                )
+                return _response(envelope, 409)
+            envelope = execute_run(body.application_payload(), browser_via_http=True)
+        else:
+            envelope = execute_run(body.application_payload())
         return _response(envelope, _http_status(envelope))
 
     return application
+
+
+def _requires_api_key(method: str, path: str) -> bool:
+    if method == "POST" and path in _PROTECTED_POST_PATHS:
+        return True
+    return method == "GET" and path.startswith(_PROTECTED_GET_PREFIXES)
 
 
 def _api_key_error(request: Request, settings: ConnectSettings) -> JSONResponse | None:
@@ -449,6 +631,7 @@ def _http_action_required(
                     account,
                     allow_browser_fallback=browser_fallback,
                 ),
+                _HTTP_INTERACTIVE_REMEDIATION,
             ),
             cause_category="interactive_authorization",
         ),
@@ -460,6 +643,8 @@ def _http_status(envelope: ResultEnvelope) -> int:
         return 200
     if envelope.status == "invalid_input":
         return 422
+    if envelope.status == "not_found":
+        return 404
     if envelope.status == "action_required":
         return 409
     if envelope.status in {"configuration_error", "not_ready"}:

@@ -193,6 +193,22 @@ class ConnectSettings:
     data_dir: Path
     configured_names: tuple[str, ...]
     env_file: Path | None = None
+    http_interactive_login: bool = False
+
+
+def http_interactive_allowed(settings: ConnectSettings) -> bool:
+    """Effective gate for starting the supervised browser from the loopback service.
+
+    The switch alone is not enough: the browser route must be globally available and the
+    service must already require its local API key, so an unauthenticated loopback client can
+    never open a headed window. ``load_settings`` already forces the bind host to loopback.
+    """
+
+    return (
+        settings.http_interactive_login
+        and settings.api_key is not None
+        and settings.browser_fallback_enabled
+    )
 
 
 def load_settings(
@@ -243,6 +259,10 @@ def load_settings(
         data_dir=data_home / "solercia-connect",
         configured_names=tuple(sorted(name for name, value in values.items() if value.strip())),
         env_file=explicit,
+        http_interactive_login=_bool_value(
+            values.get("SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN", ""),
+            "SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN",
+        ),
     )
 
 

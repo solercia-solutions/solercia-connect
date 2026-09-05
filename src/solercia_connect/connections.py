@@ -4,6 +4,7 @@ import time
 import webbrowser
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, Protocol, cast
 
@@ -348,10 +349,22 @@ class ConnectionService:
         assert parsed is not None and normalized is not None
         try:
             profile = self._profiles.get(parsed, normalized)
-            if profile is None or profile.route == "browser":
-                command = connect_command(parsed, normalized)
-                if allow_browser_fallback:
-                    command += " --allow-browser-fallback"
+            browser_check = (
+                profile is not None
+                and profile.route == "browser"
+                and self._browser_route_authorized(allow_browser_fallback)
+            )
+            if profile is None or (profile.route == "browser" and not browser_check):
+                command = connect_command(
+                    parsed,
+                    normalized,
+                    allow_browser_fallback=allow_browser_fallback,
+                )
+                remediation: tuple[str, ...] = (command,)
+                if profile is None and allow_browser_fallback:
+                    # Nothing to test yet: the HTTP caller can start the supervised browser
+                    # itself when the service allows interactive login.
+                    remediation += (http_connect_hint(parsed, normalized),)
                 return ResultEnvelope.failure(
                     operation="connections.test",
                     status="action_required",
@@ -367,26 +380,89 @@ class ConnectionService:
                             else "Interactive authorization must run in the canonical CLI"
                         ),
                         True,
-                        remediation=(command,),
+                        remediation=remediation,
                         cause_category="interactive_authorization",
                     ),
                 )
-            result = self.status(parsed, normalized)
-            return ResultEnvelope(
-                result.ok,
-                "connections.test",
-                result.status,
-                result.provider,
-                result.account,
-                result.route,
-                result.data,
-                result.receipt,
-                result.error,
-            )
+            # A browser profile is verified headless against the persistent profile; the
+            # official profile keeps the token-backed identity check.
+            result = self.status(parsed, normalized, allow_browser_fallback=browser_check)
+            return replace(result, operation="connections.test")
         except ConnectorFailure as failure:
             return self._connector_failure("connections.test", parsed, normalized, failure)
         except (TypeError, ValueError) as failure:
             return self._configuration_exception("connections.test", parsed, normalized, failure)
+
+    def connect_browser(self, type: str | ConnectionType, account: str) -> ResultEnvelope:
+        """Start the supervised headed browser login for a Microsoft target.
+
+        This is the one documented deviation from official-first: the loopback service has no
+        terminal in which to show a device code, so this entry point goes straight to the
+        browser route. Password and MFA stay on Microsoft's page inside the persistent profile.
+        """
+
+        parsed, normalized, invalid = self._validated_identity(type, account, "connections.connect")
+        if invalid is not None:
+            return invalid
+        assert parsed is not None and normalized is not None
+        if parsed not in MICROSOFT_TARGETS:
+            return self._failure(
+                "connections.connect",
+                parsed,
+                normalized,
+                ReasonCode.CAPABILITY_NOT_IMPLEMENTED,
+                "Browser login is available only for Microsoft targets",
+                (connect_command(parsed, normalized),),
+                "capability",
+            )
+        if (
+            parsed is ConnectionType.TEAMS
+            and self._settings.microsoft_tenant.casefold() == "consumers"
+        ):
+            return self._failure(
+                "connections.connect",
+                parsed,
+                normalized,
+                ReasonCode.PERSONAL_ACCOUNT_UNSUPPORTED,
+                "Teams transcript APIs do not support personal Microsoft accounts",
+                ("Use a Microsoft work or school tenant account.",),
+                "provider_policy",
+            )
+        if not self._settings.browser_fallback_enabled:
+            return ResultEnvelope.failure(
+                operation="connections.connect",
+                status="configuration_error",
+                provider=parsed.value,
+                account=normalized,
+                route="browser",
+                data={"interactive_flow_started": False},
+                error=ErrorDetail(
+                    "configuration_invalid",
+                    "Microsoft browser fallback is not globally available",
+                    False,
+                    ("SOLERCIA_CONNECT_BROWSER_FALLBACK",),
+                    (
+                        "Set SOLERCIA_CONNECT_BROWSER_FALLBACK=true and restart the service.",
+                        connect_command(parsed, normalized, allow_browser_fallback=True),
+                    ),
+                    "configuration",
+                ),
+            )
+        try:
+            result = self._browser_fallback(parsed, normalized)
+        except (TypeError, ValueError) as failure:
+            return self._configuration_exception("connections.connect", parsed, normalized, failure)
+        except Exception:
+            return self._failure(
+                "connections.connect",
+                parsed,
+                normalized,
+                ReasonCode.UNKNOWN_ERROR,
+                "Browser login failed with an unknown error",
+                ("Run doctor for structured readiness diagnostics.",),
+                "unknown",
+            )
+        return replace(result, operation="connections.connect")
 
     def disconnect(self, type: str | ConnectionType, account: str) -> ResultEnvelope:
         parsed, normalized, invalid = self._validated_identity(type, account, "disconnect")
@@ -831,6 +907,15 @@ def status_command(
 ) -> str:
     command = f"solercia-connect status {parsed.value} {account}"
     return command + (" --allow-browser-fallback" if allow_browser_fallback else "")
+
+
+def http_connect_hint(parsed: ConnectionType, account: str) -> str:
+    """Name the loopback endpoint that starts the supervised browser when the service allows it."""
+
+    return (
+        "POST /v1/connections/connect "
+        f'{{"type":"{parsed.value}","account":"{account}","allow_browser_fallback":true}}'
+    )
 
 
 def _remediation(

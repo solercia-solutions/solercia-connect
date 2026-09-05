@@ -12,7 +12,7 @@ from solercia_connect.config import (
     normalize_account,
     target_spec,
 )
-from solercia_connect.connections import connect_command
+from solercia_connect.connections import connect_command, http_connect_hint
 from solercia_connect.domain import (
     CalendarQuery,
     Capability,
@@ -38,8 +38,15 @@ def run_application(
     interactive: bool = True,
     settings: ConnectSettings | None = None,
     token_store: OAuthTokenStore | None = None,
+    browser_via_http: bool = False,
 ) -> ResultEnvelope:
-    """Execute a validated connector request for CLI or HTTP adapters."""
+    """Execute a validated connector request for CLI or HTTP adapters.
+
+    ``browser_via_http`` is the loopback service's opt-in: the browser adapter may serve the
+    read (headless, over the persistent profile) even though nobody is at a terminal. An
+    interactive prerequisite still comes back as ``action_required`` so the caller can tell
+    "needs login" from "failed".
+    """
 
     provider: str | None = None
     account: str | None = None
@@ -77,12 +84,12 @@ def run_application(
             ),
         )
 
-    if not interactive and fallback:
+    if not interactive and fallback and not browser_via_http:
         assert account is not None
         return _interactive_action(type_value, account, browser_fallback=True)
 
     active_settings = settings
-    if not interactive and type_value in _OAUTH_TYPES:
+    if not interactive and not browser_via_http and type_value in _OAUTH_TYPES:
         assert account is not None
         try:
             active_settings = active_settings or load_settings()
@@ -111,7 +118,7 @@ def run_application(
             connection_type=type_value,
             account=account,
             capability=capability,
-            include_browser=interactive and fallback,
+            include_browser=(interactive or browser_via_http) and fallback,
             settings_override=active_settings,
         )
         outcome = ConnectorRuntime(registry).execute(
@@ -133,7 +140,13 @@ def run_application(
             )
         if not interactive and outcome.receipt.final_reason in _INTERACTIVE_REASONS:
             assert account is not None
-            return _interactive_action(type_value, account, receipt=outcome.receipt)
+            return _interactive_action(
+                type_value,
+                account,
+                browser_fallback=fallback,
+                receipt=outcome.receipt,
+                via_http=browser_via_http,
+            )
         detail = outcome.receipt.steps[-1].detail if outcome.receipt.steps else "Run failed"
         return ResultEnvelope.failure(
             operation="run",
@@ -149,7 +162,12 @@ def run_application(
     except ConnectorFailure as failure:
         if not interactive and failure.reason in _INTERACTIVE_REASONS:
             assert account is not None
-            return _interactive_action(type_value, account)
+            return _interactive_action(
+                type_value,
+                account,
+                browser_fallback=fallback,
+                via_http=browser_via_http,
+            )
         return ResultEnvelope.failure(
             operation="run",
             status="failed",
@@ -198,7 +216,17 @@ def _interactive_action(
     *,
     browser_fallback: bool = False,
     receipt: Any = None,
+    via_http: bool = False,
 ) -> ResultEnvelope:
+    remediation: tuple[str, ...] = (
+        connect_command(
+            type_value,
+            account,
+            allow_browser_fallback=browser_fallback,
+        ),
+    )
+    if via_http:
+        remediation += (http_connect_hint(type_value, account),)
     return ResultEnvelope.failure(
         operation="run",
         status="action_required",
@@ -208,15 +236,13 @@ def _interactive_action(
         data={"interactive_flow_started": False},
         error=ErrorDetail(
             "action_required",
-            "Interactive authorization must run in the canonical CLI",
-            True,
-            remediation=(
-                connect_command(
-                    type_value,
-                    account,
-                    allow_browser_fallback=browser_fallback,
-                ),
+            (
+                "Interactive browser login is required before this read can run"
+                if via_http
+                else "Interactive authorization must run in the canonical CLI"
             ),
+            True,
+            remediation=remediation,
             cause_category="interactive_authorization",
         ),
     )
