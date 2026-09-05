@@ -2,14 +2,16 @@
 
 Solercia Connect is an independently installable connector product. Interactive OAuth belongs to
 the installed CLI; the loopback FastAPI service is a non-interactive adapter over the same Python
-application services. Skills and docs orchestrate the runtime but contain no provider behavior.
+application services, with one explicit local opt-in for the supervised Microsoft browser login.
+Skills and docs orchestrate the runtime but contain no provider behavior.
 
 ## Request paths
 
 ```text
 Typer CLI (interactive) -----------+
                                    |
-FastAPI loopback (non-interactive) +--> application services
+FastAPI loopback (non-interactive, +--> application services
+  opt-in browser login)            |
                                           |-- typed settings + doctor
                                           |-- connection lifecycle + OAuth
                                           |-- capability execution
@@ -21,10 +23,21 @@ FastAPI loopback (non-interactive) +--> application services
                               versioned envelope + record(s) + receipt
 ```
 
-HTTP never opens or invokes a browser. The FastAPI boundary rejects a requested browser route
-before calling an application service; non-interactive application execution also excludes the
-browser adapter before runtime construction. An interactive prerequisite becomes
+By default HTTP never opens or invokes a browser. The FastAPI boundary rejects a requested browser
+route before calling an application service; non-interactive application execution also excludes
+the browser adapter before runtime construction. An interactive prerequisite becomes
 `action_required` with the exact `solercia-connect connect TYPE ACCOUNT` command.
+
+The opt-in is `SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN=true`, effective only together with
+`SOLERCIA_CONNECT_BROWSER_FALLBACK=true` and a configured API key (`http_interactive_allowed`).
+With the gate on, `POST /v1/connections/connect` runs `ConnectionService.connect_browser` in a
+daemon thread tracked by a process-local `InteractiveSessionRegistry` (one headed browser at a
+time, results kept in memory for one hour), `GET /v1/connections/sessions/{id}` reports it, and
+`/v1/connections/test` and `/v1/run` accept `allow_browser_fallback` so a browser-route profile
+serves reads headless (`run_application(..., browser_via_http=True)`). `connect_browser` is the one
+documented deviation from official-first: over HTTP there is no terminal in which to show a device
+code, so it goes straight to the browser route. Login and MFA still happen on Microsoft's page
+inside the persistent profile; no credential crosses HTTP.
 
 ## Boundaries
 
@@ -38,7 +51,7 @@ browser adapter before runtime construction. An interactive prerequisite becomes
 | Domain | Capabilities, queries, DTOs, provenance, receipt vocabulary | HTTP, OAuth, selectors |
 | Provider adapters | Vendor endpoints, paging, normalization, pre-read identity | Retry/fallback policy, persistence |
 | Runtime | Fixed retries, fallback decision, immutable receipt | Vendor parsing, LLM route selection |
-| FastAPI adapter | Typed POST bodies, loopback API-key boundary, HTTP status mapping | Interactive login or provider-specific logic |
+| FastAPI adapter | Typed POST bodies, loopback API-key boundary, HTTP status mapping, opt-in supervised browser sessions | Hidden interaction, credentials in HTTP, provider-specific logic |
 | Browser adapter | Dedicated-profile login/MFA/status, transient Outlook session authorization, and identity binding | Persisted tokens, passwords, undocumented extraction claims |
 
 There is no database. Provider clients are semantic integration ports, not CRUD repositories.

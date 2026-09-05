@@ -37,11 +37,18 @@ sensitive.
 ## Service and output
 
 - The FastAPI adapter binds to loopback by default and rejects non-loopback host configuration.
-- HTTP never opens or invokes a browser, starts interactive OAuth, or waits for login/MFA. Browser
-  requests are rejected before application-service, runtime, or provider invocation. It returns an
-  `action_required` envelope with the canonical CLI command.
-- `POST /v1/connections/test` and `POST /v1/run` require
-  `X-Solercia-Connect-Key`; comparison is constant-time. Doctor reports when the key is absent.
+- By default HTTP never opens or invokes a browser, starts interactive OAuth, or waits for
+  login/MFA. Browser requests are rejected before application-service, runtime, or provider
+  invocation. It returns an `action_required` envelope with the canonical CLI command.
+- `SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN=true` is an explicit local opt-in. It is effective only
+  together with `SOLERCIA_CONNECT_BROWSER_FALLBACK=true` and a configured API key, so an
+  unauthenticated loopback client can never open a headed window. It starts the same supervised
+  browser the CLI uses, on the persistent profile of the requested account; password and MFA stay
+  on Microsoft's page and never travel over HTTP. One headed browser runs at a time and session
+  state lives only in process memory.
+- `POST /v1/connections/test`, `POST /v1/run`, `POST /v1/connections/connect`, and
+  `GET /v1/connections/sessions/{id}` require `X-Solercia-Connect-Key`; comparison is
+  constant-time. Doctor reports when the key is absent.
 - CLI/HTTP use `solercia.connect/v1`. Unknown exceptions return safe categories, not tracebacks.
 - `--output` writes atomically with mode `0600`, refuses symlinks, and never overwrites unless
   `--force` is explicit.

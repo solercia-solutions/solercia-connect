@@ -274,9 +274,17 @@ curl -X POST http://127.0.0.1:8765/v1/connections/test \
   -d '{"type":"outlook","account":"user@example.com","allow_browser_fallback":false}'
 ```
 
-HTTP never opens or invokes a browser and never starts login/MFA. When interaction is needed, it returns
-`action_required` and the exact CLI command. All extraction POST routes require the local API key.
-See [API examples](docs/runbooks/api.md).
+By default HTTP never opens or invokes a browser and never starts login/MFA. When interaction is
+needed, it returns `action_required` with the exact CLI command and the switch that would allow the
+service to handle it. All extraction POST routes require the local API key.
+
+Opt-in interactive login: with `SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN=true` (plus
+`SOLERCIA_CONNECT_BROWSER_FALLBACK=true` and the API key), `POST /v1/connections/connect` starts
+the supervised headed browser for a Microsoft target on this machine and `GET
+/v1/connections/sessions/{id}` reports the outcome; `/v1/connections/test` and `/v1/run` then serve
+browser-route profiles headless. Password and MFA stay on Microsoft's page inside the persistent
+profile; nothing about credentials travels over HTTP. `GET /v1/health` reports the effective gate as
+`interactive_login`. See [API examples](docs/runbooks/api.md).
 
 ## Deterministic routing
 

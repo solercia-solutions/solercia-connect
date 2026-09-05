@@ -59,8 +59,12 @@ solercia-connect run \
   --output transcripts.json
 ```
 
-The loopback service does not offer this route: interactive authorization is CLI-only by design,
-so a connector reading through the local API needs an account connected over the official route.
+By default the loopback service does not offer this route: interactive authorization stays in the
+CLI, so a connector reading through the local API needs an account connected over the official
+route. With `SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN=true` (plus `SOLERCIA_CONNECT_BROWSER_FALLBACK=true`
+and the API key) the service can start the same supervised browser through
+`POST /v1/connections/connect` and then serve these reads over the saved profile with
+`"allow_browser_fallback":true`; see the [API runbook](api.md#interactive-login-opt-in).
 
 ## Read the inbox
 

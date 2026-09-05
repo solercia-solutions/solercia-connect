@@ -29,6 +29,10 @@ mkdir -p ~/.solercia
 cat > ~/.solercia/connect.env <<'EOF'
 # Ruta por navegador: no necesita registrar ninguna aplicación.
 SOLERCIA_CONNECT_BROWSER_FALLBACK=true
+# Opcional: permite que el servicio local (solercia-connect-service) abra ese
+# mismo navegador supervisado cuando otro programa se lo pide por HTTP.
+# Requiere además SOLERCIA_CONNECT_API_KEY. Por defecto está apagado.
+# SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN=true
 EOF
 
 export SOLERCIA_CONNECT_ENV_FILE=~/.solercia/connect.env
@@ -38,6 +42,13 @@ Agrega ese `export` a tu `~/.zshrc` para no repetirlo.
 
 > El archivo guarda configuración, nunca contraseñas. Connect no pide ni
 > almacena tu contraseña: eso ocurre en tu navegador, contra Microsoft.
+
+> `SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN` solo tiene sentido si otro
+> programa de tu máquina (por ejemplo, Solercia Command) consume el servicio
+> local y necesita iniciar la sesión de Microsoft sin pasar por la terminal.
+> Con el interruptor encendido, `POST /v1/connections/connect` abre la
+> ventana del navegador en tu equipo; la contraseña y el MFA siguen
+> ocurriendo en la página de Microsoft, nunca viajan por HTTP.
 
 ### Las dos rutas
 
