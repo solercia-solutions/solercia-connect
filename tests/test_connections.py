@@ -1087,3 +1087,166 @@ def test_oauth_factory_enforces_provider_specific_configuration_and_scopes(
         oauth_provider_from_settings(missing, store, ConnectionType.OUTLOOK, "user@example.com")
     with pytest.raises(ValueError, match="Google client"):
         oauth_provider_from_settings(missing, store, ConnectionType.GMAIL, "user@example.com")
+
+
+def test_connect_browser_goes_straight_to_the_supervised_browser_and_saves_the_profile(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path, SOLERCIA_CONNECT_BROWSER_FALLBACK="true")
+    profiles = ProfileStore.from_settings(settings)
+    browser_calls: list[tuple[ConnectionType, str]] = []
+    service = ConnectionService(
+        settings,
+        profiles,
+        MemoryTokenStore(),
+        oauth_builder=lambda type, account: pytest.fail(
+            "HTTP browser login never starts device-code OAuth"
+        ),
+        browser_connector=lambda type, account: browser_calls.append((type, account)) or account,
+        clock=lambda: NOW,
+    )
+
+    result = service.connect_browser("outlook", "User@Example.com")
+
+    assert result.ok is True
+    assert result.operation == "connections.connect"
+    assert result.status == "connected_browser"
+    assert result.route == "browser"
+    assert result.data["identity_verified"] is True
+    assert browser_calls == [(ConnectionType.OUTLOOK, "user@example.com")]
+    profile = profiles.get("outlook", "user@example.com")
+    assert profile is not None and profile.route == "browser"
+
+
+def test_connect_browser_rejects_non_microsoft_targets_and_a_disabled_global_gate(
+    tmp_path: Path,
+) -> None:
+    enabled = _settings(tmp_path / "enabled", SOLERCIA_CONNECT_BROWSER_FALLBACK="true")
+    disabled = _settings(tmp_path / "disabled")
+    browser_calls: list[str] = []
+
+    def service_for(settings: Any) -> ConnectionService:
+        return ConnectionService(
+            settings,
+            ProfileStore.from_settings(settings),
+            MemoryTokenStore(),
+            browser_connector=lambda type, account: browser_calls.append(account) or account,
+            clock=lambda: NOW,
+        )
+
+    gmail = service_for(enabled).connect_browser("gmail", "user@example.com")
+    jira = service_for(enabled).connect_browser("jira", "user@example.com")
+    invalid = service_for(enabled).connect_browser("outlook", "not-an-account")
+    off = service_for(disabled).connect_browser("outlook", "user@example.com")
+
+    assert gmail.ok is False
+    assert gmail.error is not None and gmail.error.code == "capability_not_implemented"
+    assert jira.error is not None and jira.error.code == "capability_not_implemented"
+    assert invalid.status == "invalid_input"
+    assert off.status == "configuration_error"
+    assert off.error is not None and off.error.code == "configuration_invalid"
+    assert off.error.missing_configuration == ("SOLERCIA_CONNECT_BROWSER_FALLBACK",)
+    assert off.data["interactive_flow_started"] is False
+    assert browser_calls == []
+    assert ProfileStore.from_settings(disabled).get("outlook", "user@example.com") is None
+
+
+def test_connect_browser_identity_mismatch_and_unexpected_errors_stay_safe(tmp_path: Path) -> None:
+    settings = _settings(tmp_path, SOLERCIA_CONNECT_BROWSER_FALLBACK="true")
+    profiles = ProfileStore.from_settings(settings)
+
+    def broken(type: ConnectionType, account: str) -> str:
+        raise RuntimeError("sensitive playwright detail")
+
+    mismatch = ConnectionService(
+        settings,
+        profiles,
+        MemoryTokenStore(),
+        browser_connector=lambda type, account: "other@example.com",
+        clock=lambda: NOW,
+    ).connect_browser("outlook", "user@example.com")
+    unknown = ConnectionService(
+        settings,
+        profiles,
+        MemoryTokenStore(),
+        browser_connector=broken,
+        clock=lambda: NOW,
+    ).connect_browser("outlook", "user@example.com")
+
+    assert mismatch.operation == "connections.connect"
+    assert mismatch.error is not None and mismatch.error.code == "browser_account_mismatch"
+    assert unknown.operation == "connections.connect"
+    assert unknown.error is not None and unknown.error.code == "unknown_error"
+    assert "sensitive" not in unknown.error.message
+    assert profiles.get("outlook", "user@example.com") is None
+
+
+def test_connection_test_verifies_a_browser_profile_headless_when_both_gates_allow_it(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path, SOLERCIA_CONNECT_BROWSER_FALLBACK="true")
+    profiles = ProfileStore.from_settings(settings)
+    status_calls: list[tuple[ConnectionType, str]] = []
+    service = ConnectionService(
+        settings,
+        profiles,
+        MemoryTokenStore(),
+        browser_connector=lambda type, account: pytest.fail(
+            "A connection test never opens a headed browser"
+        ),
+        browser_status=lambda type, account: status_calls.append((type, account)) or account,
+        clock=lambda: NOW,
+    )
+
+    absent = service.test_connection("outlook", "user@example.com", allow_browser_fallback=True)
+    profiles.save(ConnectionProfile.create("outlook", "user@example.com", route="browser", now=NOW))
+    without_gate = service.test_connection("outlook", "user@example.com")
+    calls_before_verification = list(status_calls)
+    verified = service.test_connection("outlook", "user@example.com", allow_browser_fallback=True)
+
+    assert absent.status == "action_required"
+    assert absent.error is not None
+    assert absent.error.remediation == (
+        "solercia-connect connect outlook user@example.com --allow-browser-fallback",
+        'POST /v1/connections/connect {"type":"outlook","account":"user@example.com",'
+        '"allow_browser_fallback":true}',
+    )
+    assert without_gate.status == "action_required"
+    assert without_gate.error is not None
+    assert without_gate.error.remediation == ("solercia-connect connect outlook user@example.com",)
+    assert calls_before_verification == []
+    assert verified.ok is True
+    assert verified.operation == "connections.test"
+    assert verified.status == "connected_browser"
+    assert verified.route == "browser"
+    assert verified.data["identity_verified"] is True
+    assert status_calls == [(ConnectionType.OUTLOOK, "user@example.com")]
+
+
+def test_connection_test_browser_profile_maps_expired_login_to_action_required(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path, SOLERCIA_CONNECT_BROWSER_FALLBACK="true")
+    profiles = ProfileStore.from_settings(settings)
+    profiles.save(ConnectionProfile.create("outlook", "user@example.com", route="browser", now=NOW))
+
+    def expired(type: ConnectionType, account: str) -> str:
+        raise ConnectorFailure(ReasonCode.BROWSER_LOGIN_REQUIRED, "Browser session expired")
+
+    service = ConnectionService(
+        settings,
+        profiles,
+        MemoryTokenStore(),
+        browser_status=expired,
+        clock=lambda: NOW,
+    )
+
+    result = service.test_connection("outlook", "user@example.com", allow_browser_fallback=True)
+
+    assert result.ok is False
+    assert result.operation == "connections.test"
+    assert result.status == "action_required"
+    assert result.error is not None and result.error.code == "action_required"
+    assert result.error.remediation == (
+        "solercia-connect connect outlook user@example.com --allow-browser-fallback",
+    )

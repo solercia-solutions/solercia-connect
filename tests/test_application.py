@@ -427,3 +427,95 @@ def test_query_builder_rejects_wrong_target_missing_text_and_invalid_optionals()
             None,
             {**base, "assignee": 7},
         )
+
+
+def test_run_application_via_http_serves_the_browser_route_without_an_upfront_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def registry(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "registry"
+
+    outcome = ExecutionOutcome(
+        True,
+        (mail_record(),),
+        _receipt(ok=True, reason=ReasonCode.SUCCESS, route=RouteKind.BROWSER),
+    )
+    monkeypatch.setattr(application, "registry_from_environment", registry)
+    monkeypatch.setattr(application, "ConnectorRuntime", _runtime_for(outcome))
+    monkeypatch.setattr(
+        application,
+        "load_settings",
+        lambda: pytest.fail("browser_via_http skips the non-interactive OAuth preflight"),
+    )
+
+    result = application.run_application(
+        _payload(allow_browser_fallback=True),
+        interactive=False,
+        browser_via_http=True,
+    )
+
+    assert result.ok is True
+    assert result.route == "browser"
+    assert captured["include_browser"] is True
+    assert captured["connection_type"] is ConnectionType.OUTLOOK
+
+
+def test_run_application_via_http_still_reports_login_as_action_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failed = ExecutionOutcome(
+        False,
+        (),
+        _receipt(ok=False, reason=ReasonCode.BROWSER_LOGIN_REQUIRED, route=RouteKind.BROWSER),
+    )
+    monkeypatch.setattr(application, "registry_from_environment", lambda **_: "registry")
+    monkeypatch.setattr(application, "ConnectorRuntime", _runtime_for(failed))
+
+    result = application.run_application(
+        _payload(allow_browser_fallback=True),
+        interactive=False,
+        browser_via_http=True,
+    )
+
+    def expired(**_: object) -> object:
+        raise ConnectorFailure(ReasonCode.INVALID_CREDENTIALS, "Stored session expired")
+
+    monkeypatch.setattr(application, "registry_from_environment", expired)
+    raised = application.run_application(
+        _payload(allow_browser_fallback=True),
+        interactive=False,
+        browser_via_http=True,
+    )
+
+    for envelope in (result, raised):
+        assert envelope.ok is False
+        assert envelope.status == "action_required"
+        assert envelope.error is not None and envelope.error.code == "action_required"
+        assert envelope.error.cause_category == "interactive_authorization"
+        assert envelope.data["interactive_flow_started"] is False
+        assert envelope.error.remediation == (
+            "solercia-connect connect outlook user@example.com --allow-browser-fallback",
+            'POST /v1/connections/connect {"type":"outlook","account":"user@example.com",'
+            '"allow_browser_fallback":true}',
+        )
+    assert result.receipt == failed.receipt
+
+
+def test_run_application_noninteractive_without_the_http_switch_still_refuses_browser_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_registry(**_: object) -> object:
+        raise AssertionError("The refusal happens before any registry access")
+
+    monkeypatch.setattr(application, "registry_from_environment", unexpected_registry)
+
+    result = application.run_application(_payload(allow_browser_fallback=True), interactive=False)
+
+    assert result.status == "action_required"
+    assert result.error is not None
+    assert result.error.remediation == (
+        "solercia-connect connect outlook user@example.com --allow-browser-fallback",
+    )

@@ -13,6 +13,7 @@ from typer.testing import CliRunner
 import solercia_connect.application as application_module
 import solercia_connect.bootstrap as bootstrap_module
 import solercia_connect.output as output_module
+import solercia_connect.service as service_module
 from solercia_connect.cli import app
 from solercia_connect.config import ConnectionProfile, ProfileStore, load_settings
 from solercia_connect.connections import ConnectionService
@@ -86,7 +87,8 @@ def test_http_rejects_browser_fallback_before_connection_service_invocation(
     assert response.status_code == 409
     assert response.json()["status"] == "action_required"
     assert response.json()["error"]["remediation"] == [
-        "solercia-connect connect outlook user@example.com --allow-browser-fallback"
+        "solercia-connect connect outlook user@example.com --allow-browser-fallback",
+        service_module._HTTP_INTERACTIVE_REMEDIATION,
     ]
     assert sentinel.calls == 0
 
@@ -109,7 +111,8 @@ def test_http_rejects_browser_fallback_before_run_application_invocation(tmp_pat
     assert response.status_code == 409
     assert response.json()["status"] == "action_required"
     assert response.json()["error"]["remediation"] == [
-        "solercia-connect connect outlook user@example.com --allow-browser-fallback"
+        "solercia-connect connect outlook user@example.com --allow-browser-fallback",
+        service_module._HTTP_INTERACTIVE_REMEDIATION,
     ]
     assert calls == 0
 
