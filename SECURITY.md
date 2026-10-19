@@ -1,8 +1,9 @@
 # Solercia Connect security boundary
 
-Solercia Connect reads institutional communication and service-management data. Treat OAuth
-grants, browser profiles, raw provider payloads, normalized output, and local API access as
-sensitive.
+Solercia Connect reads institutional communication and service-management data. Its only write is
+assigning Outlook categories to one message; see [Write exception](#write-exception-outlook-categories).
+Treat OAuth grants, browser profiles, raw provider payloads, normalized output, and local API access
+as sensitive.
 
 ## Secret and configuration storage
 
@@ -31,12 +32,18 @@ sensitive.
 - Use least-privilege read scopes: Microsoft `Mail.Read`, `Calendars.Read`, and the separate Teams
   `OnlineMeetingTranscript.Read.All`; Google `gmail.readonly` and
   `calendar.events.readonly` are separate grants.
+- No write scope is requested. The official route of the category write would need
+  `Mail.ReadWrite`, and adding it to the `outlook` target invalidates every existing grant, because
+  a stored grant must contain all of the target's scopes. That route stays disabled until a
+  separate scope decision.
 - Teams transcripts require work/school accounts and tenant permission. Personal accounts and
   tenant/admin policy blocks never route around policy.
 
 ## Service and output
 
 - The FastAPI adapter binds to loopback by default and rejects non-loopback host configuration.
+- HTTP never writes: `POST /v1/run` rejects `mail.categories.set` with 403 before the application
+  service runs, with or without the interactive login opt-in.
 - By default HTTP never opens or invokes a browser, starts interactive OAuth, or waits for
   login/MFA. Browser requests are rejected before application-service, runtime, or provider
   invocation. It returns an `action_required` envelope with the canonical CLI command.
@@ -76,10 +83,28 @@ sensitive.
     never included in a diagnostic.
   - It is read only from HTTPS requests whose host matches the provider allowlist, and it is sent
     only to endpoints on that same allowlist.
-  - It is used only for read-only calls to documented provider endpoints.
+  - It is used only for read-only calls to documented provider endpoints, plus the single
+    category write below when the same invocation also passes `--allow-write`.
 - Do not read `document.cookie`, browser local storage, session storage, or any other long-lived
   credential store. Do not persist cookies or profile contents outside the dedicated profile. Do
   not call retired or undocumented provider endpoints.
+
+## Write exception: Outlook categories
+
+Assigning categories to an existing Outlook message (`mail.categories.set`) is the only write, as
+accepted in `docs/decisions/2026-10-19-escritura-categorias-outlook.md`. Nothing else is written:
+no mail is sent, moved, marked, created, or deleted, and no master category, folder, calendar,
+file, or ticket changes.
+
+- Every invocation needs `--allow-write`, off by default. Without it the command fails with
+  `write_not_authorized` before any registry, browser, or provider call. No environment variable or
+  profile stands in for it, and the browser route still needs `--allow-browser-fallback` as well.
+- `--account` is required, and the mailbox identity is proven before the read and the write.
+- The only write call is one `PATCH` to one message whose body holds nothing but the category
+  collection, sent with `If-Match` set to the version read just before. `412` or `409` fails with
+  `write_conflict`; writes are never retried automatically.
+- When the computed list holds the same names the message already has, nothing is written.
+- HTTP rejects the capability by design; it runs only in the canonical CLI and the library.
 
 ## Never log or serialize
 

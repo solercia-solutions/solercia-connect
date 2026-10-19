@@ -2,7 +2,9 @@
 
 Solercia Connect is a Python 3.12, official-first connector runtime for Microsoft 365,
 Google Workspace, Jira, and GLPI. It normalizes read operations into typed records with
-provenance and deterministic execution receipts.
+provenance and deterministic execution receipts. Its only write is assigning Outlook categories to
+one message (`mail.categories.set`), accepted in
+`docs/decisions/2026-10-19-escritura-categorias-outlook.md`.
 
 ## Stack
 
@@ -43,7 +45,11 @@ uv build
 - Fail closed on invalid credentials, account mismatch, authorization-boundary risk,
   malformed provider data, and unknown failures.
 - Never log credentials, cookies, bearer tokens, authorization headers, or raw error bodies.
-- Browser operations are read-only and use a dedicated profile, never a personal Chrome profile.
+- Browser operations are read-only, except the category write above, and use a dedicated profile,
+  never a personal Chrome profile.
+- Writes need an explicit per-invocation `--allow-write` flag, off by default, never run over HTTP,
+  never retry, and touch nothing but the categories of one message. Any other write needs a new
+  ADR.
 - Keep provider access behind semantic ports; do not add CRUD repositories for vendor APIs.
 - Use timezone-aware datetimes and end-exclusive ranges.
 - Tests stay with the behavior they prove. Do not commit or push unless explicitly requested.

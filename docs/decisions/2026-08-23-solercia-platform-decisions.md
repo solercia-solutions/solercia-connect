@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptado
 - **Fecha de corte:** 2026-08-23
-- **Última actualización:** 2026-08-24
+- **Última actualización:** 2026-10-19
 - **Ámbito:** Identidad de producto, independencia operativa, integraciones, autenticación, límites de seguridad, persistencia y convenciones de datos
 - **Aplicación:** Obligatoria para cambios nuevos dentro de este ámbito
 
@@ -81,6 +81,15 @@ este registro fija la línea base aceptada al 2026-08-23.
    Outlook/Substrate permitidos, permanece transitorio, no se registra ni persiste y se elimina en
    éxito o error. Teams conserva su estrategia DOM versionada y acotada. Esta prueba de identidad no
    habilita extracción de buzón ni modifica el estado `not_implemented` del navegador.
+9. Connect es de solo lectura con una única excepción, aceptada el 2026-10-19 en
+   [`2026-10-19-escritura-categorias-outlook.md`](2026-10-19-escritura-categorias-outlook.md):
+   asignar categorías de Outlook a un mensaje existente (`mail.categories.set`). Cada invocación
+   exige `--allow-write`, apagada por defecto; la ruta de navegador exige además
+   `--allow-browser-fallback`. La única escritura es un `PATCH` cuyo cuerpo contiene solo las
+   categorías, condicionado a la versión leída, después de verificar la identidad del buzón. El
+   servicio HTTP la rechaza por diseño. La ruta oficial necesita `Mail.ReadWrite` y queda pendiente
+   de una decisión de alcances, porque agregarlo al target `outlook` invalida las concesiones
+   existentes. Ninguna otra escritura queda autorizada.
 
 ### 4. Frontera de seguridad e identidad de cuenta
 
@@ -225,6 +234,8 @@ No deben presentarse como capacidades terminadas.
 - [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md): límites de dominio, puertos, runtime, OAuth y fallback.
 - [`SECURITY.md`](../../SECURITY.md): identidad autenticada, secretos, logging y política fail-closed.
 - [`docs/ROADMAP.md`](../ROADMAP.md): estado implementado frente a validación viva pendiente.
+- [`2026-10-19-escritura-categorias-outlook.md`](2026-10-19-escritura-categorias-outlook.md):
+  excepción de escritura para las categorías de Outlook.
 
 Las referencias anteriores amplían este registro. Si una descripción histórica queda menos
 precisa que una decisión aceptada aquí, debe corregirse mediante un cambio documental explícito,
