@@ -145,7 +145,7 @@ fija reglas para las fases cuando se usa), así que este trabajo sigue ODD.
         solo lectura, con la bandera `--allow-write` por invocación.
   - [x] C8 Implementación con TDD de `mail.categories.set` por la ruta de navegador; el servicio
         HTTP la rechaza. La ruta oficial quedó bloqueada por alcances (ver C8).
-  - [ ] C9 Prueba controlada en vivo sobre un correo de prueba, con confirmación de Camilo y una
+  - [x] C9 Prueba controlada en vivo sobre un correo de prueba, con confirmación de Camilo y una
         categoría de prueba que no use el equipo.
 - **Contrato propuesto para el ADR:**
   - Entrada: `--message-id`, uno de `--add`, `--remove` o `--replace` (repetibles), y una bandera
@@ -204,7 +204,7 @@ fija reglas para las fases cuando se usa), así que este trabajo sigue ODD.
   artificial.
 - **Commit:** `121b64a feat(solercia): asigna categorías de outlook con --allow-write`.
 
-### C9. Prueba controlada en vivo (pendiente de Camilo)
+### C9. Prueba controlada en vivo
 
 Prohibido ejecutarla sin la confirmación de Camilo. Usa la categoría `Prueba soporte-kb`, que el
 equipo no usa; nunca `SOPORTE/*` ni `Resuelto`.
@@ -229,6 +229,22 @@ equipo no usa; nunca `SOPORTE/*` ni `Resuelto`.
 
 El efecto real de `If-Match` sobre mensajes no tiene prueba viva segura; queda anotado en el ADR.
 
+**Resultado (2026-10-19, con confirmación de Camilo):** correo de prueba que Camilo envió desde su
+cuenta del IDT a `pandora@idt.gov.co` con el asunto «Prueba soporte-kb», sin categorías al inicio.
+Ruta de navegador, sin MFA porque la sesión seguía vigente. Salidas en
+`~/pandora/correo-idt/soporte-kb/m365/categorias-prueba/` (`set-1-agregar.json` a
+`set-4-sin-permiso.json`).
+
+| Paso | Resultado |
+| --- | --- |
+| 2. Agregar | `success`, `changed: true`, de `[]` a `['Prueba soporte-kb']` |
+| 3. Repetir | `success`, `changed: false`, sin escritura |
+| 4. Quitar | `success`, `changed: true`, de `['Prueba soporte-kb']` a `[]`, igual al estado previo |
+| 5. Sin `--allow-write` | código 2, `write_not_authorized`, sin ruta ni llamada al proveedor |
+
+Una lectura nueva de la bandeja confirmó el correo sin categorías y ningún otro correo del día con
+categorías.
+
 ## Propuestas fuera de alcance (no se implementan)
 
 - Cabeceras `In-Reply-To` y `References` para reconstruir hilos.
@@ -249,11 +265,10 @@ El efecto real de `If-Match` sobre mensajes no tiene prueba viva segura; queda a
 | B2 | Aprobada el 2026-10-19 | Decisión de Camilo; pasa a C7, C8 y C9 |
 | C7 | Hecha | ADR y registro de plataforma; `ff41f84` |
 | C8 | Hecha por navegador; ruta oficial bloqueada | RED 42, GREEN 536, cobertura 83,14 %; `121b64a` |
-| C9 | Pendiente | Espera la confirmación de Camilo |
+| C9 | Hecha el 2026-10-19 | Agregar, repetir, quitar y rechazo sin permiso sobre un correo de prueba |
 
 ## Siguiente paso
 
-C9, la prueba controlada en vivo con `Prueba soporte-kb`, cuando Camilo la confirme. Queda abierta
-una decisión de Camilo: el modelo de alcances que permitiría a la ruta oficial pedir
+La escritura queda probada en vivo por la ruta de navegador. Queda abierta una decisión de Camilo: el modelo de alcances que permitiría a la ruta oficial pedir
 `Mail.ReadWrite` sin invalidar las concesiones actuales (la misma vía 2 de B1). Mientras tanto,
 `soporte-kb` lee el estado desde `categories` y deriva el catálogo de los nombres observados.
