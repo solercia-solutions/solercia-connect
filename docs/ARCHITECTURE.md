@@ -111,6 +111,14 @@ available but cannot authorize a call; every browser attempt requires --allow-br
 Invalid credentials, identity mismatch, tenant transcript policy, malformed data, and
 unknown errors never fall back.
 
+The only write, `mail.categories.set`, adds a second per-invocation gate: the runtime refuses it
+with `write_not_authorized` before any adapter runs unless the request carries the CLI's
+`--allow-write`, and it never retries a write. The official Graph adapter does not expose it (its
+`Mail.ReadWrite` scope would invalidate stored Outlook grants), so it reaches the browser adapter
+through `official_capability_unavailable`. There the driver reads the message's categories and
+version, writes nothing when the names already match, and otherwise sends one `If-Match` `PATCH`
+whose body holds only the category collection. The HTTP service rejects it with 403.
+
 The same per-invocation boundary applies to browser-backed connection status, explicit browser
 health, and the legacy `m365 login/status` aliases. Merely loading a browser profile or setting the
 global availability variable is never authority to launch Playwright.

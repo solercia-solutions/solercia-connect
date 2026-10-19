@@ -227,6 +227,31 @@ def run_capability(
         typer.Option("--max-content-bytes", min=1, help="Reject files larger than this"),
     ] = 10_485_760,
     limit: Annotated[int, typer.Option(min=1, max=1000)] = 50,
+    message_id: Annotated[
+        str | None,
+        typer.Option(
+            "--message-id",
+            help="Provider message id: the `id` field of mail.inbox.list or mail.sent.list records",
+        ),
+    ] = None,
+    add: Annotated[
+        list[str] | None,
+        typer.Option("--add", help="Category to add; repeatable (mail.categories.set)"),
+    ] = None,
+    remove: Annotated[
+        list[str] | None,
+        typer.Option("--remove", help="Category to remove; repeatable (mail.categories.set)"),
+    ] = None,
+    replace: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--replace", help="Set the whole category list; repeatable, excludes the rest"
+        ),
+    ] = None,
+    allow_write: Annotated[
+        bool,
+        typer.Option("--allow-write", help="Authorize the category write for this invocation only"),
+    ] = False,
     browser_fallback: Annotated[
         bool,
         typer.Option("--allow-browser-fallback", "--browser-fallback"),
@@ -267,6 +292,11 @@ def run_capability(
             "include_attachments": with_attachments,
             "max_attachment_bytes": max_attachment_bytes,
             "limit": limit,
+            "message_id": message_id,
+            "add": list(add) if add else None,
+            "remove": list(remove) if remove else None,
+            "replace": list(replace) if replace else None,
+            "allow_write": allow_write,
         }
         if with_content is not None:
             payload["include_content"] = with_content
@@ -649,6 +679,11 @@ def _query_payload(
     item_id: str | None = None,
     limit: int,
 ) -> QueryPayload:
+    if capability is Capability.MAIL_CATEGORIES_SET:
+        raise _InputError(
+            "mail.categories.set is a write, not a query; run it with --message-id and "
+            "--allow-write"
+        )
     transcripts = {Capability.MEETING_TRANSCRIPTS_LIST, Capability.MEETING_TRANSCRIPT_GET}
     if capability in transcripts:
         # A transcript is selected by meeting, by recording, or by period, so a window is one

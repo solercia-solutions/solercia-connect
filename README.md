@@ -98,6 +98,7 @@ The root wrapper is only a convenience alias and contains no provider logic:
 | `files.search` / `files.get` | yes | yes |
 | `meeting.transcripts.*` (Microsoft) | yes | yes — different selector, see below |
 | `meeting.transcripts.*` (`google-meet`) | yes — Calendar + Drive APIs | no (official-only) |
+| `mail.categories.set` (the only write) | no — needs `Mail.ReadWrite` | yes, with `--allow-write` |
 
 Records are identical across routes; `provenance` is the only field that names the route.
 
@@ -106,9 +107,36 @@ Outlook category names on the message, in provider order, or an empty list when 
 routes project the same field (Graph `categories`, Outlook REST `Categories`) under the existing
 `Mail.Read` grant; Gmail records always report an empty list. A malformed category value fails
 closed with `malformed_provider_data` instead of looking like an uncategorized message. The
-mailbox's master category list and assigning categories are not offered: the first needs the extra
-`MailboxSettings.Read` scope and has no documented Outlook REST endpoint, and the second is a write.
-Both wait for an explicit platform decision.
+mailbox's master category list is not offered: it needs the extra `MailboxSettings.Read` scope and
+has no documented Outlook REST endpoint.
+
+### Assign categories: the only write
+
+`mail.categories.set` is the single exception to the read-only rule
+([decision](docs/decisions/2026-10-19-escritura-categorias-outlook.md)). It assigns categories to one
+message and writes nothing else:
+
+```bash
+solercia-connect run --provider microsoft.graph --capability mail.categories.set \
+  --account user@example.com --message-id '<id from mail.inbox.list>' \
+  --add 'Resuelto' --remove 'Pendiente' --allow-write --allow-browser-fallback
+```
+
+- `--message-id` is the record's `id` field from `mail.inbox.list` or `mail.sent.list` (Graph `id`,
+  Outlook REST `Id`), not `internet_message_id`. It is case-sensitive and changes when the message
+  moves to another folder; read the folder again when the command answers `invalid_input`.
+- `--add` and `--remove` are repeatable and combine into one write; `--replace` sets the whole list
+  and excludes both. Names compare without case.
+- `--allow-write` is required on every invocation and is off by default; without it the command
+  fails with `write_not_authorized` before any provider call. `--account` is required.
+- The current list is read first. When the result carries the same names nothing is written and
+  the record says `changed: false`; otherwise one `PATCH` sends only the categories, with `If-Match`
+  on the version just read. A concurrent edit fails with `write_conflict` and is never retried.
+- The record holds `message_id`, `categories` (final), `previous_categories`, and `changed`; the
+  envelope carries the receipt.
+- Only the browser route serves it today. The official route needs `Mail.ReadWrite`, and adding that
+  scope would invalidate every stored Outlook grant, so it waits for a scope decision. The HTTP
+  service rejects the capability with 403.
 
 The two routes reach the same transcript by different names. The official route addresses the
 online meeting, so it needs a meeting ID. The browser route reads the recording that carries the

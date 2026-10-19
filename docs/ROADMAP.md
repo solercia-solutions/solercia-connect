@@ -44,6 +44,10 @@ unchecked until dedicated live evidence exists.
 - [ ] Implement and live-validate Teams/SharePoint browser transcript fallback without token capture.
 - [ ] Capture sanitized selector fixtures and define an upgrade compatibility policy.
 - [ ] Add mail attachment metadata/content reads behind explicit capabilities.
+- [x] Outlook category write (`mail.categories.set`) over the browser route, offline-proven, behind
+  per-invocation `--allow-write`.
+- [ ] Live-prove the category write, including `If-Match`, on a test message and test category.
+- [ ] Decide the scope model that would let the official route request `Mail.ReadWrite`.
 
 ## Google Workspace — Gmail and Calendar
 

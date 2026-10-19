@@ -76,7 +76,7 @@ instant, only `provenance` names which route answered.
 Each inbox and sent record carries `categories`, the Outlook category names on the message in
 provider order (an empty list when it has none). Teams that track a case's state with categories
 read it from that field; a malformed value fails closed instead of reporting no categories. The
-master category list and assigning categories are not offered by either route.
+master category list is not offered by either route; assigning categories is the write below.
 
 ```bash
 solercia-connect run \
@@ -94,6 +94,42 @@ solercia-connect run \
 truncated — narrow the window and read again. The ascending order guarantees the returned records
 are the oldest prefix of the window, so narrowing to a later start resumes deterministically.
 **Empty stays empty:** zero records is reported as zero, never as a reason to widen the window.
+
+## Assign categories (the only write)
+
+`mail.categories.set` assigns Outlook categories to one message. It is the single exception to the
+read-only rule; see [the decision](../decisions/2026-10-19-escritura-categorias-outlook.md).
+
+```bash
+solercia-connect run \
+  --provider microsoft.graph \
+  --capability mail.categories.set \
+  --account user@example.com \
+  --message-id '<id field of a mail.inbox.list record>' \
+  --add 'Resuelto' \
+  --remove 'Pendiente' \
+  --allow-write \
+  --allow-browser-fallback \
+  --output categoria.json
+```
+
+- `--message-id` takes the record's `id` (Graph `id`, Outlook REST `Id`), never
+  `internet_message_id` or `conversation_id`. The id is case-sensitive and changes when the message
+  moves to another folder; an unknown id answers `invalid_input`, so read the folder again.
+- `--add` and `--remove` are repeatable and combine, so a case changes state in one write.
+  `--replace` sets the whole list and excludes both. Names are trimmed and compared without case.
+- `--allow-write` authorizes this invocation only and is off by default. Without it the command
+  exits with `write_not_authorized` and nothing reaches the provider. `--account` is required and
+  the mailbox identity is proven before the read and the write.
+- The command reads the current list and its version, computes the result, and writes only when the
+  names change; repeating it answers `changed: false`. The single `PATCH` carries nothing but the
+  categories and `If-Match` with the version read, so a concurrent edit answers `write_conflict`
+  instead of being overwritten. Writes are never retried automatically.
+- The record carries `message_id`, `categories`, `previous_categories`, and `changed`; keep
+  `previous_categories` to undo a write with `--replace`.
+- Only the supervised browser route serves it. The official route would need `Mail.ReadWrite`, which
+  is not requested: adding it to the `outlook` target would invalidate every stored grant. The HTTP
+  service rejects the capability with 403 even with the interactive login switch on.
 
 ## Validate a dedicated account
 

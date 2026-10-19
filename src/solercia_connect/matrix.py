@@ -30,6 +30,13 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
     CapabilityRow(
         "Microsoft Graph",
         "official",
+        "mail.categories.set",
+        "not-implemented",
+        "Needs Mail.ReadWrite; adding it invalidates every stored Outlook grant (scope decision)",
+    ),
+    CapabilityRow(
+        "Microsoft Graph",
+        "official",
         "calendar.events.list",
         "implemented",
         "calendarView, paging, accepted/organizer and cancellation filters",
@@ -113,6 +120,13 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "mail.inbox.list",
         "implemented",
         "Same documented Outlook REST collection scoped to Inbox, strict range, ascending order",
+    ),
+    CapabilityRow(
+        "Microsoft 365 Web",
+        "browser",
+        "mail.categories.set",
+        "implemented-offline",
+        "Only write: one If-Match PATCH of Categories, --allow-write per run, CLI only; not live",
     ),
     CapabilityRow(
         "Microsoft 365 Web",

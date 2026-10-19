@@ -25,6 +25,8 @@ from solercia_connect.domain import (
     DomainRecord,
     DriveFile,
     FileQuery,
+    MailCategoriesUpdate,
+    MailCategoryAssignment,
     MailMessage,
     MailQuery,
     MeetingTranscript,
@@ -32,12 +34,14 @@ from solercia_connect.domain import (
     ReasonCode,
     RouteKind,
     TranscriptQuery,
+    same_categories,
     utc_now,
 )
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.providers._microsoft import (
     MailFolderName,
     field,
+    microsoft_categories,
     microsoft_provenance,
     normalize_calendar_event,
     normalize_drive_item,
@@ -201,6 +205,13 @@ class BrowserDriver(Protocol):
         *,
         timeout_ms: int,
     ) -> tuple[DomainRecord, ...]: ...
+
+    def set_mail_categories(
+        self,
+        update: MailCategoriesUpdate,
+        *,
+        timeout_ms: int,
+    ) -> MailCategoryAssignment: ...
 
     def close(self) -> None: ...
 
@@ -620,6 +631,69 @@ class PlaywrightBrowserDriver:
                 attachment = replace(attachment, content_base64=None)
             attachments.append(attachment)
         return replace(message, attachments=tuple(attachments))
+
+    def set_mail_categories(
+        self,
+        update: MailCategoriesUpdate,
+        *,
+        timeout_ms: int,
+    ) -> MailCategoryAssignment:
+        """Assign categories to one message: the only write this driver performs.
+
+        The current list and its version are read first. Nothing is written when the computed
+        list carries the same names; otherwise one PATCH sends only the category collection,
+        conditioned on the version read, so a concurrent edit by the team is never overwritten.
+        """
+        if not update.write_authorized:
+            raise ConnectorFailure(
+                ReasonCode.WRITE_NOT_AUTHORIZED,
+                "Category write was not explicitly authorized for this invocation",
+            )
+        url = f"{ENDPOINTS.outlook_messages}/{quote(update.message_id, safe='')}"
+        bearer = self._await_outlook_bearer(timeout_ms=timeout_ms)
+        try:
+            outcome = self._rest_get(
+                url,
+                bearer,
+                params={"$select": "Id,Categories"},
+                timeout_ms=timeout_ms,
+                allowed=_is_allowed_outlook_request_url,
+            )
+        finally:
+            bearer.clear()
+        state = _require_message_state(outcome)
+        previous = microsoft_categories(field(state, "Categories", "categories"))
+        version = state.get("@odata.etag")
+        if not isinstance(version, str) or not version.strip():
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Outlook message carried no version to condition the category write on",
+            )
+
+        final = update.resolve(previous)
+        if same_categories(final, previous):
+            return _category_assignment(update.message_id, previous, previous, changed=False)
+
+        bearer = self._await_outlook_bearer(timeout_ms=timeout_ms)
+        try:
+            written = _require_category_write(
+                self._rest_patch_categories(
+                    url,
+                    bearer,
+                    categories=final,
+                    version=version,
+                    timeout_ms=timeout_ms,
+                )
+            )
+        finally:
+            bearer.clear()
+        confirmed = microsoft_categories(field(written, "Categories", "categories"))
+        if not same_categories(confirmed, final):
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Outlook did not confirm the requested categories after the write",
+            )
+        return _category_assignment(update.message_id, confirmed, previous, changed=True)
 
     def observed_session_authorization(self) -> bool:
         """Report whether the session has already issued an authorized provider call.
@@ -1327,6 +1401,61 @@ class PlaywrightBrowserDriver:
             return {"kind": "malformed"}
         return {"kind": "ok", "payload": payload, "emailAddress": payload.get("EmailAddress")}
 
+    def _rest_patch_categories(
+        self,
+        url: str,
+        bearer: _TransientBearer,
+        *,
+        categories: tuple[str, ...],
+        version: str,
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        """Send the single write: the category collection of one message, and nothing else.
+
+        The body is built here from the names alone, so no caller can widen it to another
+        property. Redirects are not followed, so the write and its authorization go only to the
+        allowlisted endpoint that was named.
+        """
+        if not _is_allowed_outlook_request_url(url):
+            return {"kind": "unavailable"}
+        context = self._context
+        if context is None:
+            return {"kind": "unavailable"}
+        self._probing_outlook_identity = True
+        try:
+            response = context.request.patch(
+                url,
+                headers={
+                    "Authorization": bearer.authorization_header(),
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "If-Match": version,
+                },
+                data={"Categories": list(categories)},
+                timeout=timeout_ms,
+                fail_on_status_code=False,
+                max_redirects=0,
+            )
+        except Exception:
+            return {"kind": "unavailable"}
+        finally:
+            self._probing_outlook_identity = False
+
+        try:
+            status = int(response.status)
+            if status < 200 or status >= 300:
+                return {"kind": "http_error", "status": status}
+            payload = response.json()
+        except Exception:
+            return {"kind": "malformed"}
+        finally:
+            with suppress(Exception):
+                response.dispose()
+
+        if not isinstance(payload, Mapping):
+            return {"kind": "malformed"}
+        return {"kind": "ok", "payload": payload}
+
     def _require_page(self) -> Any:
         if self._page is None:
             raise ConnectorFailure(
@@ -1520,6 +1649,81 @@ def _require_rest_payload(outcome: Mapping[str, object]) -> Mapping[str, object]
     raise ConnectorFailure(
         ReasonCode.BROWSER_EXTRACTION_FAILED,
         "Read-only collection call did not complete",
+    )
+
+
+def _require_message_state(outcome: Mapping[str, object]) -> Mapping[str, object]:
+    """Map the read that precedes a category write, naming a message the mailbox lacks."""
+    if outcome.get("kind") == "http_error" and outcome.get("status") in {400, 404}:
+        raise ConnectorFailure(
+            ReasonCode.INVALID_INPUT,
+            "Outlook found no message with that id in this mailbox; ids change when a message "
+            "moves, so read the folder again for the current id",
+        )
+    return _require_rest_payload(outcome)
+
+
+def _require_category_write(outcome: Mapping[str, object]) -> Mapping[str, object]:
+    """Map the category write onto typed failures; none of them is ever reported as success."""
+    kind = outcome.get("kind")
+    if kind == "ok":
+        payload = outcome.get("payload")
+        if isinstance(payload, Mapping):
+            return payload
+    if kind == "http_error":
+        status = outcome.get("status")
+        if status in {409, 412}:
+            raise ConnectorFailure(
+                ReasonCode.WRITE_CONFLICT,
+                "The message changed after it was read; nothing was written. Run the command "
+                "again to apply it over the current categories",
+            )
+        if status == 401:
+            raise ConnectorFailure(
+                ReasonCode.BROWSER_IDENTITY_UNAVAILABLE,
+                "Provider rejected the captured session authorization for the category write",
+            )
+        if status == 403:
+            raise ConnectorFailure(
+                ReasonCode.AUTHORIZATION_DENIED,
+                "Provider denied the category write for this mailbox",
+            )
+        if status in {400, 404}:
+            raise ConnectorFailure(
+                ReasonCode.INVALID_INPUT,
+                "Outlook rejected the category write for that message id",
+            )
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_EXTRACTION_FAILED,
+            "Provider rejected the bounded category write",
+        )
+    raise ConnectorFailure(
+        ReasonCode.BROWSER_EXTRACTION_FAILED,
+        "Category write did not complete or was not confirmed; read the message again before "
+        "repeating it",
+    )
+
+
+def _category_assignment(
+    message_id: str,
+    categories: tuple[str, ...],
+    previous: tuple[str, ...],
+    *,
+    changed: bool,
+) -> MailCategoryAssignment:
+    return MailCategoryAssignment(
+        message_id,
+        categories,
+        previous,
+        changed,
+        microsoft_provenance(
+            provider_id="microsoft365.browser",
+            route=RouteKind.BROWSER,
+            source_id=message_id,
+            fetched_at=utc_now(),
+            account_id=None,
+            endpoint="outlook-rest-v2-message-categories",
+        ),
     )
 
 

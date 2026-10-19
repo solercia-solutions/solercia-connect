@@ -29,6 +29,9 @@ being the current working directory.
 - Keep exact timezone-aware end-exclusive ranges. **Empty remains empty**: if a range returns zero
   records, report zero. Never widen the window to find something.
 - Write large reads to a file with `--output`; never pour a month of mail through the context.
+- The only write is `mail.categories.set`. Add `--allow-write` only when the user asked for that
+  exact change in this conversation; never add it to a read, never run it over HTTP, and never
+  retry a `write_conflict` without reading the message again.
 
 ## Canonical workflow
 
@@ -58,13 +61,28 @@ browser session rather than official OAuth.
 | `calendar.events.list` | yes | yes |
 | `files.search` / `files.get` | yes | yes |
 | `meeting.transcripts.list` / `meeting.transcript.get` | yes, needs tenant scopes | yes (Microsoft only) |
+| `mail.categories.set` (write) | no, needs a scope decision | yes, with `--allow-write` |
 
 Records are identical across routes; `provenance` is the only field naming the route.
 
 **Outlook categories.** Every Outlook mail record carries `categories`, the category names on the
 message (empty list when none). Read a case's state from it; do not infer state from the subject.
-There is no capability to list the master categories or to assign them yet; both wait for an
-explicit platform decision.
+There is no capability to list the master categories.
+
+**Assigning categories.** `mail.categories.set` takes `--message-id` (the record's `id` field, not
+`internet_message_id`), repeatable `--add`/`--remove` or `--replace`, `--account`, and
+`--allow-write`; over the browser route it also needs `--allow-browser-fallback`:
+
+```bash
+solercia-connect run --provider microsoft.graph --capability mail.categories.set \
+  --account user@example.com --message-id '<record id>' \
+  --add 'Resuelto' --remove 'Pendiente' --allow-write --allow-browser-fallback
+```
+
+It reads the current list, writes only when the names change (`changed: false` otherwise), and
+sends one `PATCH` of the categories conditioned on the version read. `write_conflict` means the team
+changed the message meanwhile: read it again before deciding. `invalid_input` on the id usually
+means the message moved folders; read the folder again for the current id.
 
 **Transcripts.** The official route addresses the online meeting, so it needs `--meeting-id` plus
 tenant-granted scopes. The browser route reads the recording that carries the transcript, which is
@@ -86,6 +104,7 @@ Playwright is never offered for Google Meet.
 | Missing readiness | Run `doctor`; report missing variable names and remediation |
 | Interactive OAuth or browser login | Run `connect TYPE ACCOUNT`; the user completes the provider interaction |
 | Existing read | Run the narrow capability; preserve record schema, provenance and receipt |
+| Category change | Only on an explicit user request; pass `--allow-write` for that one run |
 | Microsoft admin-consent failure | Use browser only when the user explicitly allowed it |
 | Teams tenant policy or personal account | Stop with typed remediation; never bypass |
 | An `action_required` envelope | Run the exact remediation command in the CLI; never attempt login through the HTTP service |

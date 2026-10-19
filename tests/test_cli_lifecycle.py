@@ -270,6 +270,11 @@ def test_run_command_maps_targets_flags_and_input_errors(monkeypatch: pytest.Mon
             "include_attachments": False,
             "max_attachment_bytes": 10_485_760,
             "limit": 50,
+            "message_id": None,
+            "add": None,
+            "remove": None,
+            "replace": None,
+            "allow_write": False,
             "allow_browser_fallback": True,
         }
     ]
@@ -378,6 +383,9 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
         "limit": 500,
     }
     for capability in Capability:
+        if capability is Capability.MAIL_CATEGORIES_SET:
+            # A write is not a query; the helper refuses it (tests/test_mail_categories_set.py).
+            continue
         query = cli._query_payload(capability, **common)
         assert isinstance(query, _EXPECTED_QUERY_TYPES[capability])
 

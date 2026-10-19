@@ -250,4 +250,5 @@ def test_doctor_advertises_the_inbox_capability_for_both_outlook_routes(
         "mail.sent.list",
         "mail.inbox.list",
         "calendar.events.list",
+        "mail.categories.set",
     ]

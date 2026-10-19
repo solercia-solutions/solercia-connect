@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from solercia_connect import __version__
-from solercia_connect.application import run_application
+from solercia_connect.application import http_write_rejection, run_application
 from solercia_connect.bootstrap import registry_from_environment
 from solercia_connect.config import (
     MICROSOFT_TARGETS,
@@ -25,6 +25,7 @@ from solercia_connect.config import (
 )
 from solercia_connect.connections import ConnectionService, connect_command
 from solercia_connect.doctor import DoctorService
+from solercia_connect.domain import WRITE_CAPABILITIES
 from solercia_connect.envelope import ErrorDetail, ResultEnvelope
 from solercia_connect.interactive_sessions import InteractiveSessionRegistry
 from solercia_connect.matrix import CAPABILITY_MATRIX
@@ -35,6 +36,7 @@ _PROTECTED_POST_PATHS = frozenset(
     {"/v1/connections/test", "/v1/run", "/v1/connections/connect"},
 )
 _PROTECTED_GET_PREFIXES = ("/v1/connections/sessions/",)
+_WRITE_CAPABILITY_VALUES = frozenset(capability.value for capability in WRITE_CAPABILITIES)
 _HTTP_INTERACTIVE_REMEDIATION = (
     "Set SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN=true (with SOLERCIA_CONNECT_BROWSER_FALLBACK=true "
     "and an API key) to allow the loopback service to start the supervised browser."
@@ -543,6 +545,9 @@ def create_app(
 
     @application.post("/v1/run")
     def run(body: RunRequest) -> JSONResponse:
+        if body.capability in _WRITE_CAPABILITY_VALUES:
+            # Writes exist only in the canonical CLI, whatever switches the service has on.
+            return _response(http_write_rejection(body.type, body.account), 403)
         if body.allow_browser_fallback:
             assert body.account is not None
             if not http_interactive_allowed(settings):
@@ -647,6 +652,8 @@ def _http_status(envelope: ResultEnvelope) -> int:
         return 404
     if envelope.status == "action_required":
         return 409
+    if envelope.status == "forbidden":
+        return 403
     if envelope.status in {"configuration_error", "not_ready"}:
         return 503
     if envelope.error is not None:

@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from solercia_connect.domain import (
+    WRITE_CAPABILITIES,
     CalendarQuery,
     Capability,
     ConnectorRequest,
     DomainRecord,
     ExecutionOutcome,
     ExecutionReceipt,
+    MailCategoriesUpdate,
     MailQuery,
     ProviderFamily,
     ReasonCode,
@@ -55,6 +57,7 @@ class RoutePolicy:
         {
             Capability.MAIL_SENT_LIST,
             Capability.MAIL_INBOX_LIST,
+            Capability.MAIL_CATEGORIES_SET,
             Capability.CALENDAR_EVENTS_LIST,
             Capability.MEETING_TRANSCRIPTS_LIST,
             Capability.MEETING_TRANSCRIPT_GET,
@@ -107,6 +110,21 @@ class ConnectorRuntime:
         browser_fallback_enabled: bool = False,
     ) -> ExecutionOutcome:
         steps: list[TraceStep] = []
+        if request.capability in WRITE_CAPABILITIES and not _write_authorized(request):
+            # A library caller reaches the runtime without the CLI's input checks, so the write
+            # authorization is enforced here too, before any adapter can touch the provider.
+            steps.append(
+                TraceStep(
+                    1,
+                    RouteKind.OFFICIAL,
+                    "write-policy",
+                    0,
+                    StepOutcome.SKIPPED,
+                    ReasonCode.WRITE_NOT_AUTHORIZED,
+                    "Write was not explicitly authorized for this invocation",
+                )
+            )
+            return self._failure_outcome(request, steps, ReasonCode.WRITE_NOT_AUTHORIZED)
         try:
             official = self._registry.official(request.provider_id)
         except ConnectorFailure as registry_failure:
@@ -302,6 +320,7 @@ class ConnectorRuntime:
             retry = (
                 last_failure.reason in self._policy.retryable_reasons
                 and attempt < self._policy.official_max_attempts
+                and request.capability not in WRITE_CAPABILITIES
             )
             steps.append(
                 TraceStep(
@@ -419,9 +438,17 @@ def _validate_records(
 
 def _request_account_boundary(request: ConnectorRequest) -> str | None:
     payload = request.payload
-    if isinstance(payload, (MailQuery, CalendarQuery, TranscriptQuery)) and payload.account_id:
+    if (
+        isinstance(payload, (MailQuery, CalendarQuery, TranscriptQuery, MailCategoriesUpdate))
+        and payload.account_id
+    ):
         return _canonical_account(payload.account_id)
     return None
+
+
+def _write_authorized(request: ConnectorRequest) -> bool:
+    payload = request.payload
+    return isinstance(payload, MailCategoriesUpdate) and payload.write_authorized is True
 
 
 def _canonical_account(value: str) -> str:

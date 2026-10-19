@@ -14,12 +14,14 @@ from solercia_connect.config import (
 )
 from solercia_connect.connections import connect_command, http_connect_hint
 from solercia_connect.domain import (
+    WRITE_CAPABILITIES,
     CalendarQuery,
     Capability,
     ConnectorRequest,
     DateWindow,
     FileQuery,
     IssueQuery,
+    MailCategoriesUpdate,
     MailQuery,
     QueryPayload,
     ReasonCode,
@@ -61,6 +63,16 @@ def run_application(
             raise ValueError(
                 f"Capability {capability.value} is not available for {type_value.value}"
             )
+        writes = capability in WRITE_CAPABILITIES
+        if not writes and (
+            payload.get("allow_write", False) is not False
+            or any(payload.get(name) is not None for name in ("add", "remove", "replace"))
+        ):
+            raise ValueError(
+                "allow_write, add, remove and replace apply only to mail.categories.set"
+            )
+        if writes and account is None:
+            raise ValueError("account is required for mail.categories.set")
         query = _query(type_value, capability, account, payload)
         fallback = payload.get("allow_browser_fallback", False)
         if not isinstance(fallback, bool):
@@ -83,6 +95,13 @@ def run_application(
                 cause_category="input",
             ),
         )
+
+    if isinstance(query, MailCategoriesUpdate):
+        assert account is not None
+        if not interactive:
+            return http_write_rejection(type_value, account)
+        if not query.write_authorized:
+            return _write_not_authorized(type_value, account)
 
     if not interactive and fallback and not browser_via_http:
         assert account is not None
@@ -248,6 +267,48 @@ def _interactive_action(
     )
 
 
+def http_write_rejection(type_value: ConnectionType, account: str | None) -> ResultEnvelope:
+    """Refuse a write for a caller without a terminal; the write exists only in the CLI."""
+    return ResultEnvelope.failure(
+        operation="run",
+        status="forbidden",
+        provider=type_value.value,
+        account=account,
+        error=ErrorDetail(
+            "write_not_available_over_http",
+            "mail.categories.set changes the mailbox and runs only in the canonical CLI",
+            False,
+            remediation=(_write_command(type_value, account),),
+            cause_category="policy",
+        ),
+    )
+
+
+def _write_not_authorized(type_value: ConnectionType, account: str) -> ResultEnvelope:
+    return ResultEnvelope.failure(
+        operation="run",
+        status="invalid_input",
+        provider=type_value.value,
+        account=account,
+        error=ErrorDetail(
+            "write_not_authorized",
+            "mail.categories.set changes the mailbox and needs --allow-write on this invocation; "
+            "nothing was sent to the provider",
+            False,
+            remediation=(_write_command(type_value, account),),
+            cause_category="input",
+        ),
+    )
+
+
+def _write_command(type_value: ConnectionType, account: str | None) -> str:
+    return (
+        f"solercia-connect run --provider {target_spec(type_value).provider_id} "
+        f"--capability mail.categories.set --account {account or '<account>'} "
+        "--message-id <id> --add <category> --allow-write --allow-browser-fallback"
+    )
+
+
 def _configuration_failure(
     type_value: ConnectionType,
     account: str | None,
@@ -292,6 +353,8 @@ def _query(
     account: str | None,
     payload: dict[str, Any],
 ) -> QueryPayload:
+    if capability is Capability.MAIL_CATEGORIES_SET:
+        return _categories_update(account, payload)
     limit = payload.get("limit", 50)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
         raise ValueError("limit must be an integer between 1 and 1000")
@@ -396,6 +459,30 @@ def _query(
     if type_value is not ConnectionType.GLPI:
         raise ValueError("Ticket search requires the GLPI target")
     return TicketQuery(_required_window(window), min(limit, 1000))
+
+
+def _categories_update(account: str | None, payload: dict[str, Any]) -> MailCategoriesUpdate:
+    """Build the category write; the domain type refuses an empty or ambiguous request."""
+    allow_write = payload.get("allow_write", False)
+    if not isinstance(allow_write, bool):
+        raise ValueError("allow_write must be a boolean")
+    raw_replace = payload.get("replace")
+    return MailCategoriesUpdate(
+        _required_string(payload, "message_id"),
+        _category_names(payload.get("add"), "add"),
+        _category_names(payload.get("remove"), "remove"),
+        None if raw_replace is None else _category_names(raw_replace, "replace"),
+        account,
+        allow_write,
+    )
+
+
+def _category_names(value: Any, name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{name} must be a list of category names")
+    return tuple(value)
 
 
 def _window(start: Any, end: Any, *, optional: bool = False) -> DateWindow | None:

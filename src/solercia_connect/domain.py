@@ -11,6 +11,8 @@ from typing import Any
 class Capability(StrEnum):
     MAIL_SENT_LIST = "mail.sent.list"
     MAIL_INBOX_LIST = "mail.inbox.list"
+    # The only write: see docs/decisions/2026-10-19-escritura-categorias-outlook.md.
+    MAIL_CATEGORIES_SET = "mail.categories.set"
     CALENDAR_EVENTS_LIST = "calendar.events.list"
     MEETING_TRANSCRIPTS_LIST = "meeting.transcripts.list"
     MEETING_TRANSCRIPT_GET = "meeting.transcript.get"
@@ -65,6 +67,13 @@ class ReasonCode(StrEnum):
     PERSONAL_ACCOUNT_UNSUPPORTED = "personal_account_unsupported"
     TENANT_POLICY_BLOCKED = "tenant_policy_blocked"
     API_AUTHENTICATION_REQUIRED = "api_authentication_required"
+    WRITE_NOT_AUTHORIZED = "write_not_authorized"
+    WRITE_CONFLICT = "write_conflict"
+
+
+# Capabilities that change provider state. Each one needs explicit authorization per invocation,
+# never runs over HTTP, and is never retried automatically.
+WRITE_CAPABILITIES: frozenset[Capability] = frozenset({Capability.MAIL_CATEGORIES_SET})
 
 
 class StepOutcome(StrEnum):
@@ -208,8 +217,82 @@ class FileQuery:
             raise ValueError("FileQuery site cannot be blank")
 
 
+@dataclass(frozen=True, slots=True)
+class MailCategoriesUpdate:
+    """Assign Outlook categories to one message, declared as a change to its current list.
+
+    ``message_id`` is the provider id carried by the ``id`` field of mail records. ``add`` and
+    ``remove`` may be combined so a state changes in one write; ``replace`` sets the whole list and
+    excludes both. Names compare without case, so asking for a name the message already carries
+    in another case changes nothing. ``write_authorized`` must be set explicitly per invocation.
+    """
+
+    message_id: str
+    add: tuple[str, ...] = ()
+    remove: tuple[str, ...] = ()
+    replace: tuple[str, ...] | None = None
+    account_id: str | None = None
+    write_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.message_id.strip():
+            raise ValueError("MailCategoriesUpdate message_id cannot be blank")
+        object.__setattr__(self, "message_id", self.message_id.strip())
+        object.__setattr__(self, "add", _category_names(self.add, "add"))
+        object.__setattr__(self, "remove", _category_names(self.remove, "remove"))
+        if self.replace is not None:
+            if self.add or self.remove:
+                raise ValueError("Category replace excludes add and remove")
+            replace = _category_names(self.replace, "replace")
+            if not replace:
+                raise ValueError("Category replace needs at least one name")
+            object.__setattr__(self, "replace", replace)
+        elif not self.add and not self.remove:
+            raise ValueError("A category update needs at least one name to add, remove or replace")
+        overlap = {name.casefold() for name in self.add} & {name.casefold() for name in self.remove}
+        if overlap:
+            raise ValueError("A category cannot be both added and removed in one update")
+
+    def resolve(self, current: tuple[str, ...]) -> tuple[str, ...]:
+        """Compute the list the message should carry, preserving the order already there."""
+        if self.replace is not None:
+            return self.replace
+        removed = {name.casefold() for name in self.remove}
+        result = [name for name in current if name.casefold() not in removed]
+        present = {name.casefold() for name in result}
+        for name in self.add:
+            if name.casefold() not in present:
+                result.append(name)
+                present.add(name.casefold())
+        return tuple(result)
+
+
+def same_categories(first: tuple[str, ...], second: tuple[str, ...]) -> bool:
+    """Tell whether two category lists carry the same names, ignoring case and order."""
+    return sorted(name.casefold() for name in first) == sorted(name.casefold() for name in second)
+
+
+def _category_names(values: tuple[str, ...], label: str) -> tuple[str, ...]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Category {label} cannot contain a blank name")
+        name = value.strip()
+        if name.casefold() not in seen:
+            seen.add(name.casefold())
+            names.append(name)
+    return tuple(names)
+
+
 type QueryPayload = (
-    MailQuery | CalendarQuery | TranscriptQuery | IssueQuery | TicketQuery | FileQuery
+    MailQuery
+    | CalendarQuery
+    | TranscriptQuery
+    | IssueQuery
+    | TicketQuery
+    | FileQuery
+    | MailCategoriesUpdate
 )
 
 
@@ -375,8 +458,25 @@ class DriveFile:
             raise ValueError("DriveFile size_bytes cannot be negative")
 
 
+@dataclass(frozen=True, slots=True)
+class MailCategoryAssignment:
+    """The outcome of one category write: the list the message now carries and what it had."""
+
+    message_id: str
+    categories: tuple[str, ...]
+    previous_categories: tuple[str, ...]
+    changed: bool
+    provenance: Provenance
+
+
 type DomainRecord = (
-    MailMessage | CalendarEvent | MeetingTranscript | ExternalIssue | TicketCase | DriveFile
+    MailMessage
+    | CalendarEvent
+    | MeetingTranscript
+    | ExternalIssue
+    | TicketCase
+    | DriveFile
+    | MailCategoryAssignment
 )
 
 
@@ -453,6 +553,7 @@ class HealthReport:
 _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.MAIL_SENT_LIST: MailMessage,
     Capability.MAIL_INBOX_LIST: MailMessage,
+    Capability.MAIL_CATEGORIES_SET: MailCategoryAssignment,
     Capability.CALENDAR_EVENTS_LIST: CalendarEvent,
     Capability.MEETING_TRANSCRIPTS_LIST: MeetingTranscript,
     Capability.MEETING_TRANSCRIPT_GET: MeetingTranscript,

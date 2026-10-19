@@ -15,6 +15,7 @@ from solercia_connect.domain import (
     DomainRecord,
     HealthReport,
     HealthState,
+    MailCategoriesUpdate,
     MailQuery,
     Provenance,
     ProviderFamily,
@@ -88,6 +89,7 @@ class Microsoft365BrowserAdapter:
             {
                 Capability.MAIL_SENT_LIST,
                 Capability.MAIL_INBOX_LIST,
+                Capability.MAIL_CATEGORIES_SET,
                 Capability.CALENDAR_EVENTS_LIST,
                 Capability.MEETING_TRANSCRIPTS_LIST,
                 Capability.MEETING_TRANSCRIPT_GET,
@@ -190,6 +192,7 @@ class Microsoft365BrowserAdapter:
             self._close(verified)
 
     def execute(self, request: ConnectorRequest) -> tuple[DomainRecord, ...]:
+        write = _category_write(request, self._connection_type)
         requested_account = _requested_account(request)
         machine = BrowserStateMachine()
         try:
@@ -199,13 +202,20 @@ class Microsoft365BrowserAdapter:
                 headless=True,
                 requested_account=requested_account,
             )
+            # One operating state serves the reads and the single category write alike.
             machine.advance(BrowserState.READING)
-            records = self._driver.read_records(
-                request.capability,
-                request.payload,
-                SELECTORS,
-                timeout_ms=self._read_timeout_ms,
-            )
+            records: tuple[DomainRecord, ...]
+            if write is not None:
+                records = (
+                    self._driver.set_mail_categories(write, timeout_ms=self._read_timeout_ms),
+                )
+            else:
+                records = self._driver.read_records(
+                    request.capability,
+                    request.payload,
+                    SELECTORS,
+                    timeout_ms=self._read_timeout_ms,
+                )
             machine.advance(BrowserState.COMPLETE)
             return tuple(self._bind_provenance(record, account) for record in records)
         except ConnectorFailure:
@@ -445,9 +455,26 @@ def _canonical_expected_account(value: str) -> str:
     return identity
 
 
+def _category_write(
+    request: ConnectorRequest,
+    connection_type: ConnectionType,
+) -> MailCategoriesUpdate | None:
+    """Select the category write, refusing it before any browser opens off the Outlook session."""
+    if request.capability is not Capability.MAIL_CATEGORIES_SET:
+        return None
+    if connection_type is not ConnectionType.OUTLOOK or not isinstance(
+        request.payload, MailCategoriesUpdate
+    ):
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_CAPABILITY_NOT_IMPLEMENTED,
+            "Outlook categories are written only through the Outlook browser session",
+        )
+    return request.payload
+
+
 def _requested_account(request: ConnectorRequest) -> str | None:
     payload = request.payload
-    if not isinstance(payload, (MailQuery, CalendarQuery, TranscriptQuery)):
+    if not isinstance(payload, (MailQuery, CalendarQuery, TranscriptQuery, MailCategoriesUpdate)):
         return None
     if payload.account_id is None:
         return None

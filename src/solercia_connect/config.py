@@ -83,7 +83,9 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
     TargetSpec(
         ConnectionType.OUTLOOK,
         "microsoft.graph",
-        ("mail.sent.list", "mail.inbox.list", "calendar.events.list"),
+        # mail.categories.set is served by the browser route only: its official route needs
+        # Mail.ReadWrite, and adding it here would invalidate every stored Outlook grant.
+        ("mail.sent.list", "mail.inbox.list", "calendar.events.list", "mail.categories.set"),
         ("SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID",),
         ("openid", "profile", "User.Read", "Mail.Read", "Calendars.Read"),
         ("Microsoft work or school account", "Tenant consent for delegated read scopes"),

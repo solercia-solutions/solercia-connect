@@ -87,10 +87,36 @@ pudo quedar truncada: estrecha la ventana y vuelve a leer.
 
 Cada correo de Outlook trae `categories`, con los nombres de las categorías que
 tiene el mensaje (lista vacía si no tiene ninguna). Sirve para conocer el estado
-que el equipo le asignó a un caso. El catálogo de categorías del buzón y la
-asignación de categorías no están disponibles.
+que el equipo le asignó a un caso. El catálogo de categorías del buzón no está
+disponible.
 
-## 5. Instalar el skill para tu agente
+## 5. Asignar categorías (la única escritura)
+
+`mail.categories.set` cambia las categorías de un correo. Es la única operación
+que escribe en el buzón y exige `--allow-write` en cada invocación:
+
+```bash
+solercia-connect run \
+  --provider microsoft.graph \
+  --capability mail.categories.set \
+  --account tu-correo@entidad.gov.co \
+  --message-id '<campo id de un registro de mail.inbox.list>' \
+  --add 'Resuelto' --remove 'Pendiente' \
+  --allow-write \
+  --allow-browser-fallback
+```
+
+- `--message-id` es el campo `id` del registro, no `internet_message_id`. Cambia
+  si alguien mueve el correo de carpeta: en ese caso vuelve a leer la bandeja.
+- `--add` y `--remove` se repiten y se combinan en una sola escritura;
+  `--replace` fija la lista completa.
+- Si el correo ya tiene esas categorías no se escribe nada y la respuesta dice
+  `changed: false`. Si alguien del equipo lo cambió al mismo tiempo, la orden
+  falla con `write_conflict` y no pisa ese cambio.
+- Hoy solo funciona por la ruta de navegador y nunca por el servicio HTTP.
+  Pruébala primero con una categoría que el equipo no use.
+
+## 6. Instalar el skill para tu agente
 
 El skill le enseña al agente cómo invocar el runtime: qué comandos existen, qué
 capacidad corresponde a cada necesidad, y qué NO debe improvisar. Sin él, el
