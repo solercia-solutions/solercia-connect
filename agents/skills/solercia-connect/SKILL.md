@@ -61,6 +61,11 @@ browser session rather than official OAuth.
 
 Records are identical across routes; `provenance` is the only field naming the route.
 
+**Outlook categories.** Every Outlook mail record carries `categories`, the category names on the
+message (empty list when none). Read a case's state from it; do not infer state from the subject.
+There is no capability to list the master categories or to assign them yet; both wait for an
+explicit platform decision.
+
 **Transcripts.** The official route addresses the online meeting, so it needs `--meeting-id` plus
 tenant-granted scopes. The browser route reads the recording that carries the transcript, which is
 a drive item, so it takes `--drive-id` with `--item-id`, or just a window that reads every

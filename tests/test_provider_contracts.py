@@ -124,7 +124,7 @@ def test_microsoft_graph_inbox_reads_the_declared_inbox_folder_collection() -> N
     assert params["$top"] == 100
     assert params["$select"] == (
         "id,subject,sentDateTime,from,sender,toRecipients,ccRecipients,body,"
-        "conversationId,hasAttachments,internetMessageId,receivedDateTime"
+        "conversationId,hasAttachments,internetMessageId,categories,receivedDateTime"
     )
 
 

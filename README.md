@@ -101,6 +101,15 @@ The root wrapper is only a convenience alias and contains no provider logic:
 
 Records are identical across routes; `provenance` is the only field that names the route.
 
+Outlook mail records from `mail.inbox.list` and `mail.sent.list` also carry `categories`: the
+Outlook category names on the message, in provider order, or an empty list when it has none. Both
+routes project the same field (Graph `categories`, Outlook REST `Categories`) under the existing
+`Mail.Read` grant; Gmail records always report an empty list. A malformed category value fails
+closed with `malformed_provider_data` instead of looking like an uncategorized message. The
+mailbox's master category list and assigning categories are not offered: the first needs the extra
+`MailboxSettings.Read` scope and has no documented Outlook REST endpoint, and the second is a write.
+Both wait for an explicit platform decision.
+
 The two routes reach the same transcript by different names. The official route addresses the
 online meeting, so it needs a meeting ID. The browser route reads the recording that carries the
 transcript, which is a drive item, so it takes `--drive-id` with `--item-id` — or just a window,

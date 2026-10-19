@@ -82,6 +82,7 @@ _OUTLOOK_MAIL_SELECT_BASE = (
     "ConversationId",
     "HasAttachments",
     "InternetMessageId",
+    "Categories",
 )
 _SENT_MAIL_SELECT = ",".join(_OUTLOOK_MAIL_SELECT_BASE)
 _INBOX_MAIL_SELECT = ",".join((*_OUTLOOK_MAIL_SELECT_BASE, "ReceivedDateTime"))

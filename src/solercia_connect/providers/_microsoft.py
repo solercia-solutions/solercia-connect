@@ -85,6 +85,32 @@ def microsoft_addresses(value: object) -> tuple[EmailAddress, ...]:
     return tuple(address for address in resolved if address is not None)
 
 
+def microsoft_categories(value: object) -> tuple[str, ...]:
+    """Read a message's Outlook categories, failing closed on a shape no collection serves.
+
+    A support team reads a case's state from these names, so a malformed value is refused rather
+    than reported as "no categories", which would silently look like an untriaged case.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConnectorFailure(
+            ReasonCode.MALFORMED_PROVIDER_DATA,
+            "Microsoft message carried categories that are not a list",
+        )
+    names: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Microsoft message carried an unusable category name",
+            )
+        name = entry.strip()
+        if name not in names:
+            names.append(name)
+    return tuple(names)
+
+
 def normalize_mail_message(
     item: Mapping[str, Any],
     *,
@@ -133,6 +159,7 @@ def normalize_mail_message(
         internet_message_id=internet_message_id,
         folder=folder,
         received_at=received_at,
+        categories=microsoft_categories(field(item, "categories", "Categories")),
     )
 
 

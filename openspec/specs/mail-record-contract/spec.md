@@ -47,6 +47,19 @@ La adición de campos DEBE ser aditiva pura: `solercia.connect/v1` y `solercia.c
 - CUANDO se serializa con `to_primitive`
 - ENTONCES el JSON incluye las claves nuevas y conserva `schema: "solercia.connect/record/v1"`
 
+### Requirement: Categorías de Outlook en el registro
+`MailMessage` DEBE ganar el campo aditivo `categories: tuple[str, ...] = ()`, ubicado después de `received_at`. Los registros de `mail.inbox.list` y `mail.sent.list` de Outlook DEBEN poblarlo con los nombres de categoría del mensaje, en el orden del proveedor, sin espacios sobrantes y sin duplicados. El `$select` DEBE incluir `categories` en Graph y `Categories` en la ruta de navegador. Un mensaje sin categorías DEBE reportar una lista vacía; un valor que no sea una lista de nombres no vacíos DEBE fallar cerrado con `malformed_provider_data`. Los registros de Gmail DEBEN conservar la lista vacía.
+
+#### Scenario: Correo de soporte con categorías
+- DADO un mensaje de Inbox con las categorías `SOPORTE/PENDIENTE` y `SOPORTE/NIVEL 1`
+- CUANDO se normaliza por cualquiera de las dos rutas
+- ENTONCES `categories` vale `("SOPORTE/PENDIENTE", "SOPORTE/NIVEL 1")` y los dos registros son iguales salvo `provenance`
+
+#### Scenario: Categorías malformadas
+- DADO un mensaje cuyo valor de categorías es una cadena o contiene un nombre vacío
+- CUANDO se normaliza el registro
+- ENTONCES el sistema falla cerrado con `malformed_provider_data`, nunca reporta una lista vacía
+
 ### Requirement: Paridad de registro entre rutas
 Un mensaje leído por Graph y el mismo mensaje leído por navegador DEBEN normalizar a registros idénticos en todos los campos salvo `provenance`, incluidos los tres campos nuevos con valores concretos.
 

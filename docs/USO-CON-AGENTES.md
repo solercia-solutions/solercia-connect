@@ -85,6 +85,11 @@ Cambia `--capability` por `mail.inbox.list`, `calendar.events.list` o
 número de registros devueltos es igual a `--limit` (hasta 1000), la lectura
 pudo quedar truncada: estrecha la ventana y vuelve a leer.
 
+Cada correo de Outlook trae `categories`, con los nombres de las categorías que
+tiene el mensaje (lista vacía si no tiene ninguna). Sirve para conocer el estado
+que el equipo le asignó a un caso. El catálogo de categorías del buzón y la
+asignación de categorías no están disponibles.
+
 ## 5. Instalar el skill para tu agente
 
 El skill le enseña al agente cómo invocar el runtime: qué comandos existen, qué

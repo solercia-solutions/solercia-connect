@@ -73,6 +73,11 @@ and the API key) the service can start the same supervised browser through
 failure. The two routes normalize to identical records: same fields, ascending order by receipt
 instant, only `provenance` names which route answered.
 
+Each inbox and sent record carries `categories`, the Outlook category names on the message in
+provider order (an empty list when it has none). Teams that track a case's state with categories
+read it from that field; a malformed value fails closed instead of reporting no categories. The
+master category list and assigning categories are not offered by either route.
+
 ```bash
 solercia-connect run \
   --provider microsoft.graph \

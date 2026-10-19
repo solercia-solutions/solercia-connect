@@ -258,6 +258,7 @@ def test_sent_mail_query_is_end_exclusive_and_asks_only_for_needed_fields(
         "ConversationId",
         "HasAttachments",
         "InternetMessageId",
+        "Categories",
     }
 
 
@@ -372,8 +373,35 @@ def test_inbox_mail_query_is_end_exclusive_and_asks_only_for_needed_fields(
         "ConversationId",
         "HasAttachments",
         "InternetMessageId",
+        "Categories",
         "ReceivedDateTime",
     }
+
+
+@pytest.mark.parametrize("capability", [Capability.MAIL_INBOX_LIST, Capability.MAIL_SENT_LIST])
+def test_mail_records_carry_outlook_categories_over_the_browser_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capability: Capability,
+) -> None:
+    labelled = _inbox_message(7, Categories=["SOPORTE/RESUELTO", "SOPORTE/NIVEL 2"])
+    driver, page, _ = _driver(
+        tmp_path,
+        monkeypatch,
+        _FakeResponse(200, {"value": [labelled, _inbox_message(8)]}),
+    )
+    page.emit_request("https://outlook.office.com/owa/first", f"Bearer {_TOKEN}")
+
+    records = driver.read_records(
+        capability,
+        MailQuery(_WINDOW),
+        SELECTORS,
+        timeout_ms=9_000,
+    )
+    driver.close()
+
+    assert records[0].categories == ("SOPORTE/RESUELTO", "SOPORTE/NIVEL 2")
+    assert records[1].categories == ()
 
 
 def test_inbox_mail_follows_the_provider_next_link(

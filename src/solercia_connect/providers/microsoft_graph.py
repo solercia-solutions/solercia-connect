@@ -65,9 +65,10 @@ _GRAPH_MAIL_SELECT_BASE = (
     "conversationId",
     "hasAttachments",
     "internetMessageId",
+    "categories",
 )
-_GRAPH_SENT_SELECT = ",".join(_GRAPH_MAIL_SELECT_BASE)  # 11 fields
-_GRAPH_INBOX_SELECT = ",".join((*_GRAPH_MAIL_SELECT_BASE, "receivedDateTime"))  # 12 fields
+_GRAPH_SENT_SELECT = ",".join(_GRAPH_MAIL_SELECT_BASE)  # 12 fields
+_GRAPH_INBOX_SELECT = ",".join((*_GRAPH_MAIL_SELECT_BASE, "receivedDateTime"))  # 13 fields
 _GraphMailFolder = Literal["inbox", "sentitems"]
 _GraphMailTimeField = Literal["receivedDateTime", "sentDateTime"]
 _GRAPH_MAIL_FOLDERS: dict[_GraphMailFolder, tuple[str, MailFolderName]] = {

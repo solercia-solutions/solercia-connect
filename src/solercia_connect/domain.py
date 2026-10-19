@@ -272,6 +272,8 @@ class MailMessage:
     internet_message_id: str | None = None
     folder: str | None = None
     received_at: datetime | None = None
+    # Outlook category names in provider order; empty when the message carries none.
+    categories: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
