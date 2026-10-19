@@ -140,11 +140,11 @@ fija reglas para las fases cuando se usa), así que este trabajo sigue ODD.
   que lo escribe en GLPI y lo refleja como categoría en Outlook. Se habilita la escritura con el
   contrato de abajo. B1 sigue por la vía provisional 1.
 - **Tareas:**
-  - [ ] C7 ADR que actualiza `docs/decisions/2026-08-23-solercia-platform-decisions.md`,
+  - [x] C7 ADR que actualiza `docs/decisions/2026-08-23-solercia-platform-decisions.md`,
         `SECURITY.md` y `AGENTS.md`: la escritura de categorías como única excepción a la regla de
         solo lectura, con la bandera `--allow-write` por invocación.
-  - [ ] C8 Implementación con TDD de `mail.categories.set` por la ruta oficial y la de navegador;
-        el servicio HTTP la rechaza.
+  - [x] C8 Implementación con TDD de `mail.categories.set` por la ruta de navegador; el servicio
+        HTTP la rechaza. La ruta oficial quedó bloqueada por alcances (ver C8).
   - [ ] C9 Prueba controlada en vivo sobre un correo de prueba, con confirmación de Camilo y una
         categoría de prueba que no use el equipo.
 - **Contrato propuesto para el ADR:**
@@ -160,19 +160,74 @@ fija reglas para las fases cuando se usa), así que este trabajo sigue ODD.
     en la referencia v2.0 («Update a message», alcance mínimo `mail.readwrite`); exige retirar la
     regla de solo lectura del navegador.
   - El servicio HTTP la rechaza por diseño, como cualquier operación interactiva.
-- **Comando propuesto para la prueba controlada, una vez aprobado el ADR y la implementación:**
+- **Ajuste del contrato en C8:** `--add` y `--remove` se pueden combinar en una sola escritura,
+  porque cambiar el estado de un caso es quitar uno y poner otro; `--replace` sigue siendo
+  excluyente. El registro trae además `previous_categories`, para auditar y deshacer.
 
-  ```bash
-  SOLERCIA_CONNECT_BROWSER_FALLBACK=true \
-    ~/Proyectos/SOLERCIA/solercia-connect-worktrees/outlook-categorias/.venv/bin/solercia-connect \
-    run --provider microsoft.graph --capability mail.categories.set \
-    --account pandora@idt.gov.co --message-id '<ID_DE_UN_CORREO_DE_PRUEBA>' \
-    --add 'SOPORTE/PENDIENTE' --allow-write --allow-browser-fallback \
-    --output ~/pandora/correo-idt/soporte-kb/m365/categorias-prueba/set-prueba.json
-  ```
+### C7. ADR de la escritura de categorías
 
-  Se repite el mismo comando para comprobar `changed: false` y luego `--remove` para devolver el
-  mensaje a su estado original.
+- [x] `docs/decisions/2026-10-19-escritura-categorias-outlook.md`: única excepción, `--allow-write`
+      por invocación, rechazo en HTTP, `PATCH` solo de categorías con `If-Match`, sin reintentos,
+      citas textuales de Microsoft Graph, Outlook REST v2.0 (marcada obsoleta por Microsoft) y
+      OData 4.01 para `If-Match`.
+- [x] Decisión 3.9 en el registro de plataforma; `SECURITY.md` (sección «Write exception») y
+      `AGENTS.md` actualizados.
+- [x] Suite en verde tras el cambio documental: 479 aprobadas, 4 vivas excluidas.
+- **Commit:** `ff41f84 docs(solercia): acepta la escritura de categorías de outlook`.
+
+### C8. `mail.categories.set` (TDD)
+
+- **Bloqueo de la ruta oficial, con evidencia:** `config.py:88` fija los alcances de `outlook` con
+  `Mail.Read`; `application.py:113` y `connections.py:282-283` exigen que la concesión guardada
+  contenga todos los alcances del target, y `oauth.py:250` los pide al refrescar. Agregar
+  `Mail.ReadWrite` invalidaría todas las concesiones oficiales de Outlook, igual que
+  `MailboxSettings.Read` en B1. No se inventó un modelo de alcances: el adaptador oficial no expone
+  la capacidad, el runtime registra `official_capability_unavailable` y solo la ruta de navegador,
+  con `--allow-browser-fallback`, la atiende. Una prueba fija los alcances sin `Mail.ReadWrite`.
+- **`--message-id`:** el campo `id` de los registros de `mail.inbox.list` y `mail.sent.list`
+  (`normalize_mail_message` lo lee de `id`/`Id` en `providers/_microsoft.py`). Distingue mayúsculas
+  y cambia si el correo se mueve de carpeta.
+- [x] RED 1: `ImportError: cannot import name 'MailCategoriesUpdate' from 'solercia_connect.domain'`
+      al recolectar las pruebas.
+- [x] RED 2, con los tipos de dominio: 42 fallidas y 492 aprobadas por las razones esperadas
+      (`'PlaywrightBrowserDriver' object has no attribute 'set_mail_categories'`,
+      `Capability mail.categories.set is not available for outlook`, HTTP 500 en vez de 403 porque
+      el servicio llegaba a la aplicación, `DID NOT RAISE`).
+- [x] GREEN: runtime (autorización y sin reintentos), adaptador y driver de navegador (`GET` de
+      `Id,Categories`, `PATCH` solo de `Categories` con `If-Match` y sin redirecciones), aplicación,
+      CLI, servicio HTTP (403), `TARGET_SPECS`, matriz y documentación. Se actualizaron tres
+      expectativas de contrato: capacidades del doctor, carga útil de la CLI y la ayuda heredada.
+- [x] Suite completa: 536 aprobadas, 4 vivas excluidas. `ruff format --check` (109 archivos),
+      `ruff check` sin hallazgos, `mypy src` sin errores en 38 archivos, cobertura de ramas 83,14 %.
+- **Tamaño:** unas 1 680 líneas, de ellas 1 010 de pruebas; la escritura toca dominio, runtime,
+  adaptador, driver, aplicación, CLI, servicio y cinco documentos, y no se partió de forma
+  artificial.
+- **Commit:** `121b64a feat(solercia): asigna categorías de outlook con --allow-write`.
+
+### C9. Prueba controlada en vivo (pendiente de Camilo)
+
+Prohibido ejecutarla sin la confirmación de Camilo. Usa la categoría `Prueba soporte-kb`, que el
+equipo no usa; nunca `SOPORTE/*` ni `Resuelto`.
+
+1. Leer la bandeja y escoger un correo de prueba; su `--message-id` es el campo `id` del registro.
+2. Agregar la categoría de prueba:
+
+   ```bash
+   SOLERCIA_CONNECT_BROWSER_FALLBACK=true \
+     ~/Proyectos/SOLERCIA/solercia-connect-worktrees/outlook-categorias/.venv/bin/solercia-connect \
+     run --provider microsoft.graph --capability mail.categories.set \
+     --account pandora@idt.gov.co --message-id '<ID_DE_UN_CORREO_DE_PRUEBA>' \
+     --add 'Prueba soporte-kb' --allow-write --allow-browser-fallback \
+     --output ~/pandora/correo-idt/soporte-kb/m365/categorias-prueba/set-prueba.json
+   ```
+
+3. Repetir el mismo comando con otro `--output` y comprobar `changed: false`.
+4. Devolver el correo a su estado original con `--remove 'Prueba soporte-kb'` y otro `--output`;
+   comprobar que `categories` coincide con el `previous_categories` del paso 2.
+5. Repetir el paso 2 sin `--allow-write` y comprobar `write_not_authorized` sin llamada al
+   proveedor.
+
+El efecto real de `If-Match` sobre mensajes no tiene prueba viva segura; queda anotado en el ADR.
 
 ## Propuestas fuera de alcance (no se implementan)
 
@@ -192,8 +247,13 @@ fija reglas para las fases cuando se usa), así que este trabajo sigue ODD.
 | C6 | Hecha | 18 correos, 3 con `Resuelto` |
 | B1 | Bloqueada por política | `SECURITY.md:31-33`, `SECURITY.md:80-82` |
 | B2 | Aprobada el 2026-10-19 | Decisión de Camilo; pasa a C7, C8 y C9 |
+| C7 | Hecha | ADR y registro de plataforma; `ff41f84` |
+| C8 | Hecha por navegador; ruta oficial bloqueada | RED 42, GREEN 536, cobertura 83,14 %; `121b64a` |
+| C9 | Pendiente | Espera la confirmación de Camilo |
 
 ## Siguiente paso
 
-C7, el ADR; después C8, con TDD. C9 espera la confirmación de Camilo. Mientras tanto, `soporte-kb`
-lee el estado desde `categories` y deriva el catálogo de los nombres observados.
+C9, la prueba controlada en vivo con `Prueba soporte-kb`, cuando Camilo la confirme. Queda abierta
+una decisión de Camilo: el modelo de alcances que permitiría a la ruta oficial pedir
+`Mail.ReadWrite` sin invalidar las concesiones actuales (la misma vía 2 de B1). Mientras tanto,
+`soporte-kb` lee el estado desde `categories` y deriva el catálogo de los nombres observados.
