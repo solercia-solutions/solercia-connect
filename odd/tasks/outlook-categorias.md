@@ -132,10 +132,21 @@ fija reglas para las fases cuando se usa), así que este trabajo sigue ODD.
      Outlook Web y llamar el endpoint documentado de Graph. Requiere ampliar la lista de hosts de
      la decisión 3.8 y `SECURITY.md:77-78`, con ADR.
 
-### B2. Escritura `mail.categories.set` — bloqueada
+### B2. Escritura `mail.categories.set` — aprobada por Camilo el 2026-10-19
 
 - Contradice `AGENTS.md:46`, `SECURITY.md:31-33`, `SECURITY.md:79` y el propósito de lectura de
   `AGENTS.md:3-5`. Requiere ADR nuevo antes de escribir código.
+- **Decisión de Camilo (2026-10-19):** el estado del caso se cambia desde el front de `soporte-kb`,
+  que lo escribe en GLPI y lo refleja como categoría en Outlook. Se habilita la escritura con el
+  contrato de abajo. B1 sigue por la vía provisional 1.
+- **Tareas:**
+  - [ ] C7 ADR que actualiza `docs/decisions/2026-08-23-solercia-platform-decisions.md`,
+        `SECURITY.md` y `AGENTS.md`: la escritura de categorías como única excepción a la regla de
+        solo lectura, con la bandera `--allow-write` por invocación.
+  - [ ] C8 Implementación con TDD de `mail.categories.set` por la ruta oficial y la de navegador;
+        el servicio HTTP la rechaza.
+  - [ ] C9 Prueba controlada en vivo sobre un correo de prueba, con confirmación de Camilo y una
+        categoría de prueba que no use el equipo.
 - **Contrato propuesto para el ADR:**
   - Entrada: `--message-id`, uno de `--add`, `--remove` o `--replace` (repetibles), y una bandera
     explícita de escritura (`--allow-write`) por invocación, apagada por defecto, igual que
@@ -180,11 +191,9 @@ fija reglas para las fases cuando se usa), así que este trabajo sigue ODD.
 | C5 | Hecha | Ruff, mypy y cobertura 82,48 % |
 | C6 | Hecha | 18 correos, 3 con `Resuelto` |
 | B1 | Bloqueada por política | `SECURITY.md:31-33`, `SECURITY.md:80-82` |
-| B2 | Bloqueada por política | `AGENTS.md:46`, `SECURITY.md:79` |
+| B2 | Aprobada el 2026-10-19 | Decisión de Camilo; pasa a C7, C8 y C9 |
 
 ## Siguiente paso
 
-Que Camilo decida sobre B1 y B2. Si aprueba, primero va el ADR que actualice
-`docs/decisions/2026-08-23-solercia-platform-decisions.md`, `SECURITY.md` y `AGENTS.md`; después,
-la implementación con TDD. Mientras tanto, `soporte-kb` puede leer el estado desde `categories` y
-derivar el catálogo de los nombres observados.
+C7, el ADR; después C8, con TDD. C9 espera la confirmación de Camilo. Mientras tanto, `soporte-kb`
+lee el estado desde `categories` y deriva el catálogo de los nombres observados.
