@@ -63,7 +63,12 @@ class KeyringBackend(Protocol):
 
 
 class KeyringOAuthTokenStore:
-    """Store OAuth state in an OS keyring instead of plaintext project files."""
+    """Store OAuth state through a ``KeyringBackend``.
+
+    By default the backend is the OS keyring. Only in project mode (``SOLERCIA_CONNECT_HOME``) is
+    a file backend injected, which keeps the state as private plaintext files under
+    ``<home>/secrets``; see docs/decisions/2026-10-25-modo-proyecto-secretos-en-archivo.md.
+    """
 
     def __init__(
         self, service_name: str = "solercia-connect", *, backend: KeyringBackend | None = None

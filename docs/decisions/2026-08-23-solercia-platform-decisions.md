@@ -110,7 +110,9 @@ este registro fija la línea base aceptada al 2026-08-23.
 3. La procedencia usa la identidad observada y verificada; nunca sustituye esa evidencia por una
    identidad solicitada sin verificar.
 4. OAuth usa endpoints oficiales fijos, PKCE, rotación o preservación correcta de refresh tokens
-   y un almacén seguro de tokens inyectado. No existe fallback a texto plano.
+   y un almacén seguro de tokens inyectado. No existe fallback a texto plano: el almacén en
+   archivo del modo proyecto no reemplaza al llavero ante un fallo, solo se usa cuando
+   `SOLERCIA_CONNECT_HOME` está definida (ADR del 2026-10-25 sobre el modo proyecto).
 5. El polling de dispositivo queda acotado por cantidad de intentos, demora máxima local y tiempo
    restante de expiración.
 6. El servicio de conexión usado por la CLI es propietario del listener loopback acotado, la
@@ -118,7 +120,9 @@ este registro fija la línea base aceptada al 2026-08-23.
    nunca inicia ni espera un flujo interactivo.
 7. Los perfiles locales no secretos se escriben de forma atómica y privada bajo XDG. Tokens y
    refresh tokens permanecen exclusivamente en un `OAuthTokenStore` seguro inyectado; las
-   variables de access token se conservan solo como bootstrap de desarrollo explícito.
+   variables de access token se conservan solo como bootstrap de desarrollo explícito. En modo
+   proyecto, perfiles, sesiones de navegador y secretos quedan en `SOLERCIA_CONNECT_HOME`, y los
+   secretos se guardan en archivos privados en texto plano, como riesgo aceptado en ese ADR.
 8. La lectura de perfiles rechaza directorios o archivos públicos, enlaces simbólicos, tipos no
    regulares y ownership ajeno cuando la plataforma lo expone. Nunca corrige permisos inseguros de
    forma silenciosa. Doctor y Playwright comparten el mismo auditor de rutas de perfil. Cada
@@ -253,6 +257,8 @@ No deben presentarse como capacidades terminadas.
   excepción de escritura para las categorías de Outlook.
 - [`2026-10-25-fallback-navegador-google-jira.md`](2026-10-25-fallback-navegador-google-jira.md):
   fallback de navegador para Google y Jira.
+- [`2026-10-25-modo-proyecto-secretos-en-archivo.md`](2026-10-25-modo-proyecto-secretos-en-archivo.md):
+  modo proyecto con secretos en archivo.
 
 Las referencias anteriores amplían este registro. Si una descripción histórica queda menos
 precisa que una decisión aceptada aquí, debe corregirse mediante un cambio documental explícito,

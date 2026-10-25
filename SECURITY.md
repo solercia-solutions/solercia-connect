@@ -7,16 +7,46 @@ as sensitive.
 
 ## Secret and configuration storage
 
-- Store OAuth access/refresh tokens only through an injected `OAuthTokenStore`.
-  `KeyringOAuthTokenStore` is the local default; plaintext token files are forbidden.
-- Store only non-secret connection metadata under the XDG configuration directory. Profile
-  directories are `0700`; files are atomic `0600` writes; symlinks are rejected. Profile reads
-  never repair unsafe permissions and reject wrong-owner, public, symlinked, or non-regular state.
-- Load environment files only through the explicit `SOLERCIA_CONNECT_ENV_FILE` path. Never infer a
-  current-directory `.env`.
+- Store OAuth access/refresh tokens only through an injected `OAuthTokenStore`, and API tokens only
+  through an injected `SecretStore`. The OS keyring is the default backend of both
+  (`KeyringOAuthTokenStore`, `KeyringSecretStore`); plaintext token files are forbidden outside
+  [project mode](#project-mode).
+- Store only non-secret connection metadata under the XDG configuration directory, or under
+  `<home>/config` in project mode. Profile directories are `0700`; files are atomic `0600` writes;
+  symlinks are rejected. Profile reads never repair unsafe permissions and reject wrong-owner,
+  public, symlinked, or non-regular state.
+- Load environment files only through the explicit `SOLERCIA_CONNECT_ENV_FILE` path or, in project
+  mode, `<home>/connect.env`. Never infer a current-directory `.env`.
 - Treat `MS_GRAPH_ACCESS_TOKEN`, `GOOGLE_ACCESS_TOKEN`, and their
   `SOLERCIA_CONNECT_*_ACCESS_TOKEN` aliases as development bootstrap only.
 - Never print secret values. Doctor and errors report missing variable names only.
+
+### Project mode
+
+`SOLERCIA_CONNECT_HOME`, accepted in
+`docs/decisions/2026-10-25-modo-proyecto-secretos-en-archivo.md`, keeps the configuration,
+connection profiles, browser profiles, secrets, and `connect.env` of one project in one folder.
+Only in this mode does a file backend replace the OS keyring, behind the same `KeyringBackend`
+protocol. Without the variable, nothing changes: XDG paths, the OS keyring, and the same env-file
+rules apply.
+
+- The value must be an absolute path after `~` expansion, without symlink components; a relative
+  path is rejected, so the folder never depends on the current directory.
+- The folder and its subfolders are `0700` and owned by the user. Secret files are `0600`, named by
+  a SHA-256 digest, and written atomically; symlinked or foreign-owned files are rejected.
+- A `.gitignore` containing exactly `*` is created when missing. Any other content fails closed and
+  is never overwritten.
+- Before any secret write and at connect, when an ancestor of the folder contains `.git`, Connect
+  runs a bounded `git ls-files` on the folder. Any tracked path fails closed, listing relative
+  paths only; git being unavailable or failing also fails closed. Git is never called outside
+  project mode.
+- `<home>/connect.env` is the lowest environment layer: the process environment first, then
+  `SOLERCIA_CONNECT_ENV_FILE`, then `connect.env`. It must be a private (`0600`) regular file owned
+  by the user, never a symlink.
+- Accepted risk: tokens are plaintext on disk, readable by any agent or process with read access to
+  that folder, which includes every process running as the same user. The guards keep them out of
+  git, not out of backups, archives, or synced folders, so the project must not live in shared or
+  cloud-synced storage.
 
 ## OAuth and account identity
 
