@@ -62,6 +62,7 @@ igual Google, pero si no se puede entonces por Playwright».
 | D0 | Se amplía el respaldo por navegador a Google y Jira; la ruta oficial sigue siendo la primaria. | **Aceptada**: Camilo, 2026-10-25 |
 | D0.1 | `admin_policy_enforced` de Google y el token de Jira bloqueado por política se tratan como «permiso de la organización no disponible», es decir, son razones válidas para usar el respaldo. Es el mismo trato que hoy recibe `ADMIN_CONSENT_REQUIRED` en Outlook. | Se deriva de D0 y queda registrada en la ADR |
 | D1 | Alcance del navegador en Google frente a `SECURITY.md:80-82` («Do not call retired or undocumented provider endpoints»). La ADR registra una excepción solo para Google y solo de lectura, que cubre tres mecanismos: la exportación ICS de Calendar, la exportación a texto de Docs para Meet, y Gmail por el DOM de la búsqueda más la descarga del mensaje original. Los selectores son versionados y deterministas. Si un selector cambia, se falla de forma cerrada con `BROWSER_SELECTOR_MISMATCH`. | **Aceptada**: Camilo, 2026-10-25, «Todo, incluido Gmail» |
+| D3 | **Modo proyecto.** Se activa con `SOLERCIA_CONNECT_HOME=<proyecto>/.solercia-connect` y concentra en esa carpeta la configuración, los perfiles, las sesiones de navegador, los secretos en archivo y `connect.env`. Protecciones: carpeta 0700, archivos 0600 con escritura atómica, `.gitignore` automático con `*`, y fallo cerrado si git rastrea algo dentro. Sin `SOLERCIA_CONNECT_HOME` todo sigue igual (XDG y llavero), así que Solercia Command y los demás consumidores no cambian. | **Aceptada**: Camilo, 2026-10-25, «Archivo en el proyecto». Caso de uso: agente `migracion-angular-pandora` en `IDARTES/pandora_proxy`, con Gmail y Jira |
 | D2 | Un commit convencional por tarea en esta rama: en español, con scope `solercia` y sin atribución a IA. Cada rebanada de unas 400 líneas se anota en el documento, para encadenar más adelante los PRs sobre la rama de la feature (`feature-branch-chain`). Sin push ni PR. | **Aceptada**: Camilo, 2026-10-25 |
 
 ### Evidencia de que la ruta oficial funciona (AUTOMATINFORMES)
@@ -88,9 +89,10 @@ Lo oficial va primero:
 3. T2.1 a T2.4
 4. T4.2 y T4.3
 5. T1.1 a T1.3
-6. T3.1 y T3.2
-7. T5.0 a T5.4
-8. T6.1 y T6.2
+6. T7.0 a T7.5 (modo proyecto, agregado el 2026-10-25)
+7. T3.1 y T3.2
+8. T5.0 a T5.4
+9. T6.1 y T6.2
 
 Los identificadores de las tareas no cambian.
 
@@ -133,16 +135,16 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
 
 ### Fase 1 — Base de navegador genérica, sin cambiar el comportamiento de Microsoft
 
-- [ ] **T1.1** Separar el código genérico del código de Microsoft.
+- [x] **T1.1** Separar el código genérico del código de Microsoft.
   - Agregar a `ports.py` un puerto de navegador neutral.
   - Extraer un núcleo Playwright común: perfil, observador de solicitudes, `_rest_get` y bearer
     transitorio.
   - Separarlo del driver y del adaptador de Microsoft.
   - Las pruebas de Microsoft deben seguir en verde sin cambiar su contrato.
-- [ ] **T1.2** Raíz de perfil por familia.
+- [x] **T1.2** Raíz de perfil por familia.
   - Usar `data_dir/m365`, `data_dir/google` y `data_dir/jira`, con variables de entorno opcionales.
   - En el registro, elegir el adaptador por la familia del destino y no por el primero que coincida.
-- [ ] **T1.3** Ajustar `RoutePolicy` y las razones del respaldo.
+- [x] **T1.3** Ajustar `RoutePolicy` y las razones del respaldo.
   - Agregar las familias GOOGLE y JIRA, y la capacidad `external.issues.search`.
   - Dejar una sola fuente para las razones que habilitan el respaldo: hoy `connections.py`,
     `runtime.py` y `ARCHITECTURE.md` no coinciden.
@@ -208,6 +210,42 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
   - El listado sale del DOM de la búsqueda `in:sent after: before:`.
   - El cuerpo completo sale de la descarga del mensaje original (RFC 822).
   - Los selectores son versionados y tienen fixtures saneados.
+
+### Fase 7 — Modo proyecto (D3)
+
+Pedido de Camilo, 2026-10-25: «que esas claves […] se pueda llamar desde la variable de entorno
+para que no haya que ponerle las claves a cada rato […] y que esos archivos de callback y de sesión
+[…] se guarden […] dentro del proyecto».
+
+- [ ] **T7.0** Escribir la ADR del modo proyecto.
+  - Corregir `SECURITY.md` y el docstring de `oauth.py:66`: el llavero sigue siendo el valor por
+    defecto, y el almacén en archivo solo se usa con `SOLERCIA_CONNECT_HOME`.
+  - Registrar los riesgos: los tokens quedan en texto plano en disco y los puede leer cualquier
+    agente con acceso de lectura a la carpeta.
+- [ ] **T7.1** Implementar `SOLERCIA_CONNECT_HOME`.
+  - Rutas: `config/`, `data/` (con los perfiles de navegador por familia) y `secrets/`.
+  - Protecciones:
+    - carpetas en 0700, comprobación de dueño y sin enlaces simbólicos
+    - `.gitignore` con `*`
+    - fallo cerrado si `git ls-files` muestra algo rastreado dentro
+  - Sin la variable, el comportamiento actual no cambia.
+- [ ] **T7.2** Crear el almacén de secretos en archivo.
+  - Implementa el protocolo `KeyringBackend`, de modo que `KeyringOAuthTokenStore` y
+    `KeyringSecretStore` lo usen sin cambios.
+  - Un archivo por clave, con nombre derivado por hash, permisos 0600 y escritura atómica.
+- [ ] **T7.3** Leer las credenciales desde el entorno del proyecto.
+  - Cargar `<home>/connect.env` cuando exista. Precedencia: entorno del proceso, luego
+    `SOLERCIA_CONNECT_ENV_FILE`, luego `connect.env`.
+  - `connect jira … --token-env NOMBRE` lee el token de esa variable sin mostrarlo.
+- [ ] **T7.4** Uso como librería y documentación.
+  - Documentar el punto de entrada de Python que respeta el mismo entorno.
+  - Agregar en `docs/USO-CON-AGENTES.md` la sección «Por proyecto», con el ejemplo de
+    `pandora_proxy`.
+  - `doctor` informa el modo proyecto.
+- [ ] **T7.5** Configurar `IDARTES/pandora_proxy`: variable, `connect.env` y conexión de Gmail y
+  Jira.
+  - Toca otro repositorio, así que requiere autorización explícita antes de hacerlo.
+  - El inicio de sesión lo hace Camilo.
 
 ### Fase 6 — Cierre
 
@@ -380,6 +418,71 @@ Detalle de T4.3 (commit `8fa6b87`):
 - **Compuertas:** 692 pruebas (verificado por el orquestador), cobertura 84,96 %, `ruff` y `mypy`
   limpios.
 
+Detalle de T1.1 (commit `43acc56`):
+
+- **Rojo:** al cargar las pruebas, `ImportError: BrowserProviderAdapter`.
+- **Verde:**
+  - Se creó el paquete `providers/browser_core/` con `states.py`, `session.py` (`PlaywrightSession`)
+    y `login.py` (`poll_until_ready`).
+  - Microsoft importa el núcleo de vuelta, con alias para los nombres anteriores.
+  - Se agregó el puerto `BrowserProviderAdapter`.
+- **Pruebas existentes modificadas:** ninguna.
+- **Compuertas:** 751 pruebas, cobertura 85,77 %.
+- **Cambio visible:** el `repr` del bearer pasó de `_TransientBearer` a `TransientBearer`, y sigue
+  redactado.
+
+Detalle de T1.2 (commit `1d31b86`):
+
+- **Rojo:**
+  - Google recibía `microsoft365.browser`, porque se elegía el primero que coincidía.
+  - Microsoft recibía `google.browser` si Google se registraba antes.
+- **Verde:**
+  - Se agregó `browser_profile_path` por familia. La ruta de Microsoft quedó fijada a la fórmula
+    anterior.
+  - El perfil de Jira se identifica por el sitio más la cuenta.
+  - La familia sale de una tabla fija, `official_provider_family`. Si no se puede saber, no se
+    elige ningún adaptador y se falla de forma cerrada.
+- **Pruebas existentes modificadas:** ninguna.
+- **Compuertas:** 782 pruebas, cobertura 85,93 %.
+
+Decisión de T1.3, tomada por el orquestador el 2026-10-25 a partir de D0:
+
+- **Lista de capacidades por familia:**
+  - Google: `mail.sent.list`, `calendar.events.list` y `meeting.transcripts.*`.
+  - Jira: `external.issues.search`.
+  - Microsoft: sin cambios.
+- **Por qué no una lista única:** permitiría combinaciones que la ADR no aprobó, como Jira con
+  `mail.categories.set`.
+- **Prueba adaptada:** `test_browser_fallback_is_denied_for_non_microsoft_family` codificaba el §3.2
+  anterior y se adapta a D0.
+  - Pasa a llamarse `test_browser_fallback_is_denied_outside_the_family_allowlist`.
+  - Conserva su intención con dos casos de rechazo: GLPI, y Google con una capacidad fuera de su
+    lista.
+
+Detalle de T1.3 (commit `88955a3`):
+
+- **Rojo:** 9 fallos contra la lista única.
+  - Jira con `mail.categories.set` y Google con `mail.inbox.list` quedaban permitidos.
+  - Microsoft con `external.issues.search` también quedaba permitido.
+  - No existía el atributo por familia.
+- **Verde:**
+  - La tabla `BROWSER_FALLBACK_CAPABILITIES` tiene una lista por familia.
+  - Las constantes `RUNTIME_FALLBACK_REASONS` y `CONNECT_FALLBACK_REASONS` son la única fuente de
+    las razones.
+  - `browser_routes.py` centraliza las compuertas de superficie.
+  - El escaneo de seguridad cubre todos los paquetes de navegador.
+- **Pruebas existentes:**
+  - Solo se adaptó la autorizada, con 28 líneas agregadas y 12 eliminadas.
+  - `test_inbox_mail_is_allowlisted_for_the_microsoft_browser_fallback` pasa sin cambios.
+- **Compuertas:** 861 pruebas (verificado por el orquestador), cobertura 86,06 %, `ruff` y `mypy`
+  limpios.
+- **Partes de Microsoft que se dejan para T3, T5 y T6.1:**
+  - textos de auditoría y de rechazo que mencionan a Microsoft;
+  - `browser_adapter_from_environment` y `_browser_adapter`, que solo construyen Microsoft;
+  - `BrowserDriver` y `BrowserSnapshot`, todavía con la forma de Microsoft;
+  - el check de doctor `microsoft_browser_route`;
+  - `SOLERCIA_CONNECT_GOOGLE_PROFILE_DIR` y `SOLERCIA_CONNECT_JIRA_PROFILE_DIR`, sin documentar.
+
 ### Rebanadas de entrega (`feature-branch-chain`)
 
 | Rebanada | Commits | Líneas | Contenido |
@@ -388,6 +491,7 @@ Detalle de T4.3 (commit `8fa6b87`):
 | R2 | `a982184`, `d76cdbd` | ~1.110 | Meet y Jira por cuenta |
 | R3 | `5ccef97`, `6c4bd6c` | ~905 | Tokens con alcance y política de Google |
 | R4 | `675e80e`, `8fa6b87` | ~1.770 | OAuth de Atlassian y bloqueo de política en Google |
+| R5 | `43acc56`, `1d31b86`, `88955a3` | ~3.070 | Base de navegador por familias (Fase 1) |
 
 ## Seguimiento fuera de alcance
 
@@ -398,6 +502,5 @@ Detalle de T4.3 (commit `8fa6b87`):
 
 ## Siguiente paso
 
-La ruta oficial de Jira y de Google está completa, salvo T2.4, que está bloqueada por evidencia.
-Sigue la Fase 1: T1.1, T1.2 y T1.3, la base de navegador genérica, sin cambiar el comportamiento
-de Microsoft.
+La ruta oficial y la Fase 1 están completas. Sigue la Fase 7 (modo proyecto), con T7.0 a T7.4.
+T7.5 requiere autorización para tocar `IDARTES/pandora_proxy`.
