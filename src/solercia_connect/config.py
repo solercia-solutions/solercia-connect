@@ -16,6 +16,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from solercia_connect.providers._shared import ensure_https_base_url
+from solercia_connect.providers.jira import (
+    jira_site_publishes_tenant_info,
+    normalize_jira_cloud_id,
+)
 from solercia_connect.secrets import SecretValue
 
 PROFILE_SCHEMA = "solercia.connect/profile/v1"
@@ -191,6 +195,39 @@ def normalize_jira_site(value: str) -> str:
     return f"https://{parsed.hostname.casefold()}{port}"
 
 
+class JiraTokenKind(StrEnum):
+    """How a Jira API token reaches the REST API. The caller chooses; it is never detected."""
+
+    CLASSIC = "classic"
+    SCOPED = "scoped"
+
+
+def normalize_jira_token_binding(
+    site: str, token_kind: str | None, cloud_id: str | None
+) -> tuple[JiraTokenKind, str | None]:
+    """Validate the token kind and cloud ID of a normalized site before any token is read.
+
+    A scoped token without a cloud ID is accepted only where tenant_info can resolve it.
+    """
+
+    try:
+        kind = JiraTokenKind((token_kind or JiraTokenKind.CLASSIC).strip().casefold())
+    except ValueError:
+        raise ValueError("--token-kind must be classic or scoped") from None
+    if kind is JiraTokenKind.CLASSIC:
+        if cloud_id is not None:
+            raise ValueError("--cloud-id applies only to --token-kind scoped")
+        return kind, None
+    if cloud_id is None:
+        if not jira_site_publishes_tenant_info(site):
+            raise ValueError("A scoped token on a site outside atlassian.net needs --cloud-id")
+        return kind, None
+    try:
+        return kind, normalize_jira_cloud_id(cloud_id)
+    except ValueError:
+        raise ValueError("--cloud-id must be the site cloud ID, a UUID") from None
+
+
 @dataclass(frozen=True, slots=True)
 class ConnectSettings:
     microsoft_client_id: str | None
@@ -308,6 +345,9 @@ class ConnectionProfile:
     # Both are optional so v1 files written before they existed keep loading unchanged.
     site: str | None = None
     provider_account_id: str | None = None
+    # Absent on files written before scoped tokens; a Jira profile without it is classic.
+    token_kind: JiraTokenKind | None = None
+    cloud_id: str | None = None
 
     @classmethod
     def create(
@@ -319,6 +359,8 @@ class ConnectionProfile:
         now: datetime | None = None,
         site: str | None = None,
         provider_account_id: str | None = None,
+        token_kind: str | None = None,
+        cloud_id: str | None = None,
     ) -> ConnectionProfile:
         parsed = ConnectionType.parse(type)
         if route not in {"official", "browser"}:
@@ -337,6 +379,7 @@ class ConnectionProfile:
             False,
             normalize_jira_site(site) if site is not None else None,
             _provider_account_id(provider_account_id),
+            *_jira_token_fields(token_kind, cloud_id),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -354,6 +397,10 @@ class ConnectionProfile:
             payload["site"] = self.site
         if self.provider_account_id is not None:
             payload["provider_account_id"] = self.provider_account_id
+        if self.token_kind is not None:
+            payload["token_kind"] = self.token_kind.value
+        if self.cloud_id is not None:
+            payload["cloud_id"] = self.cloud_id
         return payload
 
     @classmethod
@@ -383,6 +430,11 @@ class ConnectionProfile:
             if raw_site is not None and normalize_jira_site(str(raw_site)) != raw_site:
                 raise ValueError("Connection profile site is not a normalized HTTPS origin")
             provider_account_id = _provider_account_id(payload.get("provider_account_id"))
+            raw_kind = payload.get("token_kind")
+            raw_cloud_id = payload.get("cloud_id")
+            token_kind, cloud_id = _jira_token_fields(raw_kind, raw_cloud_id)
+            if (raw_kind, raw_cloud_id) != (token_kind, cloud_id):
+                raise ValueError("Connection profile Jira token fields are not normalized")
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Connection profile is malformed") from exc
         return cls(
@@ -396,7 +448,22 @@ class ConnectionProfile:
             browser_implemented,
             raw_site,
             provider_account_id,
+            token_kind,
+            cloud_id,
         )
+
+
+def _jira_token_fields(
+    token_kind: object, cloud_id: object
+) -> tuple[JiraTokenKind | None, str | None]:
+    """A cloud ID exists exactly when the token is scoped; no kind at all means classic."""
+
+    if token_kind is None and cloud_id is None:
+        return None, None
+    kind = JiraTokenKind(str(token_kind))
+    if (kind is JiraTokenKind.SCOPED) != (cloud_id is not None):
+        raise ValueError("Connection profile cloud ID must accompany a scoped Jira token only")
+    return kind, normalize_jira_cloud_id(str(cloud_id)) if cloud_id is not None else None
 
 
 def _provider_account_id(value: object) -> str | None:

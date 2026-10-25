@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,14 +18,23 @@ from solercia_connect.bootstrap import registry_from_environment
 from solercia_connect.config import (
     PROFILE_SCHEMA,
     ConnectionProfile,
+    JiraTokenKind,
     ProfileStore,
     load_settings,
     normalize_jira_site,
+    normalize_jira_token_binding,
 )
 from solercia_connect.connections import ConnectionService
-from solercia_connect.domain import ReasonCode
+from solercia_connect.domain import (
+    Capability,
+    ConnectorRequest,
+    DateWindow,
+    IssueQuery,
+    ReasonCode,
+)
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.oauth import OAuthTokenSet
+from solercia_connect.providers.jira import normalize_jira_cloud_id
 from solercia_connect.secret_store import API_TOKEN_SERVICE, KeyringSecretStore
 from solercia_connect.secrets import SecretValue
 from solercia_connect.service import create_app
@@ -36,6 +46,10 @@ TOKEN = "jira-api-token-value"
 KEY = (API_TOKEN_SERVICE, f"jira:{ACCOUNT}")
 BASIC = "Basic " + base64.b64encode(f"{ACCOUNT}:{TOKEN}".encode()).decode()
 MYSELF = f"{SITE}/rest/api/3/myself"
+CLOUD_ID = "11223344-a1b2-3b33-c444-def123456789"
+GATEWAY = f"https://api.atlassian.com/ex/jira/{CLOUD_ID}"
+GATEWAY_MYSELF = f"{GATEWAY}/rest/api/3/myself"
+TENANT_INFO = f"{SITE}/_edge/tenant_info"
 
 runner = CliRunner()
 
@@ -559,3 +573,274 @@ def test_http_service_never_accepts_jira_tokens(tmp_path: Path) -> None:
     assert without_token.json()["error"]["remediation"] == [
         f"solercia-connect connect jira {ACCOUNT} --site <site>"
     ]
+
+
+# Scoped API tokens call the Atlassian gateway instead of the site, still with Basic email:token.
+
+
+def _scoped(tmp_path: Path, *later: Any) -> tuple[Any, ProfileStore, MemoryKeyring, Any]:
+    service, profiles, keyring, transport = _service(tmp_path, _myself(), *later)
+    result = service.connect_jira(
+        ACCOUNT, site=SITE, token=SecretValue(TOKEN), token_kind="scoped", cloud_id=CLOUD_ID
+    )
+    assert result.ok
+    return service, profiles, keyring, transport
+
+
+def test_cloud_id_is_a_canonical_uuid_and_the_token_kind_is_an_explicit_choice() -> None:
+    assert normalize_jira_cloud_id(f" {CLOUD_ID.upper()} ") == CLOUD_ID
+    for invalid in ("", "nope", "../../evil", f"{CLOUD_ID}/rest", "1234"):
+        with pytest.raises(ValueError, match="cloud ID"):
+            normalize_jira_cloud_id(invalid)
+
+    assert normalize_jira_token_binding(SITE, None, None) == (JiraTokenKind.CLASSIC, None)
+    assert normalize_jira_token_binding(SITE, "classic", None) == (JiraTokenKind.CLASSIC, None)
+    assert normalize_jira_token_binding(SITE, "scoped", CLOUD_ID.upper()) == (
+        JiraTokenKind.SCOPED,
+        CLOUD_ID,
+    )
+    # An atlassian.net site may leave the cloud ID to the tenant_info lookup at connect time.
+    assert normalize_jira_token_binding(SITE, "scoped", None) == (JiraTokenKind.SCOPED, None)
+    for site, kind, cloud_id, option in (
+        (SITE, "oauth", None, "--token-kind"),
+        (SITE, "classic", CLOUD_ID, "--cloud-id"),
+        (SITE, "scoped", "not-a-uuid", "--cloud-id"),
+        ("https://jira.example.com", "scoped", None, "--cloud-id"),
+    ):
+        with pytest.raises(ValueError, match=option):
+            normalize_jira_token_binding(site, kind, cloud_id)
+
+
+def test_classic_tokens_keep_calling_the_site_and_record_their_kind(tmp_path: Path) -> None:
+    service, profiles, _, transport = _service(tmp_path, _myself())
+
+    result = service.connect_jira(
+        ACCOUNT, site=SITE, token=SecretValue(TOKEN), token_kind="classic"
+    )
+
+    assert result.status == "connected_official"
+    assert result.data["token_kind"] == "classic" and "cloud_id" not in result.data
+    assert [request.url for request in transport.requests] == [MYSELF]
+    profile = profiles.get("jira", ACCOUNT)
+    assert profile is not None
+    assert profile.token_kind is JiraTokenKind.CLASSIC and profile.cloud_id is None
+
+
+def test_scoped_tokens_call_the_atlassian_gateway_with_the_same_basic_credentials(
+    tmp_path: Path,
+) -> None:
+    service, profiles, keyring, transport = _service(tmp_path, _myself())
+
+    result = service.connect_jira(
+        ACCOUNT,
+        site=SITE,
+        token=SecretValue(TOKEN),
+        token_kind="scoped",
+        cloud_id=CLOUD_ID.upper(),
+    )
+
+    assert result.status == "connected_official"
+    assert result.data["site"] == SITE
+    assert result.data["token_kind"] == "scoped" and result.data["cloud_id"] == CLOUD_ID
+    assert [request.url for request in transport.requests] == [GATEWAY_MYSELF]
+    assert transport.requests[0].headers is not None
+    assert transport.requests[0].headers["Authorization"] == BASIC
+    profile = profiles.get("jira", ACCOUNT)
+    assert profile is not None and profile.site == SITE
+    assert profile.token_kind is JiraTokenKind.SCOPED and profile.cloud_id == CLOUD_ID
+    assert keyring.values == {KEY: TOKEN}
+    assert TOKEN not in profiles.path_for("jira", ACCOUNT).read_text(encoding="utf-8")
+
+
+def test_scoped_tokens_without_a_cloud_id_read_it_from_the_documented_tenant_info(
+    tmp_path: Path,
+) -> None:
+    service, profiles, _, transport = _service(
+        tmp_path, json_response(200, {"cloudId": CLOUD_ID}), _myself()
+    )
+
+    result = service.connect_jira(ACCOUNT, site=SITE, token=SecretValue(TOKEN), token_kind="scoped")
+
+    assert result.status == "connected_official" and result.data["cloud_id"] == CLOUD_ID
+    assert [request.url for request in transport.requests] == [TENANT_INFO, GATEWAY_MYSELF]
+    # tenant_info is public, so the token never travels to it.
+    assert "Authorization" not in (transport.requests[0].headers or {})
+    profile = profiles.get("jira", ACCOUNT)
+    assert profile is not None and profile.cloud_id == CLOUD_ID
+
+
+@pytest.mark.parametrize(
+    ("response", "code"),
+    [
+        (json_response(200, {"cloudId": "not-a-uuid"}), "malformed_provider_data"),
+        (json_response(200, {"cloudId": f"{CLOUD_ID}/../other"}), "malformed_provider_data"),
+        (json_response(200, {}), "malformed_provider_data"),
+        (json_response(404, {}), "request_rejected"),
+    ],
+)
+def test_scoped_cloud_id_lookup_fails_closed_and_stores_nothing(
+    tmp_path: Path, response: Any, code: str
+) -> None:
+    service, profiles, keyring, transport = _service(tmp_path, response)
+
+    result = service.connect_jira(ACCOUNT, site=SITE, token=SecretValue(TOKEN), token_kind="scoped")
+
+    assert result.ok is False
+    assert result.error is not None and result.error.code == code
+    assert [request.url for request in transport.requests] == [TENANT_INFO]
+    assert profiles.get("jira", ACCOUNT) is None and keyring.values == {}
+
+
+@pytest.mark.parametrize(
+    ("site", "kind", "cloud_id", "option"),
+    [
+        (SITE, "scoped", "not-a-uuid", "--cloud-id"),
+        (SITE, "classic", CLOUD_ID, "--cloud-id"),
+        (SITE, "oauth", None, "--token-kind"),
+        ("https://jira.example.com", "scoped", None, "--cloud-id"),
+    ],
+)
+def test_invalid_token_kind_or_cloud_id_is_rejected_before_any_request(
+    tmp_path: Path, site: str, kind: str, cloud_id: str | None, option: str
+) -> None:
+    service, profiles, keyring, transport = _service(tmp_path)
+
+    result = service.connect_jira(
+        ACCOUNT, site=site, token=SecretValue(TOKEN), token_kind=kind, cloud_id=cloud_id
+    )
+
+    assert result.status == "invalid_input"
+    assert result.error is not None and option in result.error.message
+    assert transport.requests == []
+    assert profiles.get("jira", ACCOUNT) is None and keyring.values == {}
+
+
+def test_jira_profiles_written_before_the_token_kind_load_as_classic(tmp_path: Path) -> None:
+    service, profiles, keyring, transport = _service(tmp_path, _myself())
+    profiles.save(
+        ConnectionProfile.create("jira", ACCOUNT, now=NOW, site=SITE, provider_account_id="acct-1")
+    )
+    keyring.values[KEY] = TOKEN
+    raw = json.loads(profiles.path_for("jira", ACCOUNT).read_text(encoding="utf-8"))
+
+    result = service.status("jira", ACCOUNT)
+
+    assert "token_kind" not in raw and "cloud_id" not in raw
+    assert result.status == "connected_official"
+    assert result.data["token_kind"] == "classic" and "cloud_id" not in result.data
+    assert [request.url for request in transport.requests] == [MYSELF]
+
+    scoped = ConnectionProfile.create(
+        "jira",
+        ACCOUNT,
+        now=NOW,
+        site=SITE,
+        provider_account_id="acct-1",
+        token_kind="scoped",
+        cloud_id=CLOUD_ID,
+    )
+    payload = scoped.to_dict()
+    assert payload["token_kind"] == "scoped" and payload["cloud_id"] == CLOUD_ID
+    assert ConnectionProfile.from_dict(payload) == scoped
+    for broken in (
+        {**payload, "token_kind": "oauth"},
+        {**payload, "token_kind": "classic"},
+        {**payload, "cloud_id": "not-a-uuid"},
+        {**payload, "cloud_id": CLOUD_ID.upper()},
+        {key: value for key, value in payload.items() if key != "cloud_id"},
+        {key: value for key, value in payload.items() if key != "token_kind"},
+    ):
+        with pytest.raises(ValueError):
+            ConnectionProfile.from_dict(broken)
+
+
+def test_status_and_run_use_the_stored_scoped_gateway(tmp_path: Path) -> None:
+    service, _, keyring, transport = _scoped(tmp_path, _myself(), json_response(401, {}))
+
+    healthy = service.status("jira", ACCOUNT)
+    revoked = service.status("jira", ACCOUNT)
+
+    assert healthy.status == "connected_official"
+    assert healthy.data["token_kind"] == "scoped" and healthy.data["cloud_id"] == CLOUD_ID
+    assert revoked.status == "action_required"
+    assert revoked.error is not None
+    assert revoked.error.remediation == (
+        f"solercia-connect connect jira {ACCOUNT} --site {SITE} "
+        f"--token-kind scoped --cloud-id {CLOUD_ID}",
+    )
+    assert [request.url for request in transport.requests] == [GATEWAY_MYSELF] * 3
+
+    run_transport = FakeTransport(_myself(), json_response(200, {"issues": [], "isLast": True}))
+    registry = registry_from_environment(
+        connection_type="jira",
+        account=ACCOUNT,
+        environ=_env_jira(tmp_path),
+        token_store=UnusedOAuthStore(),
+        secret_store=KeyringSecretStore(backend=keyring),
+        transport=run_transport,
+    )
+    window = DateWindow(datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 9, 1, tzinfo=UTC))
+    issues = registry.find("jira.cloud").execute(
+        ConnectorRequest.create("jira.cloud", Capability.EXTERNAL_ISSUES_SEARCH, IssueQuery(window))
+    )
+
+    assert issues == ()
+    assert [request.url for request in run_transport.requests] == [
+        GATEWAY_MYSELF,
+        f"{GATEWAY}/rest/api/3/search/jql",
+    ]
+    assert all(r.headers and r.headers["Authorization"] == BASIC for r in run_transport.requests)
+
+
+def test_cli_connects_a_scoped_token_against_the_gateway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profiles, keyring, transport = _cli_service(tmp_path, monkeypatch, _myself())
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "connect",
+            "jira",
+            ACCOUNT,
+            "--site",
+            SITE,
+            "--token-kind",
+            "scoped",
+            "--cloud-id",
+            CLOUD_ID,
+        ],
+        input=f"{TOKEN}\n",
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout)["data"]["cloud_id"] == CLOUD_ID
+    assert TOKEN not in result.output
+    assert [request.url for request in transport.requests] == [GATEWAY_MYSELF]
+    profile = profiles.get("jira", ACCOUNT)
+    assert profile is not None and profile.token_kind is JiraTokenKind.SCOPED
+    assert keyring.values == {KEY: TOKEN}
+
+
+def test_cli_scoped_input_errors_name_the_option_and_never_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profiles, keyring, transport = _cli_service(tmp_path, monkeypatch)
+    base = ["connect", "jira", ACCOUNT, "--site"]
+
+    cases = {
+        "--cloud-id": [*base, SITE, "--token-kind", "scoped", "--cloud-id", "not-a-uuid"],
+        "--token-kind": [*base, SITE, "--token-kind", "oauth"],
+        "--token-kind scoped": [*base, SITE, "--cloud-id", CLOUD_ID],
+        "needs --cloud-id": [*base, "https://jira.example.com", "--token-kind", "scoped"],
+        "apply only to jira": ["connect", "gmail", ACCOUNT, "--token-kind", "scoped"],
+    }
+
+    for expected, arguments in cases.items():
+        result = runner.invoke(cli.app, arguments, input=f"{TOKEN}\n")
+        payload = json.loads(result.stdout)
+        assert payload["status"] == "invalid_input"
+        assert expected in payload["error"]["message"]
+        assert TOKEN not in result.output
+    assert transport.requests == []
+    assert keyring.values == {} and profiles.get("jira", ACCOUNT) is None

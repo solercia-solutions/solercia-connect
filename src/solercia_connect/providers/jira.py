@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
 from solercia_connect.auth import AuthorizationProvider
 from solercia_connect.domain import (
@@ -30,6 +32,53 @@ from solercia_connect.providers._shared import (
     require_string,
 )
 from solercia_connect.transport import request_json
+
+# Scoped API tokens are not accepted by the site URL: Atlassian routes them through this gateway,
+# still with Basic email:token. Source: "Manage API tokens for your Atlassian account".
+ATLASSIAN_JIRA_GATEWAY = "https://api.atlassian.com/ex/jira"
+# Atlassian documents tenant_info only for <site>.atlassian.net ("How to Find Your Atlassian
+# Cloud Site's Cloud ID"); any other host must name its cloud ID explicitly.
+_TENANT_INFO_HOST_SUFFIX = ".atlassian.net"
+
+
+def normalize_jira_cloud_id(value: str) -> str:
+    """Accept only a UUID, so a cloud ID can never reshape the gateway path it is joined to."""
+
+    try:
+        return str(uuid.UUID(value.strip()))
+    except (AttributeError, ValueError):
+        raise ValueError("Jira cloud ID must be a UUID") from None
+
+
+def jira_api_base_url(site: str, cloud_id: str | None) -> str:
+    """REST base for a Jira connection: the site itself, or the gateway for a scoped token."""
+
+    return site if cloud_id is None else f"{ATLASSIAN_JIRA_GATEWAY}/{cloud_id}"
+
+
+def jira_site_publishes_tenant_info(site: str) -> bool:
+    host = urlparse(site).hostname or ""
+    return host.endswith(_TENANT_INFO_HOST_SUFFIX)
+
+
+def resolve_jira_cloud_id(transport: HTTPTransport, site: str) -> str:
+    """Read a site's cloud ID from ``/_edge/tenant_info``; the endpoint is public, so no token."""
+
+    payload = request_json(
+        transport,
+        "GET",
+        f"{site}/_edge/tenant_info",
+        headers={"Accept": "application/json"},
+    )
+    data = require_mapping(payload, "jira.tenant_info")
+    raw = require_string(data.get("cloudId"), "jira.tenant_info.cloudId")
+    try:
+        return normalize_jira_cloud_id(raw)
+    except ValueError:
+        raise ConnectorFailure(
+            ReasonCode.MALFORMED_PROVIDER_DATA,
+            "Jira tenant_info did not return a UUID cloud ID",
+        ) from None
 
 
 @dataclass(frozen=True, slots=True)

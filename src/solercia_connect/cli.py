@@ -23,6 +23,7 @@ from solercia_connect.config import (
     load_settings,
     normalize_account,
     normalize_jira_site,
+    normalize_jira_token_binding,
 )
 from solercia_connect.connections import ConnectionService
 from solercia_connect.doctor import DoctorService
@@ -335,25 +336,52 @@ def connect(
         bool,
         typer.Option("--token-stdin", help="Read the Jira API token from one stdin line"),
     ] = False,
+    token_kind: Annotated[
+        str | None,
+        typer.Option(
+            "--token-kind",
+            help="Jira API token kind: classic (default) calls the site; scoped calls "
+            "api.atlassian.com/ex/jira/{cloudId}",
+        ),
+    ] = None,
+    cloud_id: Annotated[
+        str | None,
+        typer.Option(
+            "--cloud-id",
+            help="Jira cloud ID (UUID) for a scoped token; an atlassian.net site may omit it",
+        ),
+    ] = None,
     output: Annotated[Path | None, typer.Option("--output")] = None,
     force: Annotated[bool, typer.Option("--force")] = False,
 ) -> None:
     """Connect one provider target and account using official OAuth first.
 
     Jira takes --site and reads its API token from a hidden prompt, or from one stdin line with
-    --token-stdin; the token is never accepted as an argument or an environment variable.
+    --token-stdin; the token is never accepted as an argument or an environment variable. A
+    scoped token needs --token-kind scoped, plus --cloud-id unless the site is on atlassian.net.
     """
 
     try:
         service = connection_service_from_environment(action_sink=_interactive_action)
         jira = ConnectionType.parse(type_value) is ConnectionType.JIRA
-        if not jira and (site is not None or token_stdin):
-            raise _InputError("--site and --token-stdin apply only to jira")
+        jira_options = (site, token_kind, cloud_id)
+        if not jira and (token_stdin or any(option is not None for option in jira_options)):
+            raise _InputError(
+                "--site, --token-stdin, --token-kind and --cloud-id apply only to jira"
+            )
         if jira and site is not None:
+            normalized_account = _valid_input(normalize_account, account)
+            origin = _valid_input(normalize_jira_site, site)
+            try:
+                kind, scoped_cloud_id = normalize_jira_token_binding(origin, token_kind, cloud_id)
+            except ValueError as failure:
+                raise _InputError(str(failure)) from None
             envelope = service.connect_jira(
-                _valid_input(normalize_account, account),
-                site=_valid_input(normalize_jira_site, site),
+                normalized_account,
+                site=origin,
                 token=_jira_token(from_stdin=token_stdin),
+                token_kind=kind,
+                cloud_id=scoped_cloud_id,
             )
         else:
             envelope = service.connect(

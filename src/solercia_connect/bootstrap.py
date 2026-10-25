@@ -24,7 +24,7 @@ from solercia_connect.ports import HTTPTransport
 from solercia_connect.providers.glpi import GlpiAdapter
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
-from solercia_connect.providers.jira import JiraAdapter
+from solercia_connect.providers.jira import JiraAdapter, jira_api_base_url
 from solercia_connect.providers.m365_browser import (
     Microsoft365BrowserAdapter,
     PlaywrightBrowserDriver,
@@ -248,7 +248,10 @@ def _jira_adapter_for_account(
         or profile.provider_account_id is None
     ):
         command = connect_command(
-            ConnectionType.JIRA, account, site=profile.site if profile else None
+            ConnectionType.JIRA,
+            account,
+            site=profile.site if profile else None,
+            cloud_id=profile.cloud_id if profile else None,
         )
         raise ValueError(f"No official Jira connection exists for this account; run {command}")
     token = secrets.load(f"{ConnectionType.JIRA.value}:{account}")
@@ -260,7 +263,7 @@ def _jira_adapter_for_account(
     return JiraAdapter(
         transport,
         BasicAuthProvider(account, token),
-        base_url=profile.site,
+        base_url=jira_api_base_url(profile.site, profile.cloud_id),
         expected_account_id=profile.provider_account_id,
         expected_account=account,
     )
