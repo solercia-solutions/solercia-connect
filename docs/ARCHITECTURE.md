@@ -18,7 +18,7 @@ FastAPI loopback (non-interactive, +--> application services
                                           v
                                    ConnectorRuntime + RoutePolicy
                                      | official ProviderAdapter
-                                     ` Microsoft browser fallback (explicit)
+                                     ` browser fallback (explicit): Microsoft, Google, Jira
                                           v
                               versioned envelope + record(s) + receipt
 ```
@@ -104,12 +104,20 @@ Official references: [Teams transcript listing](https://learn.microsoft.com/en-u
 
 ## Routing and browser status
 
-Official failures are typed before routing. Only `admin_consent_required` and
-`official_capability_unavailable` can enter Microsoft browser fallback, and only after the current
-CLI invocation explicitly supplies `--allow-browser-fallback`. Configuration can make the route
-available but cannot authorize a call; every browser attempt requires --allow-browser-fallback.
-Invalid credentials, identity mismatch, tenant transcript policy, malformed data, and
-unknown errors never fall back.
+Official failures are typed before routing. Only `admin_consent_required`,
+`official_capability_unavailable`, and `configuration_invalid`
+(`RoutePolicy.browser_fallback_reasons` in `runtime.py`) can enter browser fallback, only for an
+allowlisted capability and provider family, and only after the current CLI invocation explicitly
+supplies `--allow-browser-fallback`. Configuration can make the route available but cannot
+authorize a call; every browser attempt requires --allow-browser-fallback. Invalid credentials,
+identity mismatch, tenant transcript policy, malformed data, and unknown errors never fall back.
+
+`docs/decisions/2026-10-25-fallback-navegador-google-jira.md` extends the fallback families from
+Microsoft to Google and Jira, with one browser package and one profile root per family. Its D0.1
+adds Google `admin_policy_enforced` and a Jira API token blocked by organization policy as
+organizational permission not available, eligible like `admin_consent_required`. Until later tasks
+implement them, `RoutePolicy.browser_fallback_families` still holds only Microsoft and those
+Google/Jira failures do not enter the fallback.
 
 The only write, `mail.categories.set`, adds a second per-invocation gate: the runtime refuses it
 with `write_not_authorized` before any adapter runs unless the request carries the CLI's

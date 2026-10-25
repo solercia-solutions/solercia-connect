@@ -34,7 +34,9 @@ uv build
 - `ports.py` owns provider, token, transport, and browser interfaces.
 - `runtime.py` owns official-first routing, bounded retry, and fallback policy.
 - `providers/` contains vendor adapters; vendor payloads never cross this boundary.
-- `providers/m365_browser/` is an explicit Microsoft-only fallback foundation.
+- Browser fallback covers Microsoft, Google, and Jira per
+  `docs/decisions/2026-10-25-fallback-navegador-google-jira.md`, with one package per family;
+  `providers/m365_browser/` is the Microsoft one.
 - No adapter owns persistence or transactions. This first slice has no database.
 
 ## Non-negotiable conventions

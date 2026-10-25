@@ -10,7 +10,7 @@ metadata:
 ## Activation contract
 
 Load this skill before provider configuration, connection/authentication, data reads, routing, or
-Microsoft browser fallback.
+browser fallback.
 
 This skill is self-contained: it works installed anywhere, and never depends on the repository
 being the current working directory.
@@ -20,9 +20,10 @@ being the current working directory.
 - Invoke the `solercia-connect` command; never recreate HTTP, OAuth, callback, normalization,
   retry, selector, output, or fallback logic in an agent prompt or ad hoc script.
 - Validate with `solercia-connect doctor TYPE ACCOUNT` before connection or reads.
-- Use official APIs first. Browser fallback is Microsoft-only and requires explicit opt-in: every
-  browser attempt needs `--allow-browser-fallback` on that invocation. Configuration availability
-  alone never authorizes one.
+- Use official APIs first. Browser fallback requires explicit opt-in: every browser attempt needs
+  `--allow-browser-fallback` on that invocation. Configuration availability alone never authorizes
+  one. Today it serves Microsoft only; the Google and Jira browser routes are accepted in the
+  2026-10-25 ADR and are still being implemented, so never promise or attempt them yet.
 - Never expose tokens, cookies, authorization headers, passwords, client secrets, device codes,
   API keys, raw provider errors, or tracebacks.
 - Never use an LLM to choose routes, account identity, retries, or failure classes.
@@ -63,6 +64,9 @@ browser session rather than official OAuth.
 | `meeting.transcripts.list` / `meeting.transcript.get` | yes, needs tenant scopes | yes (Microsoft only) |
 | `mail.categories.set` (write) | no, needs a scope decision | yes, with `--allow-write` |
 
+The browser column describes Microsoft. Google (Gmail, Calendar, Meet) and Jira browser routes are
+being implemented per the 2026-10-25 ADR; until they ship, those providers are official-only.
+
 Records are identical across routes; `provenance` is the only field naming the route.
 
 **Outlook categories.** Every Outlook mail record carries `categories`, the category names on the
@@ -94,8 +98,9 @@ answer with speaker-named WebVTT.
 are discovered with `calendar.events.readonly` and transcript Docs are exported through Drive with
 `drive.readonly`. It accepts `--meeting-id` or an exact timezone-aware end-exclusive window. Drive
 item selectors are Microsoft-only and fail closed. Records use `text/plain` speaker turns and
-`last_cue_seconds` is `None`; no timestamps are synthesized. Empty windows stay empty, and
-Playwright is never offered for Google Meet.
+`last_cue_seconds` is `None`; no timestamps are synthesized. Empty windows stay empty. A Google Meet
+browser route (Docs export to plain text) is accepted in the 2026-10-25 ADR but not implemented
+yet; until it ships, Playwright is not offered for Google Meet.
 
 ## Decision gates
 
@@ -106,6 +111,7 @@ Playwright is never offered for Google Meet.
 | Existing read | Run the narrow capability; preserve record schema, provenance and receipt |
 | Category change | Only on an explicit user request; pass `--allow-write` for that one run |
 | Microsoft admin-consent failure | Use browser only when the user explicitly allowed it |
+| Google `admin_policy_enforced` or Jira API token blocked by the organization | Report the typed error; the browser route for these families is still being implemented |
 | Teams tenant policy or personal account | Stop with typed remediation; never bypass |
 | An `action_required` envelope | Run the exact remediation command in the CLI; never attempt login through the HTTP service |
 | Zero records | Report zero. Do not widen the range, and do not improvise scraping |

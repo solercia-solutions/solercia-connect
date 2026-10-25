@@ -37,7 +37,8 @@ as sensitive.
   a stored grant must contain all of the target's scopes. That route stays disabled until a
   separate scope decision.
 - Teams transcripts require work/school accounts and tenant permission. Personal accounts and
-  tenant/admin policy blocks never route around policy.
+  Microsoft tenant/admin policy blocks never route around policy. Google and Jira organizational
+  blocks follow the [browser fallback](#browser-fallback) rules below.
 
 ## Service and output
 
@@ -62,21 +63,35 @@ as sensitive.
 - Disconnect removes local profile/token state and explicitly reports that provider-side
   revocation was not performed. Revoke remotely in the provider/tenant portal when required.
 
-## Microsoft browser fallback
+## Browser fallback
 
-- Browser fallback is Microsoft-only, explicit, typed, and allowlisted. It is never primary.
+- Browser fallback covers the Microsoft, Google, and Jira families, as accepted in
+  `docs/decisions/2026-10-25-fallback-navegador-google-jira.md`. It is explicit, typed, and
+  allowlisted. It is never primary.
   Every browser attempt requires --allow-browser-fallback; a true environment setting makes the
   route available but never authorizes an invocation. This includes browser-backed `status`,
   `health microsoft365.browser`, and the `m365 login/status` compatibility commands.
-- Use a dedicated persistent profile; personal Chrome, Edge, Brave, or Chromium profiles are
-  rejected. Keep its directory private and outside shared/cloud-synced storage.
+- Google `admin_policy_enforced` and a Jira API token blocked by organization policy count as
+  organizational permission not available and may enter the fallback, like Microsoft
+  `admin_consent_required`. Microsoft `tenant_policy_blocked` and the Teams transcript policy
+  never fall back.
+- Use a dedicated persistent profile per family and per account, under separate `m365`, `google`,
+  and `jira` roots; a profile is never shared across families. Personal Chrome, Edge, Brave, or
+  Chromium profiles are rejected. Keep each directory private and outside shared/cloud-synced
+  storage.
 - The user performs password entry and MFA. The runtime never asks for or types credentials.
-- A uniquely verified browser identity may establish `connected_browser`. Built-in browser data
-  extraction is enabled only for capabilities backed by documented read-only provider endpoints.
-- The session authorization captured from the user's own supervised browser session may be used
-  in memory to call those endpoints. This is the deliberate purpose of the fallback route and is
-  gated twice: the environment must make the route available and every invocation must pass
-  `--allow-browser-fallback`. The user supplies their own credentials and MFA.
+- A uniquely verified browser identity may establish `connected_browser`. Jira identity is the
+  `accountId` of `/rest/api/3/myself` equal to the `X-AAccountId` response header, bound to the
+  site host; a visible `emailAddress` must match the account, and a blank or `unknown` `accountId`
+  fails closed. The Google browser route stays fail-closed until its identity probe is proven live.
+  Built-in browser data extraction is enabled only for capabilities backed by documented read-only
+  provider endpoints, plus the [scoped Google exception](#scoped-exception-google-browser-reads).
+- Jira browser reads are same-origin requests issued from the site's own page; Connect never reads
+  or copies the session cookie.
+- For Microsoft, the session authorization captured from the user's own supervised browser session
+  may be used in memory to call those endpoints. This is the deliberate purpose of the fallback
+  route and is gated twice: the environment must make the route available and every invocation
+  must pass `--allow-browser-fallback`. The user supplies their own credentials and MFA.
 - That authorization is bound by the following non-negotiable rules:
   - It is held only in a mutable in-memory buffer that is zeroed after use and on close.
   - It is never written to disk, never logged, never serialized into an envelope or receipt, and
@@ -87,7 +102,22 @@ as sensitive.
     category write below when the same invocation also passes `--allow-write`.
 - Do not read `document.cookie`, browser local storage, session storage, or any other long-lived
   credential store. Do not persist cookies or profile contents outside the dedicated profile. Do
-  not call retired or undocumented provider endpoints.
+  not call retired or undocumented provider endpoints, except the scoped Google exception below.
+
+### Scoped exception: Google browser reads
+
+The same decision accepts one exception to the documented-endpoint rule, for Google only and
+read-only. It covers exactly three mechanisms:
+
+- the Google Calendar ICS export;
+- the Docs export to plain text of the document that holds a Meet transcript;
+- the Gmail sent-mail listing from the DOM of the search `in:sent after: before:`, plus the
+  original-message (RFC 822) download.
+
+Selectors and formats are versioned, deterministic, and backed by sanitized fixtures. Any mismatch
+fails closed with `browser_selector_mismatch`. The documented-endpoint rule stays in force for
+every other case: Microsoft and Jira get no such exception, and no other undocumented Google
+mechanism is allowed.
 
 ## Write exception: Outlook categories
 

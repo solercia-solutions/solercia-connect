@@ -5,17 +5,17 @@ context: |
   Solercia Connect: runtime conector determinista "oficial primero" para Microsoft 365, Google Workspace, Jira y GLPI.
   Stack: Python 3.12 (src layout), Typer CLI (solercia-connect), servicio FastAPI en loopback (solercia-connect-service).
   Arquitectura: domain.py (capacidades/DTOs/procedencia/recibos) -> ports.py (puertos) -> runtime.py (enrutamiento) -> providers/ (adaptadores).
-  Fallback: Playwright es exclusivo de Microsoft, explícito, tipado y requiere --allow-browser-fallback en cada invocación; nunca es la ruta primaria.
+  Fallback: Playwright es un respaldo para Microsoft, Google y Jira (docs/decisions/2026-10-25-fallback-navegador-google-jira.md), explícito, tipado y requiere --allow-browser-fallback en cada invocación; nunca es la ruta primaria.
   Seguridad: nunca registrar credenciales/cookies/tokens; sobre versionado solercia.connect/v1; rangos horarios con fin exclusivo; "vacío permanece vacío".
   Testing: pytest vía uv (make test / Makefile), cobertura mínima de ramas 80% (pyproject.toml fail_under).
   Modo TDD estricto activo para todo cambio nuevo (ver rules.apply.tdd).
 
 rules:
   proposal:
-    - Declarar explícitamente el impacto en la ruta de enrutamiento (oficial u oficial + fallback de navegador Microsoft).
+    - Declarar explícitamente el impacto en la ruta de enrutamiento (oficial u oficial + fallback de navegador de Microsoft, Google o Jira).
     - Indicar el límite de seguridad afectado (identidad de cuenta, almacenamiento de secretos, alcance mínimo de permisos).
     - Confirmar compatibilidad con el sobre versionado `solercia.connect/v1` y con la procedencia/recibo determinista existente.
-    - Incluir plan de rollback para cambios en autenticación, enrutamiento, persistencia de perfiles o el fallback de Microsoft.
+    - Incluir plan de rollback para cambios en autenticación, enrutamiento, persistencia de perfiles o el fallback de navegador de cualquier familia.
   specs:
     - Usar escenarios en formato Dado/Cuando/Entonces (Given/When/Then).
     - Usar palabras clave RFC 2119 en español (DEBE, DEBERÍA, PUEDE).
