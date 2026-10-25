@@ -159,7 +159,7 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
   - Las variables `JIRA_*` siguen funcionando.
 - [x] **T2.2** Admitir tokens con alcance, que van contra
   `api.atlassian.com/ex/jira/{cloudId}`.
-- [ ] **T2.3** Atlassian OAuth (3LO) con la app propia del usuario (`client_id` y
+- [x] **T2.3** Atlassian OAuth (3LO) con la app propia del usuario (`client_id` y
   `client_secret`).
   - Pedir `offline_access` y usar `accessible-resources` para obtener el `cloudId`.
   - Rotar el refresh token y tratar el `invalid_grant` con error tipado.
@@ -187,7 +187,7 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
   se escribe primero, en rojo.
 - [x] **T4.2** Clasificar los fallos de Google: `admin_policy_enforced` y `org_internal` en el
   token, y el 403 de API, pasan a razones tipadas según D0.1.
-- [ ] **T4.3** Actualizar el runbook: con la app propia publicada en producción para uso personal,
+- [x] **T4.3** Actualizar el runbook: con la app propia publicada en producción para uso personal,
   sin verificar, la autorización no vence a los 7 días. Los alcances de los grants existentes no
   se tocan.
   - Si el callback de `connect` de Google expira, el mensaje de corrección debe explicar que Google
@@ -335,6 +335,51 @@ Detalle de T4.2 (commit `6c4bd6c`):
   - Un `--cloud-id` explícito no se contrasta con el sitio, aunque la identidad por `/myself` sigue
     aplicando.
 
+Detalle de T2.3 (commit `675e80e`):
+
+- **Rojo:**
+  - Al cargar las pruebas: `ImportError: atlassian_oauth_provider_from_settings`.
+  - `LoopbackCallbackServer` no aceptaba `port`.
+  - Durante el verde, dos pruebas de estado fallaron porque se leía el reloj real. Se corrigió
+    inyectando el reloj del servicio.
+- **Verde:**
+  - Se agregó `AtlassianOAuthProvider`, que usa `client_secret` y no envía PKCE.
+  - El refresh token rota en cada renovación. Si no llega uno nuevo, el resultado es
+    `INVALID_CREDENTIALS` y se conserva el anterior.
+  - El sitio se elige por coincidencia exacta en `accessible-resources`. Si no aparece o aparece
+    más de una vez, el resultado es `AUTHORIZATION_BOUNDARY_VIOLATION`.
+  - La identidad se prueba con `/me` y `/myself`, y exige un correo coincidente.
+  - El CLI usa `--token-kind oauth` y no pide token. Ejecutar usa Bearer contra
+    `api.atlassian.com/ex/jira/{cloudId}`.
+- **Configuración:** `SOLERCIA_CONNECT_ATLASSIAN_CLIENT_ID`,
+  `SOLERCIA_CONNECT_ATLASSIAN_CLIENT_SECRET` y `SOLERCIA_CONNECT_ATLASSIAN_REDIRECT_URI`. El valor
+  por defecto de la redirección es `http://127.0.0.1:8766/oauth/callback`, y es la URL que se
+  registra en la consola de Atlassian.
+- **Pruebas existentes ajustadas:** tres pruebas usaban `"oauth"` como valor inválido y ahora usan
+  `"bearer"`. El caso de `disconnect` ahora usa un almacén de OAuth respaldado por keyring.
+- **Compuertas:** 688 pruebas, cobertura 84,95 %, `ruff` y `mypy` limpios.
+- **Tamaño:** 1.569 líneas. La tarea abarca proveedor, configuración, servicio, CLI y bootstrap, cada
+  uno con sus pruebas.
+- **Brechas:**
+  - La documentación no confirma que Atlassian acepte un callback de loopback; queda pendiente la
+    validación en vivo.
+  - Si una cuenta cambia de token a OAuth, la credencial anterior queda guardada hasta
+    `disconnect`.
+  - La corrección del `run` por HTTP no agrega `--token-kind oauth` (T6.1).
+  - `doctor` no reporta `SOLERCIA_CONNECT_ATLASSIAN_*` (T6.1).
+
+Detalle de T4.3 (commit `8fa6b87`):
+
+- **Rojo:** 3 fallos, uno por cada destino de Google, porque faltaba la línea de corrección cuando
+  expira el callback.
+- **Verde:**
+  - Se agregó la línea que explica `admin_policy_enforced` y `org_internal` y orienta hacia la ruta
+    de navegador. Solo aplica a Google; el código de razón no cambia.
+  - Los runbooks de Gmail, Calendar y Meet ahora explican la app propia en producción, los límites
+    del estado de prueba y el bloqueo del administrador, con las citas separadas del análisis.
+- **Compuertas:** 692 pruebas (verificado por el orquestador), cobertura 84,96 %, `ruff` y `mypy`
+  limpios.
+
 ### Rebanadas de entrega (`feature-branch-chain`)
 
 | Rebanada | Commits | Líneas | Contenido |
@@ -342,6 +387,7 @@ Detalle de T4.2 (commit `6c4bd6c`):
 | R1 | `9a186db` | 640 | ADR y documentos |
 | R2 | `a982184`, `d76cdbd` | ~1.110 | Meet y Jira por cuenta |
 | R3 | `5ccef97`, `6c4bd6c` | ~905 | Tokens con alcance y política de Google |
+| R4 | `675e80e`, `8fa6b87` | ~1.770 | OAuth de Atlassian y bloqueo de política en Google |
 
 ## Seguimiento fuera de alcance
 
@@ -352,5 +398,6 @@ Detalle de T4.2 (commit `6c4bd6c`):
 
 ## Siguiente paso
 
-Siguen T2.3 (Atlassian OAuth 3LO) y T4.3 (runbook y mensaje de corrección cuando expira el
-callback de Google). Después va la Fase 1 (base de navegador genérica).
+La ruta oficial de Jira y de Google está completa, salvo T2.4, que está bloqueada por evidencia.
+Sigue la Fase 1: T1.1, T1.2 y T1.3, la base de navegador genérica, sin cambiar el comportamiento
+de Microsoft.
