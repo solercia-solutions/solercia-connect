@@ -58,6 +58,17 @@ from solercia_connect.transport import HttpxTransport
 _MICROSOFT_FALLBACK_REASONS = frozenset(
     {ReasonCode.ADMIN_CONSENT_REQUIRED, ReasonCode.OFFICIAL_CAPABILITY_UNAVAILABLE}
 )
+_GOOGLE_TARGETS = frozenset(
+    {ConnectionType.GMAIL, ConnectionType.GOOGLE_CALENDAR, ConnectionType.GOOGLE_MEET}
+)
+# Google shows admin_policy_enforced or org_internal on its own page and never redirects to the
+# loopback listener, so a blocked connect reaches the CLI only as a callback timeout.
+GOOGLE_POLICY_BLOCK_REMEDIATION = (
+    "If Google showed admin_policy_enforced or org_internal instead of returning here, the "
+    "organization blocks this app; see the browser fallback route in "
+    "docs/decisions/2026-10-25-fallback-navegador-google-jira.md (--allow-browser-fallback once "
+    "the Google browser route is available)."
+)
 
 
 class OAuthProvider(Protocol):
@@ -1445,6 +1456,8 @@ def _remediation(
             "Ask the Jira site administrator to allow API token access for this account.",
             connect_command(parsed, account, site=site, cloud_id=cloud_id),
         )
+    if reason is ReasonCode.OAUTH_CALLBACK_TIMEOUT and parsed in _GOOGLE_TARGETS:
+        return (connect_command(parsed, account), GOOGLE_POLICY_BLOCK_REMEDIATION)
     if reason is ReasonCode.ADMIN_CONSENT_REQUIRED:
         return (
             "Ask the tenant administrator to grant the required delegated scopes.",

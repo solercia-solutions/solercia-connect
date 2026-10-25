@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from solercia_connect.auth import BearerTokenProvider
+from solercia_connect.config import ProfileStore, load_settings
+from solercia_connect.connections import ConnectionService
 from solercia_connect.domain import (
     CalendarQuery,
     DateWindow,
@@ -271,3 +274,80 @@ def test_the_shared_transport_still_maps_every_403_to_authorization_denied() -> 
         )
 
     assert captured.value.reason is ReasonCode.AUTHORIZATION_DENIED
+
+
+# A Google organization block is shown on Google's own page and never reaches the loopback, so the
+# CLI only observes the callback timing out. That remediation, and only Google's, names the block.
+
+POLICY_BLOCK_LINE = (
+    "If Google showed admin_policy_enforced or org_internal instead of returning here, the "
+    "organization blocks this app; see the browser fallback route in "
+    "docs/decisions/2026-10-25-fallback-navegador-google-jira.md (--allow-browser-fallback once "
+    "the Google browser route is available)."
+)
+
+
+def _callback_timeout(*_: Any) -> None:
+    raise ConnectorFailure(
+        ReasonCode.OAUTH_CALLBACK_TIMEOUT,
+        "OAuth loopback callback did not arrive within the fixed timeout",
+    )
+
+
+class _TimedOutOAuth:
+    def authorization_header(self) -> str:
+        raise AssertionError("No provider call may follow a callback timeout")
+
+    def start_device_authorization(self) -> Any:
+        _callback_timeout()
+
+
+def _timeout_service(tmp_path: Path) -> ConnectionService:
+    settings = load_settings(
+        environ={
+            "XDG_CONFIG_HOME": str(tmp_path / "config"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+            "SOLERCIA_CONNECT_GOOGLE_CLIENT_ID": "google-client-id",
+            "SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID": "microsoft-client-id",
+            "SOLERCIA_CONNECT_ATLASSIAN_CLIENT_ID": "atlassian-client-id",
+            "SOLERCIA_CONNECT_ATLASSIAN_CLIENT_SECRET": "atlassian-client-secret",
+        }
+    )
+    return ConnectionService(
+        settings,
+        ProfileStore.from_settings(settings),
+        _TokenStore(),
+        oauth_builder=lambda type, account: _TimedOutOAuth(),
+        google_callback_flow=_callback_timeout,
+        atlassian_callback_flow=_callback_timeout,
+        transport=FakeTransport(),
+        clock=lambda: NOW,
+    )
+
+
+@pytest.mark.parametrize("target", ["gmail", "google-calendar", "google-meet"])
+def test_a_google_callback_timeout_explains_the_policy_block_and_the_browser_route(
+    tmp_path: Path, target: str
+) -> None:
+    result = _timeout_service(tmp_path).connect(target, ACCOUNT, open_browser=False)
+
+    assert result.error is not None and result.error.code == "oauth_callback_timeout"
+    assert result.error.remediation == (
+        f"solercia-connect connect {target} {ACCOUNT}",
+        POLICY_BLOCK_LINE,
+    )
+
+
+def test_microsoft_and_jira_callback_timeouts_keep_their_remediation(tmp_path: Path) -> None:
+    service = _timeout_service(tmp_path)
+
+    microsoft = service.connect("outlook", ACCOUNT)
+    jira = service.connect_jira_oauth(ACCOUNT, site="https://example.atlassian.net")
+
+    assert microsoft.error is not None and microsoft.error.code == "oauth_callback_timeout"
+    assert microsoft.error.remediation == (f"solercia-connect connect outlook {ACCOUNT}",)
+    assert jira.error is not None and jira.error.code == "oauth_callback_timeout"
+    assert jira.error.remediation == (
+        f"solercia-connect connect jira {ACCOUNT} --site https://example.atlassian.net "
+        "--token-kind oauth",
+    )
