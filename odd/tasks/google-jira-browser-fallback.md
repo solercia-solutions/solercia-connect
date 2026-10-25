@@ -550,8 +550,26 @@ Detalle de la Fase 7 (commits `a6142b4` a `6ad07e3` y `0ab30c7`):
 
 ## Siguiente paso
 
-La ruta oficial, la Fase 1 y la Fase 7 (T7.0 a T7.4) están completas. Siguen dos frentes:
+La ruta oficial, la Fase 1 y la Fase 7 (T7.0 a T7.4) están completas.
 
-- T7.5: configurar `IDARTES/pandora_proxy`. Requiere la autorización de Camilo para tocar ese
-  repositorio, y el inicio de sesión lo hace él.
-- T3.1: adaptador de navegador para Jira.
+**T7.5 (preparada, pendiente de Camilo).** Camilo la autorizó el 2026-10-25 con la opción «Preparar
+sin reinstalar». En `IDARTES/pandora_proxy/.solercia-connect/` quedaron:
+
+- la estructura creada por `prepare_project_home`: carpetas 0700 y `.gitignore` 0600 con `*`;
+- `connect.env` 0600, con los nombres de las variables comentados y sin valores;
+- `solercia-connect.sh` 0700, que usa `uv run --project` contra esta rama sin tocar la instalación
+  global;
+- `LEEME.md` 0600, con los pasos y la instrucción para el agente.
+
+Verificación:
+
+- `doctor` reporta `project_mode ready: true`, `git_guard: clean` y `gitignore: ignores_all`.
+- `git status` de `pandora_proxy` no muestra nada de esa carpeta.
+- No se hizo ningún commit en `pandora_proxy`.
+
+Falta que Camilo llene `connect.env` y ejecute `connect gmail` y `connect jira`.
+
+Hay una limitación: Gmail solo ofrece `mail.sent.list`, y la bandeja de entrada existe solo para
+Outlook.
+
+Siguiente paso técnico: T3.1, el adaptador de navegador para Jira.
