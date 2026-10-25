@@ -217,27 +217,27 @@ Pedido de Camilo, 2026-10-25: «que esas claves […] se pueda llamar desde la v
 para que no haya que ponerle las claves a cada rato […] y que esos archivos de callback y de sesión
 […] se guarden […] dentro del proyecto».
 
-- [ ] **T7.0** Escribir la ADR del modo proyecto.
+- [x] **T7.0** Escribir la ADR del modo proyecto.
   - Corregir `SECURITY.md` y el docstring de `oauth.py:66`: el llavero sigue siendo el valor por
     defecto, y el almacén en archivo solo se usa con `SOLERCIA_CONNECT_HOME`.
   - Registrar los riesgos: los tokens quedan en texto plano en disco y los puede leer cualquier
     agente con acceso de lectura a la carpeta.
-- [ ] **T7.1** Implementar `SOLERCIA_CONNECT_HOME`.
+- [x] **T7.1** Implementar `SOLERCIA_CONNECT_HOME`.
   - Rutas: `config/`, `data/` (con los perfiles de navegador por familia) y `secrets/`.
   - Protecciones:
     - carpetas en 0700, comprobación de dueño y sin enlaces simbólicos
     - `.gitignore` con `*`
     - fallo cerrado si `git ls-files` muestra algo rastreado dentro
   - Sin la variable, el comportamiento actual no cambia.
-- [ ] **T7.2** Crear el almacén de secretos en archivo.
+- [x] **T7.2** Crear el almacén de secretos en archivo.
   - Implementa el protocolo `KeyringBackend`, de modo que `KeyringOAuthTokenStore` y
     `KeyringSecretStore` lo usen sin cambios.
   - Un archivo por clave, con nombre derivado por hash, permisos 0600 y escritura atómica.
-- [ ] **T7.3** Leer las credenciales desde el entorno del proyecto.
+- [x] **T7.3** Leer las credenciales desde el entorno del proyecto.
   - Cargar `<home>/connect.env` cuando exista. Precedencia: entorno del proceso, luego
     `SOLERCIA_CONNECT_ENV_FILE`, luego `connect.env`.
   - `connect jira … --token-env NOMBRE` lee el token de esa variable sin mostrarlo.
-- [ ] **T7.4** Uso como librería y documentación.
+- [x] **T7.4** Uso como librería y documentación.
   - Documentar el punto de entrada de Python que respeta el mismo entorno.
   - Agregar en `docs/USO-CON-AGENTES.md` la sección «Por proyecto», con el ejemplo de
     `pandora_proxy`.
@@ -483,6 +483,53 @@ Detalle de T1.3 (commit `88955a3`):
   - el check de doctor `microsoft_browser_route`;
   - `SOLERCIA_CONNECT_GOOGLE_PROFILE_DIR` y `SOLERCIA_CONNECT_JIRA_PROFILE_DIR`, sin documentar.
 
+Detalle de la Fase 7 (commits `a6142b4` a `6ad07e3` y `0ab30c7`):
+
+- **T7.0 (`a6142b4`):** se escribió la ADR `2026-10-25-modo-proyecto-secretos-en-archivo.md`.
+  - `SECURITY.md` ganó la sección «Project mode».
+  - En el registro de plataforma se ajustaron §4.4 y §4.7, porque eran los que decían «solo
+    llavero».
+  - Se corrigió el docstring de `oauth.py`.
+- **T7.1 (`ab8430d`):**
+  - Se creó `project_home.py`: la carpeta exige ruta absoluta, se crean `config/`, `data/` y
+    `secrets/` con permisos 0700, y el `.gitignore` con `*`.
+  - La verificación de git usa un ejecutor inyectable con límite de 10 s.
+  - Rojo: `ImportError: ProjectHomeError`.
+- **T7.2 (`4efa20c`):**
+  - Se creó `FileSecretBackend`, que cumple el protocolo `KeyringBackend` y escribe archivos 0600
+    de forma atómica.
+  - Las fábricas `oauth_token_store_from_settings` y `api_token_store_from_settings` reemplazan
+    todas las construcciones directas de los almacenes.
+  - Rojo: el CLI seguía usando el llavero y la prueba falló con `FileNotFoundError`.
+- **T7.3 (`96c0411`):**
+  - Precedencia: el proceso gana sobre `SOLERCIA_CONNECT_ENV_FILE`, y este sobre `connect.env`.
+  - `connect.env` debe tener permisos 0600 y no puede definir `SOLERCIA_CONNECT_HOME` ni
+    `SOLERCIA_CONNECT_ENV_FILE`.
+  - Se agregó `--token-env`.
+- **T7.4 (`6ad07e3`):**
+  - `doctor` reporta el modo proyecto.
+  - `docs/USO-CON-AGENTES.md` tiene la sección «Por proyecto».
+  - El README documenta tres variables.
+  - El punto de entrada de librería es `solercia_connect.application.run_application`, que ya
+    respeta el modo proyecto. No se creó una API paralela.
+- **Corrección del orquestador (`0ab30c7`):** el redactor reportó que `run`, `status` y HTTP no
+  preparaban la carpeta, así que una ruta de navegador podía crear `data/` con cookies sin
+  `.gitignore`.
+  - Ahora `registry_from_environment` prepara y verifica la carpeta en cada `run`.
+  - `ConnectionService` lo hace en todas las operaciones.
+  - El servicio HTTP se cierra desde el arranque si git rastrea algo dentro.
+  - Rojo:
+    - 6 fallos por falta del `.gitignore` y por no detectar el archivo rastreado.
+    - La protección de `bootstrap` se probó desactivándola: fallaron 4 pruebas. La primera sonda
+      falló porque el reemplazo no coincidió; se corrigió y se repitió.
+  - Una prueba existente (`test_run_application_via_http_serves_the_browser_route_without_an_upfront_refusal`)
+    impidió poner la protección en `application.py`; por eso quedó en `bootstrap`. La prueba no se
+    modificó.
+- **Compuertas:** 942 pruebas, cobertura 86,82 %, `ruff` y `mypy` limpios. Ninguna prueba
+  existente se modificó en la Fase 7.
+- **Brecha:** el `.gitignore` debe contener exactamente `*\n`; si el archivo tiene otro contenido,
+  se rechaza y no se reescribe.
+
 ### Rebanadas de entrega (`feature-branch-chain`)
 
 | Rebanada | Commits | Líneas | Contenido |
@@ -492,6 +539,7 @@ Detalle de T1.3 (commit `88955a3`):
 | R3 | `5ccef97`, `6c4bd6c` | ~905 | Tokens con alcance y política de Google |
 | R4 | `675e80e`, `8fa6b87` | ~1.770 | OAuth de Atlassian y bloqueo de política en Google |
 | R5 | `43acc56`, `1d31b86`, `88955a3` | ~3.070 | Base de navegador por familias (Fase 1) |
+| R6 | `a6142b4` a `6ad07e3`, `0ab30c7` | ~2.730 | Modo proyecto (Fase 7) |
 
 ## Seguimiento fuera de alcance
 
@@ -502,5 +550,8 @@ Detalle de T1.3 (commit `88955a3`):
 
 ## Siguiente paso
 
-La ruta oficial y la Fase 1 están completas. Sigue la Fase 7 (modo proyecto), con T7.0 a T7.4.
-T7.5 requiere autorización para tocar `IDARTES/pandora_proxy`.
+La ruta oficial, la Fase 1 y la Fase 7 (T7.0 a T7.4) están completas. Siguen dos frentes:
+
+- T7.5: configurar `IDARTES/pandora_proxy`. Requiere la autorización de Camilo para tocar ese
+  repositorio, y el inicio de sesión lo hace él.
+- T3.1: adaptador de navegador para Jira.
