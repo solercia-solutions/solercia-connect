@@ -120,7 +120,7 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
 
 ### Fase 0 — Decisión
 
-- [ ] **T0.1** Escribir la ADR `docs/decisions/2026-10-25-fallback-navegador-google-jira.md` y
+- [x] **T0.1** Escribir la ADR `docs/decisions/2026-10-25-fallback-navegador-google-jira.md` y
   corregir los documentos que hoy dicen «solo Microsoft»:
   - el registro de 2026-08-23: §3.2, §3.6, §3.8, §4.8 y §5.6
   - `SECURITY.md:65-82`
@@ -178,7 +178,7 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
 
 ### Fase 4 — Google oficial
 
-- [ ] **T4.1** Corregir `connect google-meet` agregando la rama de identidad que falta. La prueba
+- [x] **T4.1** Corregir `connect google-meet` agregando la rama de identidad que falta. La prueba
   se escribe primero, en rojo.
 - [ ] **T4.2** Clasificar los fallos de Google: `admin_policy_enforced` y `org_internal` en el
   token, y el 403 de API, pasan a razones tipadas según D0.1.
@@ -227,7 +227,41 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
 | D1 | Decidida | Respuesta de Camilo, 2026-10-25 |
 | D2 | Decidida | Respuesta de Camilo, 2026-10-25 |
 | Alcance | Confirmado: «Plan completo» | Respuesta de Camilo, 2026-10-25, después de revisar la evidencia de AUTOMATINFORMES |
+| T0.1 | Hecha | Commit `9a186db`. Ver el detalle debajo de la tabla. |
+
+Detalle de T0.1:
+
+- **Pruebas:** `pytest -m 'not live'` dio 536 aprobadas y 4 excluidas. `ruff format --check` y
+  `ruff check` pasaron.
+- **Riesgo RDD:** pasivo, porque el cambio es solo de documentación y RDD está apagado.
+- **Criterio aplicado:** `SECURITY.md:39` se limitó a las políticas de tenant de Microsoft para que
+  no contradiga D0.1.
+
+Detalle de T4.1:
+
+- **Rojo:** dos pruebas nuevas en `tests/test_connections.py`. El resultado fue `failed` en lugar
+  de `connected_official`, y `capability_not_implemented` en lugar de
+  `authorization_boundary_violation`.
+- **Verde:**
+  - Se agregó la rama `GOOGLE_MEET` en `_verify_identity`.
+  - Se agregó el puerto `transport` inyectable en `ConnectionService`. El factory OAuth ahora usa
+    el tipo `HTTPTransport`.
+- **Compuertas:**
+  - pruebas: 538 aprobadas, 4 excluidas
+  - cobertura: 83,25 %
+  - `ruff format --check` y `ruff check`: limpios
+  - `mypy src`: limpio
+- **Riesgo RDD:** apagado, no aplica.
+
+El commit se registra en la tarea siguiente.
+
+## Seguimiento fuera de alcance
+
+- `openspec/config.yaml:31-34` (`rules.apply`) mezcla elementos de lista con claves `tdd` y
+  `test_command`, así que el YAML no se puede parsear.
+- El problema ya existía antes de este cambio (ver `HEAD~1`).
+- Necesita una corrección propia. No se corrige aquí sin autorización.
 
 ## Siguiente paso
 
-T0.1: ADR y corrección de los documentos que dicen «solo Microsoft».
+T2.1: conexión de Jira por cuenta, con el sitio en el perfil y el token en keyring.

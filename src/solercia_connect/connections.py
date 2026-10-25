@@ -28,7 +28,9 @@ from solercia_connect.oauth import (
     OAuthTokenStore,
 )
 from solercia_connect.oauth_session import LoopbackCallbackServer, build_pkce_pair
+from solercia_connect.ports import HTTPTransport
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
+from solercia_connect.providers.google_meet import GoogleMeetAdapter
 from solercia_connect.providers.m365_browser import (
     Microsoft365BrowserAdapter,
     PlaywrightBrowserDriver,
@@ -71,13 +73,14 @@ class ConnectionService:
         browser_status: Callable[[ConnectionType, str], str] | None = None,
         google_callback_flow: Callable[[GoogleOAuthProvider, bool], None] | None = None,
         action_sink: Callable[[ResultEnvelope], None] | None = None,
+        transport: HTTPTransport | None = None,
         clock: Callable[[], datetime] = utc_now,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self._settings = settings
         self._profiles = profiles
         self._tokens = token_store
-        self._transport = HttpxTransport()
+        self._transport: HTTPTransport = transport or HttpxTransport()
         self._oauth_builder = oauth_builder or self._build_oauth
         self._identity_verifier = identity_verifier or self._verify_identity
         self._browser_connector = browser_connector or self._connect_browser
@@ -570,6 +573,17 @@ class ConnectionService:
                 .account_id
                 or ""
             )
+        if parsed is ConnectionType.GOOGLE_MEET:
+            return (
+                GoogleMeetAdapter(
+                    self._transport,
+                    oauth,
+                    expected_account=account,
+                )
+                .health()
+                .account_id
+                or ""
+            )
         raise ConnectorFailure(
             ReasonCode.CAPABILITY_NOT_IMPLEMENTED,
             "This provider does not use OAuth identity verification",
@@ -853,7 +867,7 @@ def oauth_provider_from_settings(
     parsed: ConnectionType,
     account: str,
     *,
-    transport: HttpxTransport | None = None,
+    transport: HTTPTransport | None = None,
 ) -> OAuthProvider:
     spec = target_spec(parsed)
     key = _token_key(parsed, account)

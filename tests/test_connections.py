@@ -16,7 +16,7 @@ from solercia_connect.oauth import DeviceAuthorization, GoogleOAuthProvider, OAu
 from solercia_connect.providers.m365_browser import Microsoft365BrowserAdapter
 from solercia_connect.providers.m365_browser.driver import BrowserSnapshot
 from solercia_connect.secrets import SecretValue
-from tests.fakes import NOW, FakeBrowserDriver, authenticated_snapshot
+from tests.fakes import NOW, FakeBrowserDriver, FakeTransport, authenticated_snapshot, json_response
 
 
 class MemoryTokenStore:
@@ -642,6 +642,48 @@ def test_google_connect_uses_injected_bounded_callback_flow(tmp_path: Path) -> N
     assert result.status == "connected_official"
     assert callback_calls == [False]
     assert profiles.get("gmail", "user@example.com") is not None
+
+
+def test_google_meet_connect_verifies_identity_with_the_meet_adapter(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    profiles = ProfileStore.from_settings(settings)
+    transport = FakeTransport(json_response(200, {"id": "user@example.com"}))
+    service = ConnectionService(
+        settings,
+        profiles,
+        MemoryTokenStore(),
+        oauth_builder=lambda type, account: FakeGoogleOAuth(),
+        google_callback_flow=lambda oauth, open_browser: None,
+        transport=transport,
+        clock=lambda: NOW,
+    )
+
+    result = service.connect("google-meet", "user@example.com", open_browser=False)
+
+    assert result.status == "connected_official"
+    assert profiles.get("google-meet", "user@example.com") is not None
+    assert transport.requests[0].url.endswith("/users/me/calendarList/primary")
+
+
+def test_google_meet_connect_rejects_a_different_observed_identity(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    profiles = ProfileStore.from_settings(settings)
+    service = ConnectionService(
+        settings,
+        profiles,
+        MemoryTokenStore(),
+        oauth_builder=lambda type, account: FakeGoogleOAuth(),
+        google_callback_flow=lambda oauth, open_browser: None,
+        transport=FakeTransport(json_response(200, {"id": "other@example.com"})),
+        clock=lambda: NOW,
+    )
+
+    result = service.connect("google-meet", "user@example.com", open_browser=False)
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "authorization_boundary_violation"
+    assert profiles.get("google-meet", "user@example.com") is None
 
 
 def test_status_action_and_disconnect_have_exact_local_lifecycle(tmp_path: Path) -> None:
