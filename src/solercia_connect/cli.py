@@ -44,8 +44,11 @@ from solercia_connect.domain import (
 from solercia_connect.envelope import ErrorDetail, ResultEnvelope
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.matrix import CAPABILITY_MATRIX
-from solercia_connect.oauth import KeyringOAuthTokenStore
 from solercia_connect.output import SecureOutputError, write_secure_json
+from solercia_connect.project_secrets import (
+    api_token_store_from_settings,
+    oauth_token_store_from_settings,
+)
 from solercia_connect.providers.m365_browser import browser_extraction_report
 from solercia_connect.secrets import SecretValue
 from solercia_connect.serialization import to_json, to_primitive
@@ -722,8 +725,9 @@ def connection_service_from_environment(
     return ConnectionService(
         settings,
         ProfileStore.from_settings(settings),
-        KeyringOAuthTokenStore(),
+        oauth_token_store_from_settings(settings),
         action_sink=action_sink,
+        secret_store=api_token_store_from_settings(settings),
     )
 
 

@@ -33,7 +33,8 @@ from solercia_connect.domain import WRITE_CAPABILITIES
 from solercia_connect.envelope import ErrorDetail, ResultEnvelope
 from solercia_connect.interactive_sessions import InteractiveSessionRegistry
 from solercia_connect.matrix import CAPABILITY_MATRIX
-from solercia_connect.oauth import KeyringOAuthTokenStore, OAuthTokenStore
+from solercia_connect.oauth import OAuthTokenStore
+from solercia_connect.project_secrets import oauth_token_store_from_settings
 from solercia_connect.serialization import to_json, to_primitive
 
 _PROTECTED_POST_PATHS = frozenset(
@@ -208,7 +209,7 @@ def create_app(
             startup_error = failure
             settings = load_settings(environ={})
     profiles = ProfileStore.from_settings(settings)
-    tokens = token_store or KeyringOAuthTokenStore()
+    tokens = token_store or oauth_token_store_from_settings(settings)
     connections = connection_service or ConnectionService(
         settings,
         profiles,

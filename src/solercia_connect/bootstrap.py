@@ -30,8 +30,12 @@ from solercia_connect.connections import (
 )
 from solercia_connect.domain import Capability, ReasonCode
 from solercia_connect.errors import ConnectorFailure
-from solercia_connect.oauth import KeyringOAuthTokenStore, OAuthTokenStore
+from solercia_connect.oauth import OAuthTokenStore
 from solercia_connect.ports import HTTPTransport
+from solercia_connect.project_secrets import (
+    api_token_store_from_settings,
+    oauth_token_store_from_settings,
+)
 from solercia_connect.providers.glpi import GlpiAdapter
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
@@ -43,7 +47,7 @@ from solercia_connect.providers.m365_browser import (
 )
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
 from solercia_connect.registry import ProviderRegistry
-from solercia_connect.secret_store import KeyringSecretStore, SecretStore
+from solercia_connect.secret_store import SecretStore
 from solercia_connect.secrets import SecretValue
 from solercia_connect.transport import HttpxTransport
 
@@ -67,7 +71,7 @@ def registry_from_environment(
     parsed_type = ConnectionType.parse(connection_type) if connection_type is not None else None
     normalized_account = normalize_account(account) if account is not None else None
     profiles = ProfileStore.from_settings(settings)
-    secure_store = token_store or KeyringOAuthTokenStore()
+    secure_store = token_store or oauth_token_store_from_settings(settings)
 
     microsoft_registered = False
     microsoft_token = _first_value(
@@ -181,7 +185,7 @@ def registry_from_environment(
             _jira_adapter_for_account(
                 transport,
                 profiles,
-                secret_store or KeyringSecretStore(),
+                secret_store or api_token_store_from_settings(settings),
                 normalized_account,
                 settings=settings,
                 token_store=secure_store,

@@ -39,6 +39,7 @@ from solercia_connect.oauth import (
 from solercia_connect.oauth_session import LoopbackCallbackServer, build_pkce_pair
 from solercia_connect.ports import BrowserProviderAdapter, HTTPTransport
 from solercia_connect.project_home import GitRunner, prepare_project_home
+from solercia_connect.project_secrets import api_token_store_from_settings
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
 from solercia_connect.providers.jira import (
@@ -55,7 +56,7 @@ from solercia_connect.providers.m365_browser import (
 )
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
 from solercia_connect.runtime import CONNECT_FALLBACK_REASONS
-from solercia_connect.secret_store import KeyringSecretStore, SecretStore
+from solercia_connect.secret_store import SecretStore
 from solercia_connect.secrets import SecretValue
 from solercia_connect.transport import HttpxTransport
 
@@ -115,7 +116,7 @@ class ConnectionService:
         self._settings = settings
         self._profiles = profiles
         self._tokens = token_store
-        self._secrets: SecretStore = secret_store or KeyringSecretStore()
+        self._secrets: SecretStore = secret_store or api_token_store_from_settings(settings)
         self._transport: HTTPTransport = transport or HttpxTransport()
         self._oauth_builder = oauth_builder or self._build_oauth
         self._identity_verifier = identity_verifier or self._verify_identity
