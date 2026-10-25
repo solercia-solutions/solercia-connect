@@ -322,15 +322,7 @@ def load_settings(
     environ: Mapping[str, str] | None = None,
     env_file: Path | None = None,
 ) -> ConnectSettings:
-    source = dict(os.environ if environ is None else environ)
-    raw_explicit = (
-        str(env_file) if env_file is not None else source.get("SOLERCIA_CONNECT_ENV_FILE")
-    )
-    explicit = Path(raw_explicit).expanduser() if raw_explicit and raw_explicit.strip() else None
-    file_values = _read_env_file(explicit) if explicit is not None else {}
-    values = {**file_values, **{key: value for key, value in source.items() if value != ""}}
-
-    project_home = _project_home(_value(values, "SOLERCIA_CONNECT_HOME"))
+    values, explicit, project_home = _layered_environment(environ, env_file)
     if project_home is not None:
         # Project mode keeps every path below the one home; XDG no longer applies to Connect.
         layout = ProjectLayout(project_home)
@@ -449,13 +441,80 @@ def effective_environment(
     environ: Mapping[str, str] | None = None,
     env_file: Path | None = None,
 ) -> dict[str, str]:
+    return _layered_environment(environ, env_file)[0]
+
+
+# connect.env lives inside the home and is read only after both are resolved, so it never names
+# either of them.
+_PROJECT_ENV_FORBIDDEN = ("SOLERCIA_CONNECT_HOME", "SOLERCIA_CONNECT_ENV_FILE")
+
+
+def _layered_environment(
+    environ: Mapping[str, str] | None, env_file: Path | None
+) -> tuple[dict[str, str], Path | None, Path | None]:
+    """Merge the process environment over SOLERCIA_CONNECT_ENV_FILE over ``<home>/connect.env``.
+
+    An empty process value never hides a file value. ``connect.env`` exists only in project mode
+    and is the lowest layer. Returns the values, the explicit env file and the project home.
+    """
+
     source = dict(os.environ if environ is None else environ)
     raw_explicit = (
         str(env_file) if env_file is not None else source.get("SOLERCIA_CONNECT_ENV_FILE")
     )
     explicit = Path(raw_explicit).expanduser() if raw_explicit and raw_explicit.strip() else None
     file_values = _read_env_file(explicit) if explicit is not None else {}
-    return {**file_values, **{key: value for key, value in source.items() if value != ""}}
+    values = {**file_values, **{key: value for key, value in source.items() if value != ""}}
+    project_home = _project_home(_value(values, "SOLERCIA_CONNECT_HOME"))
+    if project_home is not None:
+        values = {**_read_project_env_file(ProjectLayout(project_home).env_file), **values}
+    return values, explicit, project_home
+
+
+def _read_project_env_file(path: Path) -> dict[str, str]:
+    """Read ``<home>/connect.env`` only as a private regular file owned by the user."""
+
+    label = "SOLERCIA_CONNECT_HOME/connect.env"
+    descriptor = -1
+    try:
+        try:
+            before = path.lstat()
+        except FileNotFoundError:
+            return {}
+        _validate_project_env_metadata(before, label)
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        opened = os.fstat(descriptor)
+        _validate_project_env_metadata(opened, label)
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ProjectHomeError(f"{label} changed during its safety check")
+        with os.fdopen(descriptor, encoding="utf-8") as stream:
+            descriptor = -1
+            text = stream.read()
+    except (OSError, UnicodeDecodeError):
+        raise ProjectHomeError(f"{label} could not be read safely") from None
+    finally:
+        if descriptor >= 0:
+            with suppress(OSError):
+                os.close(descriptor)
+    try:
+        values = _parse_env_text(text)
+    except ValueError as exc:
+        raise ProjectHomeError(f"{label}: {exc}") from None
+    for name in _PROJECT_ENV_FORBIDDEN:
+        if name in values:
+            raise ProjectHomeError(f"{label} cannot set {name}; set it in the process environment")
+    return values
+
+
+def _validate_project_env_metadata(metadata: os.stat_result, label: str) -> None:
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ProjectHomeError(f"{label} is a symbolic link")
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ProjectHomeError(f"{label} is not a regular file")
+    if _wrong_owner(metadata.st_uid):
+        raise ProjectHomeError(f"{label} is not owned by the current user")
+    if stat.S_IMODE(metadata.st_mode) & 0o077:
+        raise ProjectHomeError(f'{label} is not private; run chmod 600 "${label}"')
 
 
 @dataclass(frozen=True, slots=True)
@@ -810,8 +869,14 @@ def _read_env_file(path: Path) -> dict[str, str]:
         raise ValueError("SOLERCIA_CONNECT_ENV_FILE cannot be a symbolic link")
     if not path.is_file():
         raise ValueError("SOLERCIA_CONNECT_ENV_FILE does not exist or is not a file")
+    return _parse_env_text(path.read_text(encoding="utf-8"))
+
+
+def _parse_env_text(text: str) -> dict[str, str]:
+    """Parse ``NAME=value`` lines; errors name the line number, never the value."""
+
     result: dict[str, str] = {}
-    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for line_number, raw_line in enumerate(text.splitlines(), 1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue

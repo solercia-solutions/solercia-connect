@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 from collections.abc import Callable
 from datetime import datetime
@@ -22,6 +23,7 @@ from solercia_connect.config import (
     ConnectionType,
     JiraTokenKind,
     ProfileStore,
+    effective_environment,
     load_settings,
     normalize_account,
     normalize_jira_site,
@@ -339,6 +341,15 @@ def connect(
         bool,
         typer.Option("--token-stdin", help="Read the Jira API token from one stdin line"),
     ] = False,
+    token_env: Annotated[
+        str | None,
+        typer.Option(
+            "--token-env",
+            metavar="NAME",
+            help="Read the Jira API token from variable NAME of the process environment, "
+            "SOLERCIA_CONNECT_ENV_FILE or SOLERCIA_CONNECT_HOME/connect.env",
+        ),
+    ] = None,
     token_kind: Annotated[
         str | None,
         typer.Option(
@@ -360,9 +371,10 @@ def connect(
 ) -> None:
     """Connect one provider target and account using official OAuth first.
 
-    Jira takes --site and reads its API token from a hidden prompt, or from one stdin line with
-    --token-stdin; the token is never accepted as an argument or an environment variable. A
-    scoped token needs --token-kind scoped, plus --cloud-id unless the site is on atlassian.net.
+    Jira takes --site and reads its API token from a hidden prompt, from one stdin line with
+    --token-stdin, or from the variable named by --token-env; the token itself is never accepted
+    as an argument and never printed. A scoped token needs --token-kind scoped, plus --cloud-id
+    unless the site is on atlassian.net.
     --token-kind oauth uses Atlassian OAuth 2.0 (3LO) with the app configured in the environment
     and prompts for nothing.
     """
@@ -370,11 +382,13 @@ def connect(
     try:
         service = connection_service_from_environment(action_sink=_interactive_action)
         jira = ConnectionType.parse(type_value) is ConnectionType.JIRA
-        jira_options = (site, token_kind, cloud_id)
+        jira_options = (site, token_kind, cloud_id, token_env)
         if not jira and (token_stdin or any(option is not None for option in jira_options)):
             raise _InputError(
-                "--site, --token-stdin, --token-kind and --cloud-id apply only to jira"
+                "--site, --token-stdin, --token-env, --token-kind and --cloud-id apply only to jira"
             )
+        if token_stdin and token_env is not None:
+            raise _InputError("--token-env and --token-stdin are mutually exclusive")
         if jira and site is not None:
             normalized_account = _valid_input(normalize_account, account)
             origin = _valid_input(normalize_jira_site, site)
@@ -385,6 +399,8 @@ def connect(
             if kind is JiraTokenKind.OAUTH:
                 if token_stdin:
                     raise _InputError("--token-stdin applies only to API tokens, not oauth")
+                if token_env is not None:
+                    raise _InputError("--token-env applies only to API tokens, not oauth")
                 envelope = service.connect_jira_oauth(
                     normalized_account, site=origin, open_browser=not no_open_browser
                 )
@@ -392,7 +408,11 @@ def connect(
                 envelope = service.connect_jira(
                     normalized_account,
                     site=origin,
-                    token=_jira_token(from_stdin=token_stdin),
+                    token=(
+                        _jira_token_from_environment(token_env)
+                        if token_env is not None
+                        else _jira_token(from_stdin=token_stdin)
+                    ),
                     token_kind=kind,
                     cloud_id=scoped_cloud_id,
                 )
@@ -735,6 +755,9 @@ class _InputError(ValueError):
     pass
 
 
+_VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
 def _valid_input(normalize: Callable[[str], str], value: str) -> str:
     """Validate Jira input before the token prompt, so a typo never costs a token entry."""
 
@@ -742,6 +765,17 @@ def _valid_input(normalize: Callable[[str], str], value: str) -> str:
         return normalize(value)
     except ValueError as failure:
         raise _InputError(str(failure)) from None
+
+
+def _jira_token_from_environment(name: str) -> SecretValue:
+    """Read the API token from one variable of the effective environment; only its name shows."""
+
+    if not _VARIABLE_NAME.fullmatch(name):
+        raise _InputError("--token-env must name an environment variable, such as JIRA_API_TOKEN")
+    token = effective_environment().get(name, "").strip()
+    if not token:
+        raise _InputError(f"The variable {name} named by --token-env is missing or empty")
+    return SecretValue(token)
 
 
 def _jira_token(*, from_stdin: bool) -> SecretValue:
