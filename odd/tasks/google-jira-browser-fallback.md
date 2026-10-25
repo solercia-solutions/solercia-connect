@@ -157,7 +157,7 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
   - La identidad se prueba con el `accountId` de `/myself` ligado al sitio. Si `emailAddress` es
     visible, debe coincidir con la cuenta.
   - Las variables `JIRA_*` siguen funcionando.
-- [ ] **T2.2** Admitir tokens con alcance, que van contra
+- [x] **T2.2** Admitir tokens con alcance, que van contra
   `api.atlassian.com/ex/jira/{cloudId}`.
 - [ ] **T2.3** Atlassian OAuth (3LO) con la app propia del usuario (`client_id` y
   `client_secret`).
@@ -185,11 +185,15 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
 
 - [x] **T4.1** Corregir `connect google-meet` agregando la rama de identidad que falta. La prueba
   se escribe primero, en rojo.
-- [ ] **T4.2** Clasificar los fallos de Google: `admin_policy_enforced` y `org_internal` en el
+- [x] **T4.2** Clasificar los fallos de Google: `admin_policy_enforced` y `org_internal` en el
   token, y el 403 de API, pasan a razones tipadas según D0.1.
 - [ ] **T4.3** Actualizar el runbook: con la app propia publicada en producción para uso personal,
   sin verificar, la autorización no vence a los 7 días. Los alcances de los grants existentes no
   se tocan.
+  - Si el callback de `connect` de Google expira, el mensaje de corrección debe explicar que Google
+    muestra `admin_policy_enforced` u `org_internal` en su propia página y no redirige.
+  - El mismo mensaje debe orientar hacia la ruta de navegador cuando esa ruta exista. Este punto
+    viene de lo que se encontró en T4.2.
 
 ### Fase 5 — Google por navegador (alcance completo según D1)
 
@@ -290,12 +294,54 @@ Detalle de T2.1 (commit `d76cdbd`):
   - `doctor` sigue pidiendo `JIRA_*`; lo corrige T6.1.
   - Un perfil de Jira con ruta de navegador falla de forma cerrada hasta T3.1.
 
+Detalle de T2.2 (commit `5ccef97`):
+
+- **Rojo:**
+  - Al cargar las pruebas: `ImportError: JiraTokenKind`.
+  - Después fallaron 15 pruebas: `connect_jira` no aceptaba `token_kind`, el CLI no tenía
+    `--token-kind` y la prueba de perfil antiguo daba `KeyError: 'token_kind'`.
+- **Verde:**
+  - `--token-kind classic|scoped` explícito, sin detección automática.
+  - `--cloud-id` debe ser un UUID; si no se da, el `cloudId` se obtiene de
+    `https://<sitio>.atlassian.net/_edge/tenant_info` sin enviar el token. Fuente:
+    support.atlassian.com/jira/kb/retrieve-my-atlassian-sites-cloud-id.
+  - Con token con alcance, la base es `api.atlassian.com/ex/jira/{cloudId}`.
+  - Los perfiles antiguos se tratan como `classic`.
+- **Compuertas:** 582 pruebas, cobertura 84,28 %, `ruff` y `mypy` limpios.
+- **Tamaño:** 528 líneas.
+
+Detalle de T4.2 (commit `6c4bd6c`):
+
+- **Rojo:** 8 fallos.
+  - En el intercambio y la renovación del token se esperaba `ADMIN_CONSENT_REQUIRED` y llegaba
+    `REQUEST_REJECTED`.
+  - En los 403 de Gmail, Calendar, Meet-Calendar y Meet-Drive se esperaba `ADMIN_CONSENT_REQUIRED`
+    y llegaba `AUTHORIZATION_DENIED`.
+- **Verde:**
+  - `admin_policy_enforced` y `org_internal` pasan a `ADMIN_CONSENT_REQUIRED`, solo en
+    `GoogleOAuthProvider`.
+  - Un 403 pasa a `ADMIN_CONSENT_REQUIRED` solo cuando todas sus razones son `domainPolicy`, una
+    razón documentada en las páginas de errores de Gmail y Drive.
+  - Se agregó el gancho `failure_refiner` en el transporte, que lee la razón estructurada sin
+    registrar el cuerpo.
+  - Microsoft no cambia: sus archivos no tienen diferencias.
+- **Se mantienen igual:** `invalid_grant` sigue como `INVALID_CREDENTIALS` y `access_denied` como
+  `AUTHORIZATION_DENIED`.
+- **Compuertas:** 658 pruebas (verificado por el orquestador), cobertura 84,46 %, `ruff` y `mypy`
+  limpios.
+- **Tamaño:** 377 líneas.
+- **Brechas:**
+  - Calendar no documenta `domainPolicy`; si nunca lo devuelve, el mapeo no tiene efecto.
+  - Un `--cloud-id` explícito no se contrasta con el sitio, aunque la identidad por `/myself` sigue
+    aplicando.
+
 ### Rebanadas de entrega (`feature-branch-chain`)
 
 | Rebanada | Commits | Líneas | Contenido |
 | --- | --- | --- | --- |
 | R1 | `9a186db` | 640 | ADR y documentos |
 | R2 | `a982184`, `d76cdbd` | ~1.110 | Meet y Jira por cuenta |
+| R3 | `5ccef97`, `6c4bd6c` | ~905 | Tokens con alcance y política de Google |
 
 ## Seguimiento fuera de alcance
 
@@ -306,5 +352,5 @@ Detalle de T2.1 (commit `d76cdbd`):
 
 ## Siguiente paso
 
-Siguen T2.2 (tokens con alcance) y T4.2 (clasificar `admin_policy_enforced`, `org_internal` y los
-403 de política de Google). Después va T2.3 (Atlassian OAuth 3LO).
+Siguen T2.3 (Atlassian OAuth 3LO) y T4.3 (runbook y mensaje de corrección cuando expira el
+callback de Google). Después va la Fase 1 (base de navegador genérica).
