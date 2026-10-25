@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any, Protocol, cast
 
+from solercia_connect.auth import BasicAuthProvider
 from solercia_connect.browser_profile import microsoft_browser_profile_path
 from solercia_connect.config import (
     MICROSOFT_TARGETS,
@@ -16,6 +17,7 @@ from solercia_connect.config import (
     ConnectSettings,
     ProfileStore,
     normalize_account,
+    normalize_jira_site,
     target_spec,
 )
 from solercia_connect.domain import ReasonCode, utc_now
@@ -31,12 +33,15 @@ from solercia_connect.oauth_session import LoopbackCallbackServer, build_pkce_pa
 from solercia_connect.ports import HTTPTransport
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
+from solercia_connect.providers.jira import JiraAdapter, JiraIdentity
 from solercia_connect.providers.m365_browser import (
     Microsoft365BrowserAdapter,
     PlaywrightBrowserDriver,
     browser_extraction_report,
 )
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
+from solercia_connect.secret_store import KeyringSecretStore, SecretStore
+from solercia_connect.secrets import SecretValue
 from solercia_connect.transport import HttpxTransport
 
 _MICROSOFT_FALLBACK_REASONS = frozenset(
@@ -74,12 +79,14 @@ class ConnectionService:
         google_callback_flow: Callable[[GoogleOAuthProvider, bool], None] | None = None,
         action_sink: Callable[[ResultEnvelope], None] | None = None,
         transport: HTTPTransport | None = None,
+        secret_store: SecretStore | None = None,
         clock: Callable[[], datetime] = utc_now,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self._settings = settings
         self._profiles = profiles
         self._tokens = token_store
+        self._secrets: SecretStore = secret_store or KeyringSecretStore()
         self._transport: HTTPTransport = transport or HttpxTransport()
         self._oauth_builder = oauth_builder or self._build_oauth
         self._identity_verifier = identity_verifier or self._verify_identity
@@ -103,7 +110,9 @@ class ConnectionService:
             return invalid
         assert parsed is not None and normalized is not None
         spec = target_spec(parsed)
-        if parsed in {ConnectionType.JIRA, ConnectionType.GLPI}:
+        if parsed is ConnectionType.JIRA:
+            return jira_connect_requires_cli("connect", normalized)
+        if parsed is ConnectionType.GLPI:
             return self._failure(
                 "connect",
                 parsed,
@@ -208,6 +217,81 @@ class ConnectionService:
                 "unknown",
             )
 
+    def connect_jira(self, account: str, *, site: str, token: SecretValue) -> ResultEnvelope:
+        """Connect one Jira site and account with an API token read by the canonical CLI.
+
+        ``/myself`` proves the token before anything is stored. The profile keeps only the site
+        and the observed accountId; the token goes to the secret store and nowhere else.
+        """
+
+        parsed = ConnectionType.JIRA
+        _, normalized, invalid = self._validated_identity(parsed, account, "connect")
+        if invalid is not None:
+            return invalid
+        assert normalized is not None
+        try:
+            origin = normalize_jira_site(site)
+        except ValueError as failure:
+            return ResultEnvelope.failure(
+                operation="connect",
+                status="invalid_input",
+                provider=parsed.value,
+                account=normalized,
+                error=ErrorDetail(
+                    "invalid_input",
+                    str(failure),
+                    False,
+                    remediation=(connect_command(parsed, normalized),),
+                    cause_category="input",
+                ),
+            )
+        spec = target_spec(parsed)
+        key = _token_key(parsed, normalized)
+        try:
+            identity = self._jira_identity(origin, normalized, token)
+            profile = ConnectionProfile.create(
+                parsed,
+                normalized,
+                route="official",
+                now=self._clock(),
+                site=origin,
+                provider_account_id=identity.account_id,
+            )
+            self._secrets.save(key, token)
+            try:
+                self._profiles.save(profile)
+            except Exception:
+                with suppress(Exception):
+                    self._secrets.delete(key)
+                raise
+            return ResultEnvelope.success(
+                operation="connect",
+                status="connected_official",
+                provider=parsed.value,
+                account=normalized,
+                route="official",
+                data={
+                    "provider_id": spec.provider_id,
+                    "capabilities": list(spec.capabilities),
+                    "identity_verified": True,
+                    **_jira_identity_data(origin, identity),
+                },
+            )
+        except ConnectorFailure as failure:
+            return self._connector_failure("connect", parsed, normalized, failure, site=origin)
+        except (TypeError, ValueError) as failure:
+            return self._configuration_exception("connect", parsed, normalized, failure)
+        except Exception:
+            return self._failure(
+                "connect",
+                parsed,
+                normalized,
+                ReasonCode.UNKNOWN_ERROR,
+                "Connection failed with an unknown error",
+                ("Run doctor for structured readiness diagnostics.",),
+                "unknown",
+            )
+
     def status(
         self,
         type: str | ConnectionType,
@@ -279,6 +363,8 @@ class ConnectionService:
                         **browser_extraction_report(parsed),
                     },
                 )
+            if parsed is ConnectionType.JIRA:
+                return self._status_jira(profile, normalized)
             tokens = self._tokens.load(_token_key(parsed, normalized))
             if tokens is None:
                 return self._action_required("status", parsed, normalized)
@@ -474,7 +560,10 @@ class ConnectionService:
         assert parsed is not None and normalized is not None
         try:
             profile_removed = self._profiles.delete(parsed, normalized)
-            self._tokens.delete(_token_key(parsed, normalized))
+            if parsed is ConnectionType.JIRA:
+                self._secrets.delete(_token_key(parsed, normalized))
+            else:
+                self._tokens.delete(_token_key(parsed, normalized))
             return ResultEnvelope.success(
                 operation="disconnect",
                 status="disconnected",
@@ -588,6 +677,56 @@ class ConnectionService:
             ReasonCode.CAPABILITY_NOT_IMPLEMENTED,
             "This provider does not use OAuth identity verification",
         )
+
+    def _status_jira(self, profile: ConnectionProfile, account: str) -> ResultEnvelope:
+        parsed = ConnectionType.JIRA
+        site = profile.site
+        try:
+            token = self._secrets.load(_token_key(parsed, account))
+            if site is None or profile.provider_account_id is None or token is None:
+                return self._action_required(
+                    "status",
+                    parsed,
+                    account,
+                    "The Jira API token connection must be renewed in the canonical CLI",
+                    site=site,
+                )
+            identity = self._jira_identity(
+                site,
+                account,
+                token,
+                expected_account_id=profile.provider_account_id,
+            )
+        except ConnectorFailure as failure:
+            if failure.reason is ReasonCode.INVALID_CREDENTIALS:
+                return self._action_required(
+                    "status", parsed, account, failure.safe_message, site=site
+                )
+            return self._connector_failure("status", parsed, account, failure, site=site)
+        return ResultEnvelope.success(
+            operation="status",
+            status="connected_official",
+            provider=parsed.value,
+            account=account,
+            route="official",
+            data={"identity_verified": True, **_jira_identity_data(site, identity)},
+        )
+
+    def _jira_identity(
+        self,
+        site: str,
+        account: str,
+        token: SecretValue,
+        *,
+        expected_account_id: str | None = None,
+    ) -> JiraIdentity:
+        return JiraAdapter(
+            self._transport,
+            BasicAuthProvider(account, token),
+            base_url=site,
+            expected_account_id=expected_account_id,
+            expected_account=account,
+        ).verify_identity()
 
     def _run_google_callback(self, oauth: GoogleOAuthProvider, open_browser: bool) -> None:
         pair = build_pkce_pair()
@@ -768,6 +907,7 @@ class ConnectionService:
         message: str = "Interactive authorization is required",
         *,
         allow_browser_fallback: bool = False,
+        site: str | None = None,
     ) -> ResultEnvelope:
         return ResultEnvelope.failure(
             operation=operation,
@@ -783,6 +923,7 @@ class ConnectionService:
                         parsed,
                         account,
                         allow_browser_fallback=allow_browser_fallback,
+                        site=site,
                     ),
                 ),
                 cause_category="interactive_authorization",
@@ -795,8 +936,10 @@ class ConnectionService:
         parsed: ConnectionType,
         account: str,
         failure: ConnectorFailure,
+        *,
+        site: str | None = None,
     ) -> ResultEnvelope:
-        remediation = _remediation(failure.reason, parsed, account)
+        remediation = _remediation(failure.reason, parsed, account, site)
         return self._failure(
             operation,
             parsed,
@@ -861,6 +1004,35 @@ def _token_key(parsed: ConnectionType, account: str) -> str:
     return f"{parsed.value}:{normalize_account(account)}"
 
 
+def _jira_identity_data(site: str, identity: JiraIdentity) -> dict[str, Any]:
+    return {
+        "site": site,
+        "provider_account_id": identity.account_id,
+        # A hidden emailAddress leaves the account proven by Basic authentication alone.
+        "email_source": "myself" if identity.email_visible else "authentication",
+    }
+
+
+def jira_connect_requires_cli(operation: str, account: str) -> ResultEnvelope:
+    """Refuse a Jira connect that lacks the site and the token only the CLI prompt may read."""
+
+    return ResultEnvelope.failure(
+        operation=operation,
+        status="configuration_error",
+        provider=ConnectionType.JIRA.value,
+        account=account,
+        data={"interactive_flow_started": False},
+        error=ErrorDetail(
+            "configuration_invalid",
+            "Jira connects with --site and an API token entered in the CLI hidden prompt",
+            False,
+            ("site", "api_token"),
+            (connect_command(ConnectionType.JIRA, account),),
+            "configuration",
+        ),
+    )
+
+
 def oauth_provider_from_settings(
     settings: ConnectSettings,
     token_store: OAuthTokenStore,
@@ -908,8 +1080,11 @@ def connect_command(
     account: str,
     *,
     allow_browser_fallback: bool = False,
+    site: str | None = None,
 ) -> str:
     command = f"solercia-connect connect {parsed.value} {account}"
+    if parsed is ConnectionType.JIRA:
+        command += f" --site {site or '<site>'}"
     return command + (" --allow-browser-fallback" if allow_browser_fallback else "")
 
 
@@ -936,7 +1111,19 @@ def _remediation(
     reason: ReasonCode,
     parsed: ConnectionType,
     account: str,
+    site: str | None = None,
 ) -> tuple[str, ...]:
+    if parsed is ConnectionType.JIRA and reason is ReasonCode.INVALID_CREDENTIALS:
+        return (
+            "Check the account email and the API token, or create a new token at "
+            "https://id.atlassian.com/manage-profile/security/api-tokens.",
+            connect_command(parsed, account, site=site),
+        )
+    if parsed is ConnectionType.JIRA and reason is ReasonCode.AUTHORIZATION_DENIED:
+        return (
+            "Ask the Jira site administrator to allow API token access for this account.",
+            connect_command(parsed, account, site=site),
+        )
     if reason is ReasonCode.ADMIN_CONSENT_REQUIRED:
         return (
             "Ask the tenant administrator to grant the required delegated scopes.",

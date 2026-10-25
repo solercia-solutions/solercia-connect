@@ -16,10 +16,11 @@ from solercia_connect.config import (
     load_settings,
     normalize_account,
 )
-from solercia_connect.connections import oauth_provider_from_settings
+from solercia_connect.connections import connect_command, oauth_provider_from_settings
 from solercia_connect.domain import Capability, ReasonCode
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.oauth import KeyringOAuthTokenStore, OAuthTokenStore
+from solercia_connect.ports import HTTPTransport
 from solercia_connect.providers.glpi import GlpiAdapter
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
@@ -31,6 +32,7 @@ from solercia_connect.providers.m365_browser import (
 )
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
 from solercia_connect.registry import ProviderRegistry
+from solercia_connect.secret_store import KeyringSecretStore, SecretStore
 from solercia_connect.secrets import SecretValue
 from solercia_connect.transport import HttpxTransport
 
@@ -44,11 +46,13 @@ def registry_from_environment(
     environ: Mapping[str, str] | None = None,
     include_browser: bool = True,
     settings_override: ConnectSettings | None = None,
+    secret_store: SecretStore | None = None,
+    transport: HTTPTransport | None = None,
 ) -> ProviderRegistry:
     values = effective_environment(environ=environ)
     settings = settings_override or load_settings(environ=values)
     registry = ProviderRegistry()
-    transport = HttpxTransport()
+    transport = transport or HttpxTransport()
     parsed_type = ConnectionType.parse(connection_type) if connection_type is not None else None
     normalized_account = normalize_account(account) if account is not None else None
     profiles = ProfileStore.from_settings(settings)
@@ -161,7 +165,16 @@ def registry_from_environment(
     jira_url = _value(values, "JIRA_BASE_URL")
     jira_email = _value(values, "JIRA_EMAIL")
     jira_token = _value(values, "JIRA_API_TOKEN")
-    if jira_url and jira_email and jira_token:
+    if parsed_type is ConnectionType.JIRA and normalized_account is not None:
+        registry.register(
+            _jira_adapter_for_account(
+                transport,
+                profiles,
+                secret_store or KeyringSecretStore(),
+                normalized_account,
+            )
+        )
+    elif jira_url and jira_email and jira_token:
         registry.register(
             JiraAdapter(
                 transport,
@@ -217,6 +230,40 @@ def registry_from_environment(
             )
         )
     return registry
+
+
+def _jira_adapter_for_account(
+    transport: HTTPTransport,
+    profiles: ProfileStore,
+    secrets: SecretStore,
+    account: str,
+) -> JiraAdapter:
+    """Build Jira from this account's own connection; never borrow the JIRA_* variables."""
+
+    profile = profiles.get(ConnectionType.JIRA, account)
+    if (
+        profile is None
+        or profile.route != "official"
+        or profile.site is None
+        or profile.provider_account_id is None
+    ):
+        command = connect_command(
+            ConnectionType.JIRA, account, site=profile.site if profile else None
+        )
+        raise ValueError(f"No official Jira connection exists for this account; run {command}")
+    token = secrets.load(f"{ConnectionType.JIRA.value}:{account}")
+    if token is None:
+        raise ConnectorFailure(
+            ReasonCode.INVALID_CREDENTIALS,
+            "The Jira API token for this account is not stored; reconnect it in the CLI",
+        )
+    return JiraAdapter(
+        transport,
+        BasicAuthProvider(account, token),
+        base_url=profile.site,
+        expected_account_id=profile.provider_account_id,
+        expected_account=account,
+    )
 
 
 def browser_adapter_from_environment(

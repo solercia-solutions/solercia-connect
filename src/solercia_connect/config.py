@@ -13,7 +13,9 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
+from solercia_connect.providers._shared import ensure_https_base_url
 from solercia_connect.secrets import SecretValue
 
 PROFILE_SCHEMA = "solercia.connect/profile/v1"
@@ -179,6 +181,16 @@ def normalize_account(value: str) -> str:
     return candidate
 
 
+def normalize_jira_site(value: str) -> str:
+    """Reduce a Jira site URL to its HTTPS origin, the non-secret half of a Jira connection."""
+
+    parsed = urlparse(ensure_https_base_url(value.strip(), "Jira site"))
+    if parsed.hostname is None:
+        raise ValueError("Jira site must name a host")
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return f"https://{parsed.hostname.casefold()}{port}"
+
+
 @dataclass(frozen=True, slots=True)
 class ConnectSettings:
     microsoft_client_id: str | None
@@ -292,6 +304,10 @@ class ConnectionProfile:
     created_at: datetime
     updated_at: datetime
     browser_extraction_implemented: bool = False
+    # Non-secret Jira binding: the site origin and the opaque accountId observed at connect.
+    # Both are optional so v1 files written before they existed keep loading unchanged.
+    site: str | None = None
+    provider_account_id: str | None = None
 
     @classmethod
     def create(
@@ -301,6 +317,8 @@ class ConnectionProfile:
         *,
         route: str = "official",
         now: datetime | None = None,
+        site: str | None = None,
+        provider_account_id: str | None = None,
     ) -> ConnectionProfile:
         parsed = ConnectionType.parse(type)
         if route not in {"official", "browser"}:
@@ -317,10 +335,12 @@ class ConnectionProfile:
             timestamp,
             timestamp,
             False,
+            normalize_jira_site(site) if site is not None else None,
+            _provider_account_id(provider_account_id),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema": self.schema,
             "type": self.type.value,
             "account": self.account,
@@ -330,6 +350,11 @@ class ConnectionProfile:
             "updated_at": self.updated_at.isoformat(),
             "browser_extraction_implemented": self.browser_extraction_implemented,
         }
+        if self.site is not None:
+            payload["site"] = self.site
+        if self.provider_account_id is not None:
+            payload["provider_account_id"] = self.provider_account_id
+        return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> ConnectionProfile:
@@ -354,6 +379,10 @@ class ConnectionProfile:
             browser_implemented = payload.get("browser_extraction_implemented", False)
             if not isinstance(browser_implemented, bool):
                 raise ValueError("Connection profile browser capability flag is malformed")
+            raw_site = payload.get("site")
+            if raw_site is not None and normalize_jira_site(str(raw_site)) != raw_site:
+                raise ValueError("Connection profile site is not a normalized HTTPS origin")
+            provider_account_id = _provider_account_id(payload.get("provider_account_id"))
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Connection profile is malformed") from exc
         return cls(
@@ -365,7 +394,17 @@ class ConnectionProfile:
             created_at,
             updated_at,
             browser_implemented,
+            raw_site,
+            provider_account_id,
         )
+
+
+def _provider_account_id(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Connection profile provider account ID is malformed")
+    return value
 
 
 class ProfileStore:

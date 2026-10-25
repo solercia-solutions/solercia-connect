@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -31,6 +32,18 @@ from solercia_connect.providers._shared import (
 from solercia_connect.transport import request_json
 
 
+@dataclass(frozen=True, slots=True)
+class JiraIdentity:
+    """Identity proven by ``/myself``: the opaque accountId plus whether the email was visible.
+
+    Basic authentication already binds the email to the token, so a hidden ``emailAddress``
+    still leaves the account proven by authentication rather than by the profile field.
+    """
+
+    account_id: str
+    email_visible: bool
+
+
 class JiraAdapter:
     descriptor = ProviderDescriptor(
         "jira.cloud",
@@ -46,12 +59,14 @@ class JiraAdapter:
         *,
         base_url: str,
         expected_account_id: str | None = None,
+        expected_account: str | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._transport = transport
         self._auth = auth
         self._base_url = ensure_https_base_url(base_url, "Jira base URL")
         self._expected_account_id = expected_account_id
+        self._expected_account = expected_account
         self._clock = clock
 
     def health(self) -> HealthReport:
@@ -127,7 +142,7 @@ class JiraAdapter:
                 break
         return tuple(result)
 
-    def _identity(self) -> str:
+    def verify_identity(self) -> JiraIdentity:
         payload = request_json(
             self._transport,
             "GET",
@@ -136,12 +151,30 @@ class JiraAdapter:
         )
         data = require_mapping(payload, "jira.myself")
         account_id = require_string(data.get("accountId"), "jira.myself.accountId")
+        if account_id.strip().casefold() == "unknown":
+            raise ConnectorFailure(
+                ReasonCode.AUTHORIZATION_BOUNDARY_VIOLATION,
+                "Jira did not return a verifiable account identity",
+            )
         if self._expected_account_id and account_id != self._expected_account_id:
             raise ConnectorFailure(
                 ReasonCode.AUTHORIZATION_BOUNDARY_VIOLATION,
                 "Authenticated Jira account does not match configured account",
             )
-        return account_id
+        email = as_string(data.get("emailAddress"))
+        if (
+            email is not None
+            and self._expected_account is not None
+            and email.casefold() != self._expected_account.casefold()
+        ):
+            raise ConnectorFailure(
+                ReasonCode.AUTHORIZATION_BOUNDARY_VIOLATION,
+                "Authenticated Jira email does not match the requested account",
+            )
+        return JiraIdentity(account_id, email is not None)
+
+    def _identity(self) -> str:
+        return self.verify_identity().account_id
 
     def _normalize_issue(self, item: dict[str, Any], account_id: str) -> ExternalIssue:
         source_id = require_string(item.get("id"), "jira.issue.id")

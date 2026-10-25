@@ -735,9 +735,13 @@ def test_connect_reports_non_oauth_targets_and_missing_configuration(tmp_path: P
     )
 
     jira = service.connect("jira", "user@example.com")
+    glpi = service.connect("glpi", "user@example.com")
     outlook = service.connect("outlook", "user@example.com")
 
-    assert jira.error is not None and jira.error.code == "capability_not_implemented"
+    # Jira now connects per account through the CLI prompt; GLPI stays env-configured.
+    assert jira.status == "configuration_error"
+    assert jira.error is not None and jira.error.missing_configuration == ("site", "api_token")
+    assert glpi.error is not None and glpi.error.code == "capability_not_implemented"
     assert outlook.status == "configuration_error"
     assert outlook.error is not None
     assert outlook.error.missing_configuration == ("SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID",)

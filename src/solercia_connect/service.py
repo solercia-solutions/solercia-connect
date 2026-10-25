@@ -23,7 +23,11 @@ from solercia_connect.config import (
     load_settings,
     normalize_account,
 )
-from solercia_connect.connections import ConnectionService, connect_command
+from solercia_connect.connections import (
+    ConnectionService,
+    connect_command,
+    jira_connect_requires_cli,
+)
 from solercia_connect.doctor import DoctorService
 from solercia_connect.domain import WRITE_CAPABILITIES
 from solercia_connect.envelope import ErrorDetail, ResultEnvelope
@@ -425,6 +429,9 @@ def create_app(
 
     @application.post("/v1/connections/connect", status_code=202)
     def connect(body: ConnectionConnectRequest) -> JSONResponse:
+        if body.type is ConnectionType.JIRA:
+            # A Jira API token is read only by the CLI hidden prompt; it never travels over HTTP.
+            return _response(jira_connect_requires_cli("connections.connect", body.account), 422)
         if not body.allow_browser_fallback:
             envelope = ResultEnvelope.failure(
                 operation="connections.connect",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -20,6 +22,7 @@ from solercia_connect.config import (
     ProfileStore,
     load_settings,
     normalize_account,
+    normalize_jira_site,
 )
 from solercia_connect.connections import ConnectionService
 from solercia_connect.doctor import DoctorService
@@ -41,6 +44,7 @@ from solercia_connect.matrix import CAPABILITY_MATRIX
 from solercia_connect.oauth import KeyringOAuthTokenStore
 from solercia_connect.output import SecureOutputError, write_secure_json
 from solercia_connect.providers.m365_browser import browser_extraction_report
+from solercia_connect.secrets import SecretValue
 from solercia_connect.serialization import to_json, to_primitive
 
 
@@ -323,19 +327,43 @@ def connect(
         typer.Option("--allow-browser-fallback"),
     ] = False,
     no_open_browser: Annotated[bool, typer.Option("--no-open-browser")] = False,
+    site: Annotated[
+        str | None,
+        typer.Option("--site", help="Jira site URL, such as https://your-site.atlassian.net"),
+    ] = None,
+    token_stdin: Annotated[
+        bool,
+        typer.Option("--token-stdin", help="Read the Jira API token from one stdin line"),
+    ] = False,
     output: Annotated[Path | None, typer.Option("--output")] = None,
     force: Annotated[bool, typer.Option("--force")] = False,
 ) -> None:
-    """Connect one provider target and account using official OAuth first."""
+    """Connect one provider target and account using official OAuth first.
+
+    Jira takes --site and reads its API token from a hidden prompt, or from one stdin line with
+    --token-stdin; the token is never accepted as an argument or an environment variable.
+    """
 
     try:
         service = connection_service_from_environment(action_sink=_interactive_action)
-        envelope = service.connect(
-            type_value,
-            account,
-            allow_browser_fallback=allow_browser_fallback,
-            open_browser=not no_open_browser,
-        )
+        jira = ConnectionType.parse(type_value) is ConnectionType.JIRA
+        if not jira and (site is not None or token_stdin):
+            raise _InputError("--site and --token-stdin apply only to jira")
+        if jira and site is not None:
+            envelope = service.connect_jira(
+                _valid_input(normalize_account, account),
+                site=_valid_input(normalize_jira_site, site),
+                token=_jira_token(from_stdin=token_stdin),
+            )
+        else:
+            envelope = service.connect(
+                type_value,
+                account,
+                allow_browser_fallback=allow_browser_fallback,
+                open_browser=not no_open_browser,
+            )
+    except _InputError as failure:
+        envelope = _input_envelope("connect", str(failure), type_value, account)
     except (ValueError, ConnectorFailure) as failure:
         envelope = _exception_envelope("connect", failure, provider=type_value, account=account)
     except Exception:
@@ -663,6 +691,33 @@ def connection_service_from_environment(
 
 class _InputError(ValueError):
     pass
+
+
+def _valid_input(normalize: Callable[[str], str], value: str) -> str:
+    """Validate Jira input before the token prompt, so a typo never costs a token entry."""
+
+    try:
+        return normalize(value)
+    except ValueError as failure:
+        raise _InputError(str(failure)) from None
+
+
+def _jira_token(*, from_stdin: bool) -> SecretValue:
+    if from_stdin and sys.stdin.isatty():
+        # A terminal would echo the token as it is typed; only piped input skips the prompt.
+        raise _InputError("--token-stdin needs piped input; omit it to use the hidden prompt")
+    try:
+        raw = (
+            sys.stdin.readline()
+            if from_stdin
+            else str(typer.prompt("Jira API token", hide_input=True, err=True))
+        )
+    except _click.exceptions.Abort:
+        raise _InputError("Jira API token entry was cancelled") from None
+    token = raw.strip()
+    if not token:
+        raise _InputError("The Jira API token is empty")
+    return SecretValue(token)
 
 
 def _query_payload(
