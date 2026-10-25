@@ -19,6 +19,7 @@ from solercia_connect.config import (
     ConnectSettings,
     JiraTokenKind,
     ProfileStore,
+    ProjectHomeError,
     missing_atlassian_configuration,
     normalize_account,
     normalize_jira_site,
@@ -37,6 +38,7 @@ from solercia_connect.oauth import (
 )
 from solercia_connect.oauth_session import LoopbackCallbackServer, build_pkce_pair
 from solercia_connect.ports import BrowserProviderAdapter, HTTPTransport
+from solercia_connect.project_home import GitRunner, prepare_project_home
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
 from solercia_connect.providers.jira import (
@@ -68,6 +70,10 @@ GOOGLE_POLICY_BLOCK_REMEDIATION = (
     "docs/decisions/2026-10-25-fallback-navegador-google-jira.md (--allow-browser-fallback once "
     "the Google browser route is available)."
 )
+
+
+# The operations that write local profiles, tokens or browser sessions on success.
+_CONNECT_OPERATIONS = frozenset({"connect", "connections.connect"})
 
 
 class OAuthProvider(Protocol):
@@ -104,6 +110,7 @@ class ConnectionService:
         secret_store: SecretStore | None = None,
         clock: Callable[[], datetime] = utc_now,
         sleeper: Callable[[float], None] = time.sleep,
+        git_runner: GitRunner | None = None,
     ) -> None:
         self._settings = settings
         self._profiles = profiles
@@ -119,6 +126,7 @@ class ConnectionService:
         self._action_sink = action_sink or (lambda envelope: None)
         self._clock = clock
         self._sleeper = sleeper
+        self._git_runner = git_runner
 
     def connect(
         self,
@@ -1113,7 +1121,7 @@ class ConnectionService:
         operation: str,
     ) -> tuple[ConnectionType | None, str | None, ResultEnvelope | None]:
         try:
-            return ConnectionType.parse(type), normalize_account(account), None
+            parsed, normalized = ConnectionType.parse(type), normalize_account(account)
         except (TypeError, ValueError) as exc:
             return (
                 None,
@@ -1130,6 +1138,19 @@ class ConnectionService:
                     ),
                 ),
             )
+        home = self._settings.project_home
+        if home is not None and operation in _CONNECT_OPERATIONS:
+            # Every connect entry point validates its identity first, so project mode prepares
+            # its folder and checks git here, before any profile, token or session is written.
+            try:
+                prepare_project_home(home, runner=self._git_runner)
+            except ProjectHomeError as failure:
+                return (
+                    parsed,
+                    normalized,
+                    self._configuration_exception(operation, parsed, normalized, failure),
+                )
+        return parsed, normalized, None
 
     def _action_required(
         self,

@@ -254,6 +254,43 @@ class ConnectSettings:
     atlassian_redirect_uri: str = DEFAULT_ATLASSIAN_REDIRECT_URI
     google_profile_dir: Path | None = None
     jira_profile_dir: Path | None = None
+    # Project mode: set only by SOLERCIA_CONNECT_HOME. None keeps the XDG and keyring defaults.
+    project_home: Path | None = None
+
+
+class ProjectHomeError(ValueError):
+    """Project mode (``SOLERCIA_CONNECT_HOME``) is misconfigured or unsafe.
+
+    It is a ``ValueError``, so every existing configuration handler reports it; its message names
+    paths and remediation, never a secret value.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectLayout:
+    """Where project mode keeps each kind of local state, all below one ``home`` folder."""
+
+    home: Path
+
+    @property
+    def config_dir(self) -> Path:
+        return self.home / "config"
+
+    @property
+    def data_dir(self) -> Path:
+        return self.home / "data"
+
+    @property
+    def secrets_dir(self) -> Path:
+        return self.home / "secrets"
+
+    @property
+    def env_file(self) -> Path:
+        return self.home / "connect.env"
+
+    @property
+    def gitignore(self) -> Path:
+        return self.home / ".gitignore"
 
 
 def missing_atlassian_configuration(settings: ConnectSettings) -> tuple[str, ...]:
@@ -293,8 +330,18 @@ def load_settings(
     file_values = _read_env_file(explicit) if explicit is not None else {}
     values = {**file_values, **{key: value for key, value in source.items() if value != ""}}
 
-    config_home = Path(values.get("XDG_CONFIG_HOME") or (Path.home() / ".config")).expanduser()
-    data_home = Path(values.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")).expanduser()
+    project_home = _project_home(_value(values, "SOLERCIA_CONNECT_HOME"))
+    if project_home is not None:
+        # Project mode keeps every path below the one home; XDG no longer applies to Connect.
+        layout = ProjectLayout(project_home)
+        config_dir, data_dir = layout.config_dir, layout.data_dir
+    else:
+        config_home = Path(values.get("XDG_CONFIG_HOME") or (Path.home() / ".config")).expanduser()
+        data_home = Path(
+            values.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")
+        ).expanduser()
+        config_dir = config_home / "solercia-connect"
+        data_dir = data_home / "solercia-connect"
     host = _value(values, "SOLERCIA_CONNECT_API_HOST") or "127.0.0.1"
     if host.casefold() not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("SOLERCIA_CONNECT_API_HOST must be a loopback host")
@@ -325,8 +372,8 @@ def load_settings(
         api_port=port,
         api_key=SecretValue(api_key) if api_key else None,
         output_dir=Path(output).expanduser() if output else None,
-        config_dir=config_home / "solercia-connect",
-        data_dir=data_home / "solercia-connect",
+        config_dir=config_dir,
+        data_dir=data_dir,
         configured_names=tuple(sorted(name for name, value in values.items() if value.strip())),
         env_file=explicit,
         http_interactive_login=_bool_value(
@@ -340,7 +387,28 @@ def load_settings(
         ),
         google_profile_dir=_optional_path(values, "SOLERCIA_CONNECT_GOOGLE_PROFILE_DIR"),
         jira_profile_dir=_optional_path(values, "SOLERCIA_CONNECT_JIRA_PROFILE_DIR"),
+        project_home=project_home,
     )
+
+
+def _project_home(raw: str | None) -> Path | None:
+    """Accept only an absolute home without symlinks, so it never depends on the cwd."""
+
+    if raw is None:
+        return None
+    try:
+        candidate = Path(raw).expanduser()
+    except RuntimeError:
+        raise ProjectHomeError(
+            "SOLERCIA_CONNECT_HOME names a user directory that does not exist"
+        ) from None
+    if not candidate.is_absolute():
+        raise ProjectHomeError(
+            'SOLERCIA_CONNECT_HOME must be an absolute path, such as "$PWD/.solercia-connect"'
+        )
+    home = Path(os.path.abspath(candidate))
+    _reject_symlink_components(home, "SOLERCIA_CONNECT_HOME", error=ProjectHomeError)
+    return home
 
 
 def _optional_path(values: Mapping[str, str], name: str) -> Path | None:
@@ -776,7 +844,9 @@ def _bool_value(value: str, name: str) -> bool:
     raise ValueError(f"{name} must be a boolean value")
 
 
-def _reject_symlink_components(path: Path, label: str) -> None:
+def _reject_symlink_components(
+    path: Path, label: str, *, error: type[ValueError] = ValueError
+) -> None:
     """Reject every existing symlink component without resolving the requested path."""
 
     absolute = Path(os.path.abspath(path))
@@ -788,4 +858,4 @@ def _reject_symlink_components(path: Path, label: str) -> None:
         except FileNotFoundError:
             continue
         if stat.S_ISLNK(mode):
-            raise ValueError(f"{label} contains a symbolic link")
+            raise error(f"{label} contains a symbolic link")
