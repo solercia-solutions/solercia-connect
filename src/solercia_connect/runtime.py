@@ -22,6 +22,7 @@ from solercia_connect.domain import (
     StepOutcome,
     TraceStep,
     TranscriptQuery,
+    official_provider_family,
     receipt_fingerprint,
     record_matches_capability,
     utc_now,
@@ -192,7 +193,10 @@ class ConnectorRuntime:
         browser = (
             self._registry.browser(family)
             if family is not None
-            else self._registry.browser_for_capability(request.capability)
+            else self._registry.browser_for_capability(
+                request.capability,
+                family=official_provider_family(request.provider_id),
+            )
         )
         if browser is None:
             steps.append(

@@ -7,9 +7,18 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-from solercia_connect.config import ConnectSettings, normalize_account
-from solercia_connect.domain import ReasonCode
+from solercia_connect.config import ConnectSettings, normalize_account, normalize_jira_site
+from solercia_connect.domain import ProviderFamily, ReasonCode
 from solercia_connect.errors import ConnectorFailure
+
+# Each family keeps its dedicated profiles under its own root, so a browser session is never
+# shared across families. The Microsoft name predates the others and must not change: existing
+# signed-in profiles live there.
+_PROFILE_ROOT_NAMES: dict[ProviderFamily, str] = {
+    ProviderFamily.MICROSOFT: "m365",
+    ProviderFamily.GOOGLE: "google",
+    ProviderFamily.JIRA: "jira",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,17 +27,75 @@ class BrowserProfilePathAudit:
     exists: bool
 
 
+def browser_profile_root(settings: ConnectSettings, family: ProviderFamily) -> Path:
+    """Return one family's dedicated profile root: its explicit setting or ``data_dir/<name>``.
+
+    The Google and Jira roots must stay apart from every other family's root, neither equal to
+    it nor nested on either side, or no profile path is returned for them. The Microsoft root is
+    resolved exactly as before.
+    """
+
+    root = _explicit_or_default_root(settings, family)
+    if family is not ProviderFamily.MICROSOFT:
+        candidate = _absolute(root)
+        for other in _PROFILE_ROOT_NAMES:
+            if other is family:
+                continue
+            other_root = _absolute(_explicit_or_default_root(settings, other))
+            if candidate.is_relative_to(other_root) or other_root.is_relative_to(candidate):
+                raise _unsafe(
+                    f"The {family.value} browser profile root must not equal or nest within "
+                    f"the {other.value} browser profile root"
+                )
+    return root
+
+
+def browser_profile_path(
+    settings: ConnectSettings,
+    family: ProviderFamily,
+    account: str,
+    *,
+    site: str | None = None,
+) -> Path:
+    """Return one isolated profile path below the family's dedicated root.
+
+    A Jira session belongs to one site, so a Jira profile is keyed by the site's origin as well
+    as the account; the other families are keyed by the account alone.
+    """
+
+    key = normalize_account(account)
+    if family is ProviderFamily.JIRA:
+        if site is None:
+            raise ValueError("A Jira browser profile belongs to one site; name the site")
+        key = f"{normalize_jira_site(site)}\n{key}"
+    elif site is not None:
+        raise ValueError("Only a Jira browser profile is keyed by a site")
+    digest = hashlib.sha256(key.encode()).hexdigest()[:16]
+    return browser_profile_root(settings, family) / digest
+
+
 def microsoft_browser_profile_root(settings: ConnectSettings) -> Path:
     """Return the dedicated Microsoft profile root used by every runtime surface."""
 
-    return settings.m365_profile_dir or (settings.data_dir / "m365")
+    return browser_profile_root(settings, ProviderFamily.MICROSOFT)
 
 
 def microsoft_browser_profile_path(settings: ConnectSettings, account: str) -> Path:
     """Return one account-isolated profile path below the dedicated root."""
 
-    digest = hashlib.sha256(normalize_account(account).encode()).hexdigest()[:16]
-    return microsoft_browser_profile_root(settings) / digest
+    return browser_profile_path(settings, ProviderFamily.MICROSOFT, account)
+
+
+def _explicit_or_default_root(settings: ConnectSettings, family: ProviderFamily) -> Path:
+    name = _PROFILE_ROOT_NAMES.get(family)
+    if name is None:
+        raise ValueError(f"No dedicated browser profile root exists for family: {family.value}")
+    explicit = {
+        ProviderFamily.MICROSOFT: settings.m365_profile_dir,
+        ProviderFamily.GOOGLE: settings.google_profile_dir,
+        ProviderFamily.JIRA: settings.jira_profile_dir,
+    }[family]
+    return explicit or (settings.data_dir / name)
 
 
 def audit_browser_profile_path(

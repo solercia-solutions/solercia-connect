@@ -29,6 +29,24 @@ class ProviderFamily(StrEnum):
     GLPI = "glpi"
 
 
+# The family each official provider belongs to. A request names its official provider even when
+# that adapter was never configured, so the runtime reads the target's family here and picks the
+# browser route by family, never by which browser adapter happened to be registered first.
+_OFFICIAL_PROVIDER_FAMILIES: dict[str, ProviderFamily] = {
+    "microsoft.graph": ProviderFamily.MICROSOFT,
+    "google.gmail": ProviderFamily.GOOGLE,
+    "google.calendar": ProviderFamily.GOOGLE,
+    "google.meet": ProviderFamily.GOOGLE,
+    "jira.cloud": ProviderFamily.JIRA,
+    "glpi.rest": ProviderFamily.GLPI,
+}
+
+
+def official_provider_family(provider_id: str) -> ProviderFamily | None:
+    """Return the family of a known official provider ID, or ``None`` for any other ID."""
+    return _OFFICIAL_PROVIDER_FAMILIES.get(provider_id)
+
+
 class RouteKind(StrEnum):
     OFFICIAL = "official"
     BROWSER = "browser"

@@ -252,6 +252,8 @@ class ConnectSettings:
     atlassian_client_id: str | None = None
     atlassian_client_secret: SecretValue | None = None
     atlassian_redirect_uri: str = DEFAULT_ATLASSIAN_REDIRECT_URI
+    google_profile_dir: Path | None = None
+    jira_profile_dir: Path | None = None
 
 
 def missing_atlassian_configuration(settings: ConnectSettings) -> tuple[str, ...]:
@@ -336,7 +338,14 @@ def load_settings(
         atlassian_redirect_uri=_atlassian_redirect_uri(
             _value(values, "SOLERCIA_CONNECT_ATLASSIAN_REDIRECT_URI")
         ),
+        google_profile_dir=_optional_path(values, "SOLERCIA_CONNECT_GOOGLE_PROFILE_DIR"),
+        jira_profile_dir=_optional_path(values, "SOLERCIA_CONNECT_JIRA_PROFILE_DIR"),
     )
+
+
+def _optional_path(values: Mapping[str, str], name: str) -> Path | None:
+    value = _value(values, name)
+    return Path(value).expanduser() if value else None
 
 
 def _atlassian_redirect_uri(value: str | None) -> str:
