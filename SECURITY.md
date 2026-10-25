@@ -24,6 +24,12 @@ as sensitive.
   Public/native clients do not require a Microsoft client secret.
 - Google Desktop OAuth binds a finite callback listener to `127.0.0.1`, generates cryptographic
   state and PKCE S256 values, and accepts exactly one correlated callback/code.
+- Jira OAuth uses the user's own Atlassian OAuth 2.0 (3LO) app. Its client ID and secret come only
+  from `SOLERCIA_CONNECT_ATLASSIAN_CLIENT_ID` and `SOLERCIA_CONNECT_ATLASSIAN_CLIENT_SECRET`, never
+  from CLI arguments or HTTP. Atlassian does not support PKCE, so cryptographic state alone
+  correlates the callback, on the fixed loopback port of `SOLERCIA_CONNECT_ATLASSIAN_REDIRECT_URI`
+  (default `http://127.0.0.1:8766/oauth/callback`), which must equal the registered callback URL.
+  The grant must list the profile site exactly once in its accessible resources.
 - Refresh-token rotation or preservation occurs in the secure store. Expired grants fail closed
   when refresh is unavailable.
 - Observe exactly one canonical provider identity before a data read and compare it
@@ -31,7 +37,8 @@ as sensitive.
   identity produces zero data reads.
 - Use least-privilege read scopes: Microsoft `Mail.Read`, `Calendars.Read`, and the separate Teams
   `OnlineMeetingTranscript.Read.All`; Google `gmail.readonly` and
-  `calendar.events.readonly` are separate grants.
+  `calendar.events.readonly` are separate grants; Jira OAuth `read:jira-work`, `read:jira-user`,
+  `read:me` and `offline_access`.
 - No write scope is requested. The official route of the category write would need
   `Mail.ReadWrite`, and adding it to the `outlook` target invalidates every existing grant, because
   a stored grant must contain all of the target's scopes. That route stays disabled until a

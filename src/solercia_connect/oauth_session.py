@@ -128,16 +128,29 @@ class LoopbackCallbackServer:
         *,
         timeout_seconds: float = 180.0,
         clock: Callable[[], float] = time.monotonic,
+        port: int = 0,
     ) -> None:
+        """Listen on a random port, or on ``port`` when the provider registered an exact URI."""
+
         if not 1 <= timeout_seconds <= 600:
             raise ValueError("OAuth callback timeout must be between 1 and 600 seconds")
+        if port != 0 and not 1024 <= port <= 65535:
+            raise ValueError("OAuth callback port must be between 1024 and 65535")
         self._expected_state = expected_state
         self._timeout_seconds = timeout_seconds
         self._clock = clock
         self._result: CallbackResult | None = None
         self._failure: ConnectorFailure | None = None
         handler = self._handler_type()
-        self._server = HTTPServer(("127.0.0.1", 0), handler)
+        try:
+            self._server = HTTPServer(("127.0.0.1", port), handler)
+        except OSError:
+            if port == 0:
+                raise
+            raise ConnectorFailure(
+                ReasonCode.CONFIGURATION_INVALID,
+                "The fixed OAuth callback port is already in use on 127.0.0.1",
+            ) from None
 
     @property
     def redirect_uri(self) -> str:

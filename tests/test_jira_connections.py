@@ -33,7 +33,7 @@ from solercia_connect.domain import (
     ReasonCode,
 )
 from solercia_connect.errors import ConnectorFailure
-from solercia_connect.oauth import OAuthTokenSet
+from solercia_connect.oauth import KeyringOAuthTokenStore, OAuthTokenSet
 from solercia_connect.providers.jira import normalize_jira_cloud_id
 from solercia_connect.secret_store import API_TOKEN_SERVICE, KeyringSecretStore
 from solercia_connect.secrets import SecretValue
@@ -102,6 +102,7 @@ def _service(
     tmp_path: Path,
     *responses: Any,
     keyring: MemoryKeyring | None = None,
+    oauth_store: Any = None,
 ) -> tuple[ConnectionService, ProfileStore, MemoryKeyring, FakeTransport]:
     settings = load_settings(environ=_values(tmp_path))
     profiles = ProfileStore.from_settings(settings)
@@ -110,7 +111,7 @@ def _service(
     service = ConnectionService(
         settings,
         profiles,
-        UnusedOAuthStore(),
+        oauth_store if oauth_store is not None else UnusedOAuthStore(),
         secret_store=KeyringSecretStore(backend=backend),
         transport=transport,
         clock=lambda: NOW,
@@ -356,7 +357,12 @@ def test_jira_status_with_a_revoked_token_asks_to_reconnect_the_same_site(tmp_pa
 
 
 def test_jira_disconnect_deletes_profile_and_keyring_secret(tmp_path: Path) -> None:
-    service, profiles, keyring, _ = _connected(tmp_path)
+    # Disconnect also clears any Atlassian OAuth grant of the account, so it reads that store.
+    keyring = MemoryKeyring()
+    service, profiles, _, _ = _service(
+        tmp_path, _myself(), keyring=keyring, oauth_store=KeyringOAuthTokenStore(backend=keyring)
+    )
+    assert service.connect_jira(ACCOUNT, site=SITE, token=SecretValue(TOKEN)).ok
 
     result = service.disconnect("jira", ACCOUNT)
     again = service.disconnect("jira", ACCOUNT)
@@ -602,7 +608,7 @@ def test_cloud_id_is_a_canonical_uuid_and_the_token_kind_is_an_explicit_choice()
     # An atlassian.net site may leave the cloud ID to the tenant_info lookup at connect time.
     assert normalize_jira_token_binding(SITE, "scoped", None) == (JiraTokenKind.SCOPED, None)
     for site, kind, cloud_id, option in (
-        (SITE, "oauth", None, "--token-kind"),
+        (SITE, "bearer", None, "--token-kind"),
         (SITE, "classic", CLOUD_ID, "--cloud-id"),
         (SITE, "scoped", "not-a-uuid", "--cloud-id"),
         ("https://jira.example.com", "scoped", None, "--cloud-id"),
@@ -743,7 +749,7 @@ def test_jira_profiles_written_before_the_token_kind_load_as_classic(tmp_path: P
     assert payload["token_kind"] == "scoped" and payload["cloud_id"] == CLOUD_ID
     assert ConnectionProfile.from_dict(payload) == scoped
     for broken in (
-        {**payload, "token_kind": "oauth"},
+        {**payload, "token_kind": "bearer"},
         {**payload, "token_kind": "classic"},
         {**payload, "cloud_id": "not-a-uuid"},
         {**payload, "cloud_id": CLOUD_ID.upper()},
@@ -830,7 +836,7 @@ def test_cli_scoped_input_errors_name_the_option_and_never_prompt(
 
     cases = {
         "--cloud-id": [*base, SITE, "--token-kind", "scoped", "--cloud-id", "not-a-uuid"],
-        "--token-kind": [*base, SITE, "--token-kind", "oauth"],
+        "--token-kind": [*base, SITE, "--token-kind", "bearer"],
         "--token-kind scoped": [*base, SITE, "--cloud-id", CLOUD_ID],
         "needs --cloud-id": [*base, "https://jira.example.com", "--token-kind", "scoped"],
         "apply only to jira": ["connect", "gmail", ACCOUNT, "--token-kind", "scoped"],

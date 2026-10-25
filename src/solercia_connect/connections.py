@@ -7,6 +7,7 @@ from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Protocol, cast
+from urllib.parse import urlsplit
 
 from solercia_connect.auth import BasicAuthProvider
 from solercia_connect.browser_profile import microsoft_browser_profile_path
@@ -17,6 +18,7 @@ from solercia_connect.config import (
     ConnectSettings,
     JiraTokenKind,
     ProfileStore,
+    missing_atlassian_configuration,
     normalize_account,
     normalize_jira_site,
     normalize_jira_token_binding,
@@ -26,6 +28,7 @@ from solercia_connect.domain import ReasonCode, utc_now
 from solercia_connect.envelope import ErrorDetail, ResultEnvelope
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.oauth import (
+    AtlassianOAuthProvider,
     DeviceAuthorization,
     GoogleOAuthProvider,
     MicrosoftOAuthProvider,
@@ -40,6 +43,7 @@ from solercia_connect.providers.jira import (
     JiraIdentity,
     jira_api_base_url,
     resolve_jira_cloud_id,
+    verify_atlassian_oauth_identity,
 )
 from solercia_connect.providers.m365_browser import (
     Microsoft365BrowserAdapter,
@@ -84,6 +88,7 @@ class ConnectionService:
         browser_connector: Callable[[ConnectionType, str], str] | None = None,
         browser_status: Callable[[ConnectionType, str], str] | None = None,
         google_callback_flow: Callable[[GoogleOAuthProvider, bool], None] | None = None,
+        atlassian_callback_flow: Callable[[AtlassianOAuthProvider, bool], None] | None = None,
         action_sink: Callable[[ResultEnvelope], None] | None = None,
         transport: HTTPTransport | None = None,
         secret_store: SecretStore | None = None,
@@ -100,6 +105,7 @@ class ConnectionService:
         self._browser_connector = browser_connector or self._connect_browser
         self._browser_status = browser_status or self._status_browser
         self._google_callback_flow = google_callback_flow or self._run_google_callback
+        self._atlassian_callback_flow = atlassian_callback_flow or self._run_atlassian_callback
         self._action_sink = action_sink or (lambda envelope: None)
         self._clock = clock
         self._sleeper = sleeper
@@ -249,20 +255,10 @@ class ConnectionService:
         try:
             origin = normalize_jira_site(site)
             kind, cloud_id = normalize_jira_token_binding(origin, token_kind, cloud_id)
+            if kind is JiraTokenKind.OAUTH:
+                raise ValueError("--token-kind oauth authorizes in the browser and takes no token")
         except ValueError as failure:
-            return ResultEnvelope.failure(
-                operation="connect",
-                status="invalid_input",
-                provider=parsed.value,
-                account=normalized,
-                error=ErrorDetail(
-                    "invalid_input",
-                    str(failure),
-                    False,
-                    remediation=(connect_command(parsed, normalized),),
-                    cause_category="input",
-                ),
-            )
+            return _jira_invalid_input(normalized, failure)
         spec = target_spec(parsed)
         key = _token_key(parsed, normalized)
         try:
@@ -296,7 +292,9 @@ class ConnectionService:
                     "provider_id": spec.provider_id,
                     "capabilities": list(spec.capabilities),
                     "identity_verified": True,
-                    **_jira_identity_data(profile, identity),
+                    **_jira_identity_data(
+                        profile, identity.account_id, _api_token_email_source(identity)
+                    ),
                 },
             )
         except ConnectorFailure as failure:
@@ -306,6 +304,93 @@ class ConnectionService:
         except (TypeError, ValueError) as failure:
             return self._configuration_exception("connect", parsed, normalized, failure)
         except Exception:
+            return self._failure(
+                "connect",
+                parsed,
+                normalized,
+                ReasonCode.UNKNOWN_ERROR,
+                "Connection failed with an unknown error",
+                ("Run doctor for structured readiness diagnostics.",),
+                "unknown",
+            )
+
+    def connect_jira_oauth(
+        self,
+        account: str,
+        *,
+        site: str,
+        open_browser: bool = True,
+    ) -> ResultEnvelope:
+        """Connect one Jira site and account with Atlassian OAuth 2.0 (3LO) and the user's app.
+
+        The grant goes to the OAuth token store under ``jira:<email>``. ``/me``, the grant's
+        accessible resources and ``/myself`` prove the account and resolve the site's cloud ID
+        before the profile is saved; any failure after the code exchange discards the grant.
+        """
+
+        parsed = ConnectionType.JIRA
+        kind = JiraTokenKind.OAUTH
+        _, normalized, invalid = self._validated_identity(parsed, account, "connect")
+        if invalid is not None:
+            return invalid
+        assert normalized is not None
+        try:
+            origin = normalize_jira_site(site)
+        except ValueError as failure:
+            return _jira_invalid_input(normalized, failure, token_kind=kind)
+        missing = missing_atlassian_configuration(self._settings)
+        if missing:
+            return _atlassian_configuration_error("connect", normalized, missing, self._settings)
+        spec = target_spec(parsed)
+        key = _token_key(parsed, normalized)
+        exchanged = False
+        try:
+            oauth = atlassian_oauth_provider_from_settings(
+                self._settings,
+                self._tokens,
+                normalized,
+                transport=self._transport,
+                clock=self._clock,
+            )
+            self._atlassian_callback_flow(oauth, open_browser)
+            exchanged = True
+            identity = verify_atlassian_oauth_identity(
+                self._transport, oauth, site=origin, account=normalized
+            )
+            profile = ConnectionProfile.create(
+                parsed,
+                normalized,
+                route="official",
+                now=self._clock(),
+                site=origin,
+                provider_account_id=identity.account_id,
+                token_kind=kind,
+                cloud_id=identity.cloud_id,
+            )
+            self._profiles.save(profile)
+            return ResultEnvelope.success(
+                operation="connect",
+                status="connected_official",
+                provider=parsed.value,
+                account=normalized,
+                route="official",
+                data={
+                    "provider_id": spec.provider_id,
+                    "capabilities": list(spec.capabilities),
+                    "identity_verified": True,
+                    **_jira_identity_data(profile, identity.account_id, identity.email_source),
+                },
+            )
+        except Exception as failure:
+            if exchanged:
+                # A grant that did not prove this account and site is never kept.
+                self._discard_oauth_tokens(key)
+            if isinstance(failure, ConnectorFailure):
+                return self._connector_failure(
+                    "connect", parsed, normalized, failure, site=origin, token_kind=kind
+                )
+            if isinstance(failure, (TypeError, ValueError)):
+                return self._configuration_exception("connect", parsed, normalized, failure)
             return self._failure(
                 "connect",
                 parsed,
@@ -585,7 +670,12 @@ class ConnectionService:
         try:
             profile_removed = self._profiles.delete(parsed, normalized)
             if parsed is ConnectionType.JIRA:
-                self._secrets.delete(_token_key(parsed, normalized))
+                # Every credential of the account goes: the API token and any Atlassian OAuth
+                # grant, which a real keyring refuses to delete when it is absent.
+                key = _token_key(parsed, normalized)
+                self._secrets.delete(key)
+                if self._tokens.load(key) is not None:
+                    self._tokens.delete(key)
             else:
                 self._tokens.delete(_token_key(parsed, normalized))
             return ResultEnvelope.success(
@@ -703,6 +793,8 @@ class ConnectionService:
         )
 
     def _status_jira(self, profile: ConnectionProfile, account: str) -> ResultEnvelope:
+        if profile.token_kind is JiraTokenKind.OAUTH:
+            return self._status_jira_oauth(profile, account)
         parsed = ConnectionType.JIRA
         site = profile.site
         cloud_id = profile.cloud_id
@@ -737,8 +829,77 @@ class ConnectionService:
             provider=parsed.value,
             account=account,
             route="official",
-            data={"identity_verified": True, **_jira_identity_data(profile, identity)},
+            data={
+                "identity_verified": True,
+                **_jira_identity_data(
+                    profile, identity.account_id, _api_token_email_source(identity)
+                ),
+            },
         )
+
+    def _status_jira_oauth(self, profile: ConnectionProfile, account: str) -> ResultEnvelope:
+        """Refresh the grant when due, then re-prove the account, accountId and cloud ID."""
+
+        parsed = ConnectionType.JIRA
+        kind = JiraTokenKind.OAUTH
+        site = profile.site
+        missing = missing_atlassian_configuration(self._settings)
+        if missing:
+            return _atlassian_configuration_error("status", account, missing, self._settings)
+        try:
+            key = _token_key(parsed, account)
+            if (
+                site is None
+                or profile.provider_account_id is None
+                or profile.cloud_id is None
+                or self._tokens.load(key) is None
+            ):
+                return self._action_required(
+                    "status",
+                    parsed,
+                    account,
+                    "The Atlassian authorization must be renewed in the canonical CLI",
+                    site=site,
+                    token_kind=kind,
+                )
+            oauth = atlassian_oauth_provider_from_settings(
+                self._settings, self._tokens, account, transport=self._transport, clock=self._clock
+            )
+            identity = verify_atlassian_oauth_identity(
+                self._transport,
+                oauth,
+                site=site,
+                account=account,
+                expected_account_id=profile.provider_account_id,
+                expected_cloud_id=profile.cloud_id,
+            )
+        except ConnectorFailure as failure:
+            if failure.reason is ReasonCode.INVALID_CREDENTIALS:
+                return self._action_required(
+                    "status", parsed, account, failure.safe_message, site=site, token_kind=kind
+                )
+            return self._connector_failure(
+                "status", parsed, account, failure, site=site, token_kind=kind
+            )
+        return ResultEnvelope.success(
+            operation="status",
+            status="connected_official",
+            provider=parsed.value,
+            account=account,
+            route="official",
+            data={
+                "identity_verified": True,
+                "token_refresh_checked": True,
+                **_jira_identity_data(profile, identity.account_id, identity.email_source),
+            },
+        )
+
+    def _discard_oauth_tokens(self, key: str) -> None:
+        """Delete stored OAuth state if present; a keyring refuses to delete a missing entry."""
+
+        with suppress(Exception):
+            if self._tokens.load(key) is not None:
+                self._tokens.delete(key)
 
     def _jira_identity(
         self,
@@ -787,6 +948,34 @@ class ConnectionService:
                 redirect_uri=callback.redirect_uri,
                 code_verifier=pair.verifier,
             )
+
+    def _run_atlassian_callback(self, oauth: AtlassianOAuthProvider, open_browser: bool) -> None:
+        # Atlassian has no PKCE, so only the state of the pair is used; the redirect URI is the
+        # exact callback registered for the app, served on its fixed loopback port.
+        redirect_uri = self._settings.atlassian_redirect_uri
+        state = build_pkce_pair().state
+        with LoopbackCallbackServer(state, port=urlsplit(redirect_uri).port or 0) as callback:
+            url = oauth.authorization_url(redirect_uri=redirect_uri, state=state)
+            self._action_sink(
+                ResultEnvelope.failure(
+                    operation="connect",
+                    status="action_required",
+                    provider=ConnectionType.JIRA.value,
+                    error=ErrorDetail(
+                        "action_required",
+                        "Complete Atlassian authorization in a browser",
+                        True,
+                        remediation=("Open the authorization URL and return to the CLI.",),
+                        cause_category="interactive_authorization",
+                    ),
+                    data={"authorization_url": url, "callback_timeout_seconds": 180},
+                )
+            )
+            if open_browser:
+                with suppress(Exception):
+                    webbrowser.open(url, new=1, autoraise=True)
+            result = callback.wait()
+            oauth.exchange_authorization_code(result.code, redirect_uri=redirect_uri)
 
     def _connect_browser(self, parsed: ConnectionType, account: str) -> str:
         adapter = self._browser_adapter(parsed, account)
@@ -937,6 +1126,7 @@ class ConnectionService:
         allow_browser_fallback: bool = False,
         site: str | None = None,
         cloud_id: str | None = None,
+        token_kind: JiraTokenKind | None = None,
     ) -> ResultEnvelope:
         return ResultEnvelope.failure(
             operation=operation,
@@ -954,6 +1144,7 @@ class ConnectionService:
                         allow_browser_fallback=allow_browser_fallback,
                         site=site,
                         cloud_id=cloud_id,
+                        token_kind=token_kind,
                     ),
                 ),
                 cause_category="interactive_authorization",
@@ -969,8 +1160,9 @@ class ConnectionService:
         *,
         site: str | None = None,
         cloud_id: str | None = None,
+        token_kind: JiraTokenKind | None = None,
     ) -> ResultEnvelope:
-        remediation = _remediation(failure.reason, parsed, account, site, cloud_id)
+        remediation = _remediation(failure.reason, parsed, account, site, cloud_id, token_kind)
         return self._failure(
             operation,
             parsed,
@@ -1035,18 +1227,90 @@ def _token_key(parsed: ConnectionType, account: str) -> str:
     return f"{parsed.value}:{normalize_account(account)}"
 
 
-def _jira_identity_data(profile: ConnectionProfile, identity: JiraIdentity) -> dict[str, Any]:
+def _jira_identity_data(
+    profile: ConnectionProfile, account_id: str, email_source: str
+) -> dict[str, Any]:
     data: dict[str, Any] = {
         "site": profile.site,
-        "provider_account_id": identity.account_id,
-        # A hidden emailAddress leaves the account proven by Basic authentication alone.
-        "email_source": "myself" if identity.email_visible else "authentication",
+        "provider_account_id": account_id,
+        "email_source": email_source,
         # Profiles written before scoped tokens carry no kind and are classic.
         "token_kind": (profile.token_kind or JiraTokenKind.CLASSIC).value,
     }
     if profile.cloud_id is not None:
         data["cloud_id"] = profile.cloud_id
     return data
+
+
+def _api_token_email_source(identity: JiraIdentity) -> str:
+    # A hidden emailAddress leaves the account proven by Basic authentication alone.
+    return "myself" if identity.email_visible else "authentication"
+
+
+def _jira_invalid_input(
+    account: str, failure: ValueError, *, token_kind: JiraTokenKind | None = None
+) -> ResultEnvelope:
+    return ResultEnvelope.failure(
+        operation="connect",
+        status="invalid_input",
+        provider=ConnectionType.JIRA.value,
+        account=account,
+        error=ErrorDetail(
+            "invalid_input",
+            str(failure),
+            False,
+            remediation=(connect_command(ConnectionType.JIRA, account, token_kind=token_kind),),
+            cause_category="input",
+        ),
+    )
+
+
+def _atlassian_configuration_error(
+    operation: str, account: str, missing: tuple[str, ...], settings: ConnectSettings
+) -> ResultEnvelope:
+    return ResultEnvelope.failure(
+        operation=operation,
+        status="configuration_error",
+        provider=ConnectionType.JIRA.value,
+        account=account,
+        error=ErrorDetail(
+            "configuration_invalid",
+            "Required Atlassian OAuth configuration is missing",
+            False,
+            missing,
+            (
+                *(f"Set {name}." for name in missing),
+                f"Register {settings.atlassian_redirect_uri} as the app's callback URL, or set "
+                "SOLERCIA_CONNECT_ATLASSIAN_REDIRECT_URI to the registered one.",
+            ),
+            "configuration",
+        ),
+    )
+
+
+def atlassian_oauth_provider_from_settings(
+    settings: ConnectSettings,
+    token_store: OAuthTokenStore,
+    account: str,
+    *,
+    transport: HTTPTransport | None = None,
+    clock: Callable[[], datetime] = utc_now,
+) -> AtlassianOAuthProvider:
+    """Build the Jira OAuth provider of one account; its grant lives under ``jira:<email>``."""
+
+    client_id = settings.atlassian_client_id
+    client_secret = settings.atlassian_client_secret
+    if client_id is None or client_secret is None:
+        missing = ", ".join(missing_atlassian_configuration(settings))
+        raise ValueError(f"Atlassian OAuth is not configured; set {missing}")
+    return AtlassianOAuthProvider(
+        transport or HttpxTransport(),
+        client_id=client_id,
+        client_secret=client_secret,
+        store=token_store,
+        store_key=_token_key(ConnectionType.JIRA, account),
+        clock=clock,
+    )
 
 
 def jira_connect_requires_cli(operation: str, account: str) -> ResultEnvelope:
@@ -1118,11 +1382,14 @@ def connect_command(
     allow_browser_fallback: bool = False,
     site: str | None = None,
     cloud_id: str | None = None,
+    token_kind: JiraTokenKind | None = None,
 ) -> str:
     command = f"solercia-connect connect {parsed.value} {account}"
     if parsed is ConnectionType.JIRA:
         command += f" --site {site or '<site>'}"
-        if cloud_id is not None:
+        if token_kind is JiraTokenKind.OAUTH:
+            command += " --token-kind oauth"
+        elif cloud_id is not None:
             command += f" --token-kind scoped --cloud-id {cloud_id}"
     return command + (" --allow-browser-fallback" if allow_browser_fallback else "")
 
@@ -1152,7 +1419,21 @@ def _remediation(
     account: str,
     site: str | None = None,
     cloud_id: str | None = None,
+    token_kind: JiraTokenKind | None = None,
 ) -> tuple[str, ...]:
+    oauth_jira = parsed is ConnectionType.JIRA and token_kind is JiraTokenKind.OAUTH
+    if oauth_jira and reason is ReasonCode.INVALID_CREDENTIALS:
+        return (
+            "Run the connect command again to renew the Atlassian authorization.",
+            connect_command(parsed, account, site=site, token_kind=token_kind),
+        )
+    if oauth_jira and reason in {
+        ReasonCode.AUTHORIZATION_DENIED,
+        ReasonCode.OAUTH_CALLBACK_INVALID,
+        ReasonCode.OAUTH_STATE_MISMATCH,
+        ReasonCode.OAUTH_CALLBACK_TIMEOUT,
+    }:
+        return (connect_command(parsed, account, site=site, token_kind=token_kind),)
     if parsed is ConnectionType.JIRA and reason is ReasonCode.INVALID_CREDENTIALS:
         return (
             "Check the account email and the API token, or create a new token at "

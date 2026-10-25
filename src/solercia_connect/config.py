@@ -13,16 +13,25 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 
-from solercia_connect.providers._shared import ensure_https_base_url
+# normalize_jira_site moved next to the Jira adapter, which matches accessible resources with it;
+# it stays importable from here for the CLI, the connection service and existing callers.
 from solercia_connect.providers.jira import (
     jira_site_publishes_tenant_info,
     normalize_jira_cloud_id,
 )
+from solercia_connect.providers.jira import normalize_jira_site as normalize_jira_site
 from solercia_connect.secrets import SecretValue
 
 PROFILE_SCHEMA = "solercia.connect/profile/v1"
+# Atlassian requires the redirect_uri to match the callback URL registered for the app, so the
+# loopback listener takes this fixed port instead of a random one.
+DEFAULT_ATLASSIAN_REDIRECT_URI = "http://127.0.0.1:8766/oauth/callback"
+ATLASSIAN_OAUTH_CONFIGURATION = (
+    "SOLERCIA_CONNECT_ATLASSIAN_CLIENT_ID",
+    "SOLERCIA_CONNECT_ATLASSIAN_CLIENT_SECRET",
+)
 
 _ACCOUNT_PATTERN = re.compile(
     r"(?=.{3,320}\Z)[^\s<>@]+@[^\s<>@.]+(?:\.[^\s<>@.]+)+\Z",
@@ -185,21 +194,16 @@ def normalize_account(value: str) -> str:
     return candidate
 
 
-def normalize_jira_site(value: str) -> str:
-    """Reduce a Jira site URL to its HTTPS origin, the non-secret half of a Jira connection."""
-
-    parsed = urlparse(ensure_https_base_url(value.strip(), "Jira site"))
-    if parsed.hostname is None:
-        raise ValueError("Jira site must name a host")
-    port = f":{parsed.port}" if parsed.port is not None else ""
-    return f"https://{parsed.hostname.casefold()}{port}"
-
-
 class JiraTokenKind(StrEnum):
-    """How a Jira API token reaches the REST API. The caller chooses; it is never detected."""
+    """How a Jira connection authenticates. The caller chooses; it is never detected.
+
+    ``classic`` and ``scoped`` are API tokens; ``oauth`` is an Atlassian OAuth 2.0 (3LO) grant
+    whose cloud ID comes from the grant's accessible resources.
+    """
 
     CLASSIC = "classic"
     SCOPED = "scoped"
+    OAUTH = "oauth"
 
 
 def normalize_jira_token_binding(
@@ -213,8 +217,8 @@ def normalize_jira_token_binding(
     try:
         kind = JiraTokenKind((token_kind or JiraTokenKind.CLASSIC).strip().casefold())
     except ValueError:
-        raise ValueError("--token-kind must be classic or scoped") from None
-    if kind is JiraTokenKind.CLASSIC:
+        raise ValueError("--token-kind must be classic, scoped or oauth") from None
+    if kind is not JiraTokenKind.SCOPED:
         if cloud_id is not None:
             raise ValueError("--cloud-id applies only to --token-kind scoped")
         return kind, None
@@ -245,6 +249,18 @@ class ConnectSettings:
     configured_names: tuple[str, ...]
     env_file: Path | None = None
     http_interactive_login: bool = False
+    atlassian_client_id: str | None = None
+    atlassian_client_secret: SecretValue | None = None
+    atlassian_redirect_uri: str = DEFAULT_ATLASSIAN_REDIRECT_URI
+
+
+def missing_atlassian_configuration(settings: ConnectSettings) -> tuple[str, ...]:
+    """Name every Atlassian OAuth setting that is absent; the client secret is never optional."""
+
+    values = (settings.atlassian_client_id, settings.atlassian_client_secret)
+    return tuple(
+        name for name, value in zip(ATLASSIAN_OAUTH_CONFIGURATION, values, strict=True) if not value
+    )
 
 
 def http_interactive_allowed(settings: ConnectSettings) -> bool:
@@ -289,6 +305,7 @@ def load_settings(
         raise ValueError("SOLERCIA_CONNECT_API_PORT must be between 1 and 65535")
 
     secret = _value(values, "SOLERCIA_CONNECT_GOOGLE_CLIENT_SECRET")
+    atlassian_secret = _value(values, "SOLERCIA_CONNECT_ATLASSIAN_CLIENT_SECRET")
     api_key = _value(values, "SOLERCIA_CONNECT_API_KEY")
     profile = _value(values, "SOLERCIA_CONNECT_M365_PROFILE_DIR")
     output = _value(values, "SOLERCIA_CONNECT_OUTPUT_DIR")
@@ -314,7 +331,40 @@ def load_settings(
             values.get("SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN", ""),
             "SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN",
         ),
+        atlassian_client_id=_value(values, "SOLERCIA_CONNECT_ATLASSIAN_CLIENT_ID"),
+        atlassian_client_secret=SecretValue(atlassian_secret) if atlassian_secret else None,
+        atlassian_redirect_uri=_atlassian_redirect_uri(
+            _value(values, "SOLERCIA_CONNECT_ATLASSIAN_REDIRECT_URI")
+        ),
     )
+
+
+def _atlassian_redirect_uri(value: str | None) -> str:
+    """Accept only the loopback callback the listener can serve on a fixed, unprivileged port."""
+
+    if value is None:
+        return DEFAULT_ATLASSIAN_REDIRECT_URI
+    parsed = urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost"}
+        or parsed.username is not None
+        or port is None
+        or not 1024 <= port <= 65535
+        or parsed.path != "/oauth/callback"
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "SOLERCIA_CONNECT_ATLASSIAN_REDIRECT_URI must be "
+            "http://127.0.0.1:<port>/oauth/callback or http://localhost:<port>/oauth/callback "
+            "with a port from 1024 to 65535"
+        )
+    return value
 
 
 def effective_environment(
@@ -456,13 +506,19 @@ class ConnectionProfile:
 def _jira_token_fields(
     token_kind: object, cloud_id: object
 ) -> tuple[JiraTokenKind | None, str | None]:
-    """A cloud ID exists exactly when the token is scoped; no kind at all means classic."""
+    """A cloud ID exists exactly when the gateway is used: a scoped token or an OAuth grant.
+
+    No kind at all means classic.
+    """
 
     if token_kind is None and cloud_id is None:
         return None, None
     kind = JiraTokenKind(str(token_kind))
-    if (kind is JiraTokenKind.SCOPED) != (cloud_id is not None):
-        raise ValueError("Connection profile cloud ID must accompany a scoped Jira token only")
+    gateway = kind in {JiraTokenKind.SCOPED, JiraTokenKind.OAUTH}
+    if gateway != (cloud_id is not None):
+        raise ValueError(
+            "Connection profile cloud ID must accompany a scoped or OAuth Jira binding"
+        )
     return kind, normalize_jira_cloud_id(str(cloud_id)) if cloud_id is not None else None
 
 

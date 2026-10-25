@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from solercia_connect.auth import BasicAuthProvider, BearerTokenProvider, GlpiCredentials
+from solercia_connect.auth import (
+    AuthorizationProvider,
+    BasicAuthProvider,
+    BearerTokenProvider,
+    GlpiCredentials,
+)
 from solercia_connect.browser_profile import (
     microsoft_browser_profile_path,
     microsoft_browser_profile_root,
@@ -11,12 +16,17 @@ from solercia_connect.config import (
     MICROSOFT_TARGETS,
     ConnectionType,
     ConnectSettings,
+    JiraTokenKind,
     ProfileStore,
     effective_environment,
     load_settings,
     normalize_account,
 )
-from solercia_connect.connections import connect_command, oauth_provider_from_settings
+from solercia_connect.connections import (
+    atlassian_oauth_provider_from_settings,
+    connect_command,
+    oauth_provider_from_settings,
+)
 from solercia_connect.domain import Capability, ReasonCode
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.oauth import KeyringOAuthTokenStore, OAuthTokenStore
@@ -172,6 +182,8 @@ def registry_from_environment(
                 profiles,
                 secret_store or KeyringSecretStore(),
                 normalized_account,
+                settings=settings,
+                token_store=secure_store,
             )
         )
     elif jira_url and jira_email and jira_token:
@@ -237,8 +249,15 @@ def _jira_adapter_for_account(
     profiles: ProfileStore,
     secrets: SecretStore,
     account: str,
+    *,
+    settings: ConnectSettings,
+    token_store: OAuthTokenStore,
 ) -> JiraAdapter:
-    """Build Jira from this account's own connection; never borrow the JIRA_* variables."""
+    """Build Jira from this account's own connection; never borrow the JIRA_* variables.
+
+    An API-token profile authenticates with Basic email:token; an OAuth profile with the bearer
+    grant of the Atlassian provider. Both call the base bound to the stored site and cloud ID.
+    """
 
     profile = profiles.get(ConnectionType.JIRA, account)
     if (
@@ -252,17 +271,31 @@ def _jira_adapter_for_account(
             account,
             site=profile.site if profile else None,
             cloud_id=profile.cloud_id if profile else None,
+            token_kind=profile.token_kind if profile else None,
         )
         raise ValueError(f"No official Jira connection exists for this account; run {command}")
-    token = secrets.load(f"{ConnectionType.JIRA.value}:{account}")
-    if token is None:
-        raise ConnectorFailure(
-            ReasonCode.INVALID_CREDENTIALS,
-            "The Jira API token for this account is not stored; reconnect it in the CLI",
+    key = f"{ConnectionType.JIRA.value}:{account}"
+    auth: AuthorizationProvider
+    if profile.token_kind is JiraTokenKind.OAUTH:
+        auth = atlassian_oauth_provider_from_settings(
+            settings, token_store, account, transport=transport
         )
+        if token_store.load(key) is None:
+            raise ConnectorFailure(
+                ReasonCode.INVALID_CREDENTIALS,
+                "The Atlassian authorization for this account is not stored; reconnect it",
+            )
+    else:
+        token = secrets.load(key)
+        if token is None:
+            raise ConnectorFailure(
+                ReasonCode.INVALID_CREDENTIALS,
+                "The Jira API token for this account is not stored; reconnect it in the CLI",
+            )
+        auth = BasicAuthProvider(account, token)
     return JiraAdapter(
         transport,
-        BasicAuthProvider(account, token),
+        auth,
         base_url=jira_api_base_url(profile.site, profile.cloud_id),
         expected_account_id=profile.provider_account_id,
         expected_account=account,

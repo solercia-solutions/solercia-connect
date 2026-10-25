@@ -19,6 +19,7 @@ from solercia_connect.bootstrap import (
 from solercia_connect.config import (
     TARGET_SPECS,
     ConnectionType,
+    JiraTokenKind,
     ProfileStore,
     load_settings,
     normalize_account,
@@ -340,8 +341,9 @@ def connect(
         str | None,
         typer.Option(
             "--token-kind",
-            help="Jira API token kind: classic (default) calls the site; scoped calls "
-            "api.atlassian.com/ex/jira/{cloudId}",
+            help="Jira credential: classic API token (default) calls the site; scoped API "
+            "token calls api.atlassian.com/ex/jira/{cloudId}; oauth authorizes the "
+            "SOLERCIA_CONNECT_ATLASSIAN_* app in the browser and takes no token",
         ),
     ] = None,
     cloud_id: Annotated[
@@ -359,6 +361,8 @@ def connect(
     Jira takes --site and reads its API token from a hidden prompt, or from one stdin line with
     --token-stdin; the token is never accepted as an argument or an environment variable. A
     scoped token needs --token-kind scoped, plus --cloud-id unless the site is on atlassian.net.
+    --token-kind oauth uses Atlassian OAuth 2.0 (3LO) with the app configured in the environment
+    and prompts for nothing.
     """
 
     try:
@@ -376,13 +380,20 @@ def connect(
                 kind, scoped_cloud_id = normalize_jira_token_binding(origin, token_kind, cloud_id)
             except ValueError as failure:
                 raise _InputError(str(failure)) from None
-            envelope = service.connect_jira(
-                normalized_account,
-                site=origin,
-                token=_jira_token(from_stdin=token_stdin),
-                token_kind=kind,
-                cloud_id=scoped_cloud_id,
-            )
+            if kind is JiraTokenKind.OAUTH:
+                if token_stdin:
+                    raise _InputError("--token-stdin applies only to API tokens, not oauth")
+                envelope = service.connect_jira_oauth(
+                    normalized_account, site=origin, open_browser=not no_open_browser
+                )
+            else:
+                envelope = service.connect_jira(
+                    normalized_account,
+                    site=origin,
+                    token=_jira_token(from_stdin=token_stdin),
+                    token_kind=kind,
+                    cloud_id=scoped_cloud_id,
+                )
         else:
             envelope = service.connect(
                 type_value,

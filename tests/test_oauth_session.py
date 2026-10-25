@@ -241,3 +241,19 @@ def test_loopback_server_has_a_finite_timeout_and_validates_timeout_bound() -> N
         callback.wait()
 
     assert captured.value.reason is ReasonCode.OAUTH_CALLBACK_TIMEOUT
+
+
+def test_loopback_server_binds_a_fixed_port_for_an_exactly_registered_callback() -> None:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    with LoopbackCallbackServer("state-value", port=port) as callback:
+        assert callback.redirect_uri == f"http://127.0.0.1:{port}/oauth/callback"
+        with pytest.raises(ConnectorFailure) as captured:
+            LoopbackCallbackServer("state-value", port=port)
+
+    assert captured.value.reason is ReasonCode.CONFIGURATION_INVALID
+    for invalid in (80, 1023, 65536):
+        with pytest.raises(ValueError, match="port"):
+            LoopbackCallbackServer("state-value", port=invalid)

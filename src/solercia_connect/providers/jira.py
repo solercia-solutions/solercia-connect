@@ -35,10 +35,24 @@ from solercia_connect.transport import request_json
 
 # Scoped API tokens are not accepted by the site URL: Atlassian routes them through this gateway,
 # still with Basic email:token. Source: "Manage API tokens for your Atlassian account".
+# OAuth 2.0 (3LO) access tokens use the same gateway ("OAuth 2.0 (3LO) apps", step 3.2).
 ATLASSIAN_JIRA_GATEWAY = "https://api.atlassian.com/ex/jira"
 # Atlassian documents tenant_info only for <site>.atlassian.net ("How to Find Your Atlassian
 # Cloud Site's Cloud ID"); any other host must name its cloud ID explicitly.
 _TENANT_INFO_HOST_SUFFIX = ".atlassian.net"
+# User Identity API (scope read:me) and the sites an OAuth access token can reach.
+ATLASSIAN_ME_URL = "https://api.atlassian.com/me"
+ATLASSIAN_ACCESSIBLE_RESOURCES_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
+
+
+def normalize_jira_site(value: str) -> str:
+    """Reduce a Jira site URL to its HTTPS origin, the non-secret half of a Jira connection."""
+
+    parsed = urlparse(ensure_https_base_url(value.strip(), "Jira site"))
+    if parsed.hostname is None:
+        raise ValueError("Jira site must name a host")
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return f"https://{parsed.hostname.casefold()}{port}"
 
 
 def normalize_jira_cloud_id(value: str) -> str:
@@ -262,6 +276,95 @@ class JiraAdapter:
             "Content-Type": "application/json",
             "Authorization": self._auth.authorization_header(),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class AtlassianOAuthIdentity:
+    """An Atlassian OAuth grant bound to one account and one site.
+
+    ``email_source`` names where the requested email was observed: ``me`` (User Identity API)
+    or ``myself`` (Jira). Unlike Basic authentication, a bearer token binds no email by itself.
+    """
+
+    account_id: str
+    cloud_id: str
+    email_source: str
+
+
+def verify_atlassian_oauth_identity(
+    transport: HTTPTransport,
+    auth: AuthorizationProvider,
+    *,
+    site: str,
+    account: str,
+    expected_account_id: str | None = None,
+    expected_cloud_id: str | None = None,
+) -> AtlassianOAuthIdentity:
+    """Prove the grant's account, resolve the site's cloud ID, and match Jira's ``/myself``.
+
+    Each mismatch, a missing email on both identity endpoints, and a site the grant lists zero
+    or several times fail closed before any data read.
+    """
+
+    me = require_mapping(
+        request_json(transport, "GET", ATLASSIAN_ME_URL, headers=_bearer_headers(auth)),
+        "atlassian.me",
+    )
+    account_id = require_string(me.get("account_id"), "atlassian.me.account_id")
+    email = as_string(me.get("email"))
+    if email is not None and email.casefold() != account.casefold():
+        raise _boundary("Atlassian account email does not match the requested account")
+    if expected_account_id is not None and account_id != expected_account_id:
+        raise _boundary("Atlassian account does not match the connection profile")
+    cloud_id = _accessible_cloud_id(transport, auth, site)
+    if expected_cloud_id is not None and cloud_id != expected_cloud_id:
+        raise _boundary("The Jira site cloud ID no longer matches the connection profile")
+    identity = JiraAdapter(
+        transport,
+        auth,
+        base_url=jira_api_base_url(site, cloud_id),
+        expected_account_id=account_id,
+        expected_account=account,
+    ).verify_identity()
+    if email is None and not identity.email_visible:
+        raise _boundary("Atlassian exposed no email that proves the requested account")
+    return AtlassianOAuthIdentity(account_id, cloud_id, "me" if email is not None else "myself")
+
+
+def _accessible_cloud_id(transport: HTTPTransport, auth: AuthorizationProvider, site: str) -> str:
+    """Select the one resource whose URL is exactly the site; never the first of several."""
+
+    payload = request_json(
+        transport, "GET", ATLASSIAN_ACCESSIBLE_RESOURCES_URL, headers=_bearer_headers(auth)
+    )
+    matches: list[str] = []
+    for raw in require_list(payload, "atlassian.accessible_resources"):
+        item = require_mapping(raw, "atlassian.accessible_resources.item")
+        try:
+            origin = normalize_jira_site(as_string(item.get("url")) or "")
+        except ValueError:
+            continue
+        if origin == site:
+            matches.append(require_string(item.get("id"), "atlassian.accessible_resources.id"))
+    if not matches:
+        raise _boundary("The Atlassian grant does not include the requested Jira site")
+    if len(matches) > 1:
+        raise _boundary("The Atlassian grant lists the requested Jira site more than once")
+    try:
+        return normalize_jira_cloud_id(matches[0])
+    except ValueError:
+        raise ConnectorFailure(
+            ReasonCode.MALFORMED_PROVIDER_DATA,
+            "Atlassian accessible resources returned a cloud ID that is not a UUID",
+        ) from None
+
+
+def _bearer_headers(auth: AuthorizationProvider) -> dict[str, str]:
+    return {"Accept": "application/json", "Authorization": auth.authorization_header()}
+
+
+def _boundary(message: str) -> ConnectorFailure:
+    return ConnectorFailure(ReasonCode.AUTHORIZATION_BOUNDARY_VIOLATION, message)
 
 
 def _default_jql(query: IssueQuery) -> str:

@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from math import isfinite
 from time import sleep
 from typing import Any, ClassVar, Protocol, cast
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 from solercia_connect.domain import ReasonCode, utc_now
 from solercia_connect.errors import (
@@ -21,6 +21,10 @@ from solercia_connect.secrets import SecretValue
 _MICROSOFT_LOGIN_ORIGIN = "https://login.microsoftonline.com"
 _GOOGLE_AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
 _GOOGLE_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+_ATLASSIAN_AUTHORIZATION_ENDPOINT = "https://auth.atlassian.com/authorize"
+_ATLASSIAN_TOKEN_ENDPOINT = "https://auth.atlassian.com/oauth/token"
+# Read-only Jira scopes, read:me for the User Identity API, and offline_access for a refresh token.
+ATLASSIAN_JIRA_SCOPES = ("read:jira-work", "read:jira-user", "read:me", "offline_access")
 _DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 _DEFAULT_MAX_DEVICE_POLL_INTERVAL_SECONDS = 30.0
 
@@ -174,6 +178,11 @@ class _RefreshCapableOAuthProvider:
     # Token-endpoint errors meaning the organization withholds permission (decision D0.1). Empty
     # by default: Microsoft keeps its mapping, and its tenant policy never routes around.
     _organization_policy_errors: ClassVar[frozenset[str]] = frozenset()
+    # Token-endpoint dialect. The defaults are the form-encoded RFC 6749 requests Microsoft and
+    # Google use, with a refresh token kept when a refresh returns none and token_type required.
+    _json_token_requests: ClassVar[bool] = False
+    _rotating_refresh_tokens: ClassVar[bool] = False
+    _implicit_token_type: ClassVar[str | None] = None
 
     def __init__(
         self,
@@ -248,6 +257,9 @@ class _RefreshCapableOAuthProvider:
                 "refresh_token": current.refresh_token.reveal(),
             }
         )
+        if self._rotating_refresh_tokens:
+            # The used token is disabled once exchanged, so only a new one may replace it.
+            return self._exchange(form, require_refresh_token=True)
         return self._exchange(form, preserved_refresh_token=current.refresh_token)
 
     def _client_form(self) -> dict[str, str]:
@@ -268,6 +280,7 @@ class _RefreshCapableOAuthProvider:
             self._token_endpoint,
             form,
             organization_policy_errors=self._organization_policy_errors,
+            as_json=self._json_token_requests,
         )
         tokens = self._tokens_from_payload(payload, preserved_refresh_token)
         if require_refresh_token and tokens.refresh_token is None:
@@ -285,7 +298,9 @@ class _RefreshCapableOAuthProvider:
     ) -> OAuthTokenSet:
         try:
             access_token = SecretValue(_required_text(payload.get("access_token"), "access_token"))
-            token_type = _required_text(payload.get("token_type"), "token_type")
+            token_type = _required_text(
+                payload.get("token_type", self._implicit_token_type), "token_type"
+            )
             if token_type.casefold() != "bearer":
                 raise ValueError("Unsupported OAuth token type")
             expires_in = _positive_int(payload.get("expires_in"), "expires_in")
@@ -530,6 +545,84 @@ class GoogleOAuthProvider(_RefreshCapableOAuthProvider):
         )
 
 
+class AtlassianOAuthProvider(_RefreshCapableOAuthProvider):
+    """Atlassian OAuth 2.0 (3LO) with the user's own app: a confidential client without PKCE.
+
+    Atlassian requires the client secret on the code exchange and on every refresh, and does not
+    support PKCE (ECO-283), so ``state`` alone correlates the callback. Its documented token
+    requests are JSON. Refresh tokens rotate: each refresh returns a new one and disables the one
+    used, so the new one replaces it in a single store write.
+    """
+
+    _json_token_requests = True
+    _rotating_refresh_tokens = True
+    # The documented token responses carry no token_type; they are bearer tokens.
+    _implicit_token_type = "Bearer"
+
+    def __init__(
+        self,
+        transport: HTTPTransport,
+        *,
+        client_id: str,
+        client_secret: SecretValue,
+        store: OAuthTokenStore,
+        store_key: str,
+        scopes: tuple[str, ...] = ATLASSIAN_JIRA_SCOPES,
+        clock: Callable[[], datetime] = utc_now,
+        refresh_skew_seconds: int = 60,
+    ) -> None:
+        self._required_secret = client_secret
+        super().__init__(
+            transport,
+            client_id=client_id,
+            scopes=scopes,
+            token_endpoint=_ATLASSIAN_TOKEN_ENDPOINT,
+            store=store,
+            store_key=store_key,
+            client_secret=client_secret,
+            clock=clock,
+            refresh_skew_seconds=refresh_skew_seconds,
+        )
+
+    def authorization_url(self, *, redirect_uri: str, state: str) -> str:
+        redirect = _validated_redirect_uri(redirect_uri)
+        if not state.strip():
+            raise ValueError("OAuth state cannot be empty")
+        query = {
+            "audience": "api.atlassian.com",
+            "client_id": self._client_id,
+            "scope": " ".join(self._scopes),
+            "redirect_uri": redirect,
+            "state": state,
+            "response_type": "code",
+            "prompt": "consent",
+        }
+        return f"{_ATLASSIAN_AUTHORIZATION_ENDPOINT}?{urlencode(query, quote_via=quote)}"
+
+    def exchange_authorization_code(
+        self,
+        code: SecretValue,
+        *,
+        redirect_uri: str,
+        code_verifier: SecretValue | None = None,
+    ) -> OAuthTokenSet:
+        if code_verifier is not None:
+            raise ValueError("Atlassian OAuth does not support PKCE; state correlates the callback")
+        form = self._client_form()
+        form.update(
+            {
+                "grant_type": "authorization_code",
+                "code": code.reveal(),
+                "redirect_uri": _validated_redirect_uri(redirect_uri),
+            }
+        )
+        return self._exchange(form, require_refresh_token=True)
+
+    def _client_form(self) -> dict[str, str]:
+        # Atlassian's token requests name the client only; scopes belong to the authorization URL.
+        return {"client_id": self._client_id, "client_secret": self._required_secret.reveal()}
+
+
 @dataclass(frozen=True, slots=True)
 class _DeviceAuthorizationPending(Exception):
     slow_down: bool
@@ -542,14 +635,23 @@ def _oauth_payload(
     *,
     allow_device_pending: bool = False,
     organization_policy_errors: frozenset[str] = frozenset(),
+    as_json: bool = False,
 ) -> dict[str, Any]:
     try:
-        response = transport.request(
-            "POST",
-            url,
-            headers={"Accept": "application/json"},
-            form_body=form,
-        )
+        if as_json:
+            response = transport.request(
+                "POST",
+                url,
+                headers={"Accept": "application/json"},
+                json_body=form,
+            )
+        else:
+            response = transport.request(
+                "POST",
+                url,
+                headers={"Accept": "application/json"},
+                form_body=form,
+            )
     except TransportTimeoutError as exc:
         raise ConnectorFailure(ReasonCode.NETWORK_TIMEOUT, "OAuth endpoint timed out") from exc
     except TransportNetworkError as exc:
