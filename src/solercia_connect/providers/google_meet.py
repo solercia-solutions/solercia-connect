@@ -35,6 +35,7 @@ from solercia_connect.providers.google import (
     _google_address,
     _google_event_datetime,
     _requested_google_account,
+    google_policy_failure,
 )
 from solercia_connect.transport import request_bytes, request_json
 
@@ -252,7 +253,14 @@ class GoogleMeetAdapter:
 
     def _json(self, url: str, params: dict[str, Any] | None = None) -> dict[str, Any] | list[Any]:
         try:
-            return request_json(self._transport, "GET", url, headers=self._headers(), params=params)
+            return request_json(
+                self._transport,
+                "GET",
+                url,
+                headers=self._headers(),
+                params=params,
+                failure_refiner=google_policy_failure,
+            )
         except ConnectorFailure as failure:
             if failure.reason is ReasonCode.INVALID_CREDENTIALS:
                 raise ConnectorFailure(
@@ -269,6 +277,7 @@ class GoogleMeetAdapter:
                 f"{self._drive_base_url}/files/{quote(file_id, safe='')}/export",
                 headers={**self._headers(), "Accept": "text/plain"},
                 params={"mimeType": "text/plain"},
+                failure_refiner=google_policy_failure,
             )
         except ConnectorFailure as failure:
             if failure.reason is ReasonCode.INVALID_CREDENTIALS:

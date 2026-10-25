@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import isfinite
 from time import sleep
-from typing import Any, Protocol, cast
+from typing import Any, ClassVar, Protocol, cast
 from urllib.parse import urlencode, urlparse
 
 from solercia_connect.domain import ReasonCode, utc_now
@@ -171,6 +171,10 @@ class DeviceAuthorization:
 
 
 class _RefreshCapableOAuthProvider:
+    # Token-endpoint errors meaning the organization withholds permission (decision D0.1). Empty
+    # by default: Microsoft keeps its mapping, and its tenant policy never routes around.
+    _organization_policy_errors: ClassVar[frozenset[str]] = frozenset()
+
     def __init__(
         self,
         transport: HTTPTransport,
@@ -259,7 +263,12 @@ class _RefreshCapableOAuthProvider:
         preserved_refresh_token: SecretValue | None = None,
         require_refresh_token: bool = False,
     ) -> OAuthTokenSet:
-        payload = _oauth_payload(self._transport, self._token_endpoint, form)
+        payload = _oauth_payload(
+            self._transport,
+            self._token_endpoint,
+            form,
+            organization_policy_errors=self._organization_policy_errors,
+        )
         tokens = self._tokens_from_payload(payload, preserved_refresh_token)
         if require_refresh_token and tokens.refresh_token is None:
             raise ConnectorFailure(
@@ -471,6 +480,10 @@ class MicrosoftOAuthProvider(_RefreshCapableOAuthProvider):
 class GoogleOAuthProvider(_RefreshCapableOAuthProvider):
     """Google authorization-code provider with PKCE and refresh-token rotation."""
 
+    # Google documents both as organization blocks: a Workspace admin policy restricts the
+    # scopes, or the client belongs to a project limited to another Cloud organization.
+    _organization_policy_errors = frozenset({"admin_policy_enforced", "org_internal"})
+
     def __init__(
         self,
         transport: HTTPTransport,
@@ -528,6 +541,7 @@ def _oauth_payload(
     form: Mapping[str, str],
     *,
     allow_device_pending: bool = False,
+    organization_policy_errors: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     try:
         response = transport.request(
@@ -550,7 +564,7 @@ def _oauth_payload(
     error = raw_error if isinstance(raw_error, str) else ""
     if allow_device_pending and error in {"authorization_pending", "slow_down"}:
         raise _DeviceAuthorizationPending(error == "slow_down")
-    reason = _oauth_error_reason(response.status_code, error)
+    reason = _oauth_error_reason(response.status_code, error, organization_policy_errors)
     raise ConnectorFailure(reason, "OAuth provider rejected the authorization request")
 
 
@@ -570,11 +584,17 @@ def _decoded_object(response: TransportResponse) -> dict[str, Any]:
     return cast(dict[str, Any], payload)
 
 
-def _oauth_error_reason(status_code: int, error: str) -> ReasonCode:
+def _oauth_error_reason(
+    status_code: int,
+    error: str,
+    organization_policy_errors: frozenset[str] = frozenset(),
+) -> ReasonCode:
     if status_code == 429:
         return ReasonCode.RATE_LIMITED
     if 500 <= status_code <= 599:
         return ReasonCode.PROVIDER_UNAVAILABLE
+    if error in organization_policy_errors:
+        return ReasonCode.ADMIN_CONSENT_REQUIRED
     if error in {"invalid_client", "invalid_grant", "expired_token"}:
         return ReasonCode.INVALID_CREDENTIALS
     if error in {"consent_required", "interaction_required"}:

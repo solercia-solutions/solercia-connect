@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import base64
+import json
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time
 from email.utils import getaddresses
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 from solercia_connect.auth import AuthorizationProvider
@@ -40,6 +41,46 @@ from solercia_connect.transport import request_json
 
 _GMAIL_BASE_URL = "https://gmail.googleapis.com/gmail/v1"
 _GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3"
+# Structured 403 reasons Google documents as a domain administrator block (decision D0.1). The
+# Gmail and Drive error guides both describe `domainPolicy` as the domain policy not allowing the
+# app; no other documented reason means an organization block.
+_GOOGLE_POLICY_REASONS = frozenset({"domainPolicy"})
+_MAX_ERROR_BODY_BYTES = 64 * 1024
+
+
+def google_policy_failure(status_code: int, content: bytes) -> ConnectorFailure | None:
+    """Classify a 403 whose structured reasons are all a documented domain policy block.
+
+    Only ``error.errors[].reason`` is read. Anything else, including an unparseable body, keeps
+    the generic status mapping, and the body never reaches the message.
+    """
+
+    if status_code != 403:
+        return None
+    reasons = _google_error_reasons(content)
+    if not reasons or not reasons <= _GOOGLE_POLICY_REASONS:
+        return None
+    return ConnectorFailure(
+        ReasonCode.ADMIN_CONSENT_REQUIRED,
+        "The Google Workspace domain policy does not allow this app to read the data",
+    )
+
+
+def _google_error_reasons(content: bytes) -> frozenset[str]:
+    if len(content) > _MAX_ERROR_BODY_BYTES:
+        return frozenset()
+    try:
+        payload = json.loads(content.decode("utf-8"))
+    except (ValueError, RecursionError):
+        return frozenset()
+    error = payload.get("error") if isinstance(payload, dict) else None
+    errors = error.get("errors") if isinstance(error, dict) else None
+    if not isinstance(errors, list):
+        return frozenset()
+    reasons = [item.get("reason") if isinstance(item, dict) else None for item in errors]
+    if not all(isinstance(reason, str) for reason in reasons):
+        return frozenset()
+    return frozenset(cast(list[str], reasons))
 
 
 class GoogleGmailAdapter:
@@ -113,6 +154,7 @@ class GoogleGmailAdapter:
                 f"{self._base_url}/users/me/messages/{quote(message_id, safe='')}",
                 headers=self._headers(),
                 params={"format": "full"},
+                failure_refiner=google_policy_failure,
             )
             message = self._normalize_message(require_mapping(payload, "gmail.message"), account)
             if query.window.start <= message.sent_at < query.window.end:
@@ -126,6 +168,7 @@ class GoogleGmailAdapter:
             "GET",
             f"{self._base_url}/users/me/profile",
             headers=self._headers(),
+            failure_refiner=google_policy_failure,
         )
         data = require_mapping(payload, "gmail.profile")
         account = require_string(data.get("emailAddress"), "gmail.profile.emailAddress")
@@ -156,6 +199,7 @@ class GoogleGmailAdapter:
                 f"{self._base_url}/users/me/messages",
                 headers=self._headers(),
                 params=page_params,
+                failure_refiner=google_policy_failure,
             )
             data = require_mapping(payload, "gmail.messages")
             raw_messages = data.get("messages") or []
@@ -252,6 +296,7 @@ class GoogleCalendarAdapter:
                 f"{self._base_url}/users/me/calendarList/"
                 f"{quote(self._health_calendar_id, safe='')}",
                 headers=self._headers(),
+                failure_refiner=google_policy_failure,
             )
             require_mapping(payload, "calendar.health")
         return HealthReport(
@@ -269,6 +314,7 @@ class GoogleCalendarAdapter:
             "GET",
             f"{self._base_url}/users/me/calendarList/primary",
             headers=self._headers(),
+            failure_refiner=google_policy_failure,
         )
         data = require_mapping(payload, "calendar.identity")
         observed_account = unique_canonical_account_identity(data.get("id"), exact=True)
@@ -341,6 +387,7 @@ class GoogleCalendarAdapter:
                 f"{self._base_url}/calendars/{quote(calendar_id, safe='')}/events",
                 headers=self._headers(),
                 params=page_params,
+                failure_refiner=google_policy_failure,
             )
             data = require_mapping(payload, "calendar.events")
             for raw in require_list(data.get("items") or [], "calendar.events.items"):
