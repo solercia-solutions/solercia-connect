@@ -14,13 +14,17 @@ import subprocess
 import tempfile
 from collections.abc import Callable, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
+from typing import Any
 
 from solercia_connect.config import (
     ProjectHomeError,
     ProjectLayout,
     _lexists,
     _reject_symlink_components,
+    _validate_project_env_metadata,
     _wrong_owner,
 )
 
@@ -96,7 +100,7 @@ def guard_git_tracking(home: Path, *, runner: GitRunner | None = None) -> None:
     missing, slow or failing is never read as "nothing tracked".
     """
 
-    if not any(_holds_git_marker(ancestor) for ancestor in home.parents):
+    if not _inside_git(home):
         return
     command = [
         "git",
@@ -171,22 +175,41 @@ def _ensure_private_directory(layout: ProjectLayout, directory: Path) -> None:
 
 
 def _ensure_gitignore(layout: ProjectLayout) -> None:
+    try:
+        if not _lexists(layout.gitignore):
+            write_private_file(layout.gitignore, GITIGNORE_CONTENT.encode(), replace=False)
+    except OSError:
+        raise ProjectHomeError(
+            f"{_label(layout, layout.gitignore)} could not be written safely"
+        ) from None
+    _, problem = _gitignore_state(layout)
+    if problem is not None:
+        raise ProjectHomeError(problem)
+
+
+def _gitignore_state(layout: ProjectLayout) -> tuple[str, str | None]:
+    """Return the ``.gitignore`` status and, when it is not usable, the reason why."""
+
     path = layout.gitignore
     label = _label(layout, path)
     try:
         if not _lexists(path):
-            write_private_file(path, GITIGNORE_CONTENT.encode(), replace=False)
-        metadata = path.lstat()
-        if not stat.S_ISREG(metadata.st_mode):
-            raise ProjectHomeError(f"{label} must be a regular file, not a link or a folder")
+            return "absent", None
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return "unsafe", f"{label} must be a regular file, not a link or a folder"
         content = path.read_bytes()
     except OSError:
-        raise ProjectHomeError(f"{label} could not be written or read safely") from None
+        return "unsafe", f"{label} could not be read safely"
     if content != GITIGNORE_CONTENT.encode():
-        raise ProjectHomeError(
+        return "conflict", (
             f"{label} must contain exactly '*' so git ignores the whole folder. Connect never "
             "overwrites it; set that content yourself."
         )
+    return "ignores_all", None
+
+
+def _inside_git(home: Path) -> bool:
+    return any(_holds_git_marker(ancestor) for ancestor in home.parents)
 
 
 def _holds_git_marker(directory: Path) -> bool:
@@ -205,3 +228,94 @@ def _label(layout: ProjectLayout, path: Path) -> str:
     if path == layout.home:
         return HOME_VARIABLE
     return f"{HOME_VARIABLE}/{path.relative_to(layout.home).as_posix()}"
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectHomeInspection:
+    """Read-only state of the project home for doctor; it never holds a secret value."""
+
+    home: Path
+    layout: tuple[tuple[str, str], ...]
+    gitignore: str
+    git_guard: str
+    tracked_paths: tuple[str, ...]
+    problems: tuple[str, ...]
+
+    @property
+    def ready(self) -> bool:
+        return not self.problems
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "home": str(self.home),
+            "layout": dict(self.layout),
+            "gitignore": self.gitignore,
+            "git_guard": self.git_guard,
+            "tracked_paths": list(self.tracked_paths),
+            "ready": self.ready,
+        }
+
+
+def inspect_project_home(home: Path, *, runner: GitRunner | None = None) -> ProjectHomeInspection:
+    """Report the layout, its permissions, the ``.gitignore`` and the git guard; write nothing.
+
+    A missing folder or file is ``absent``, which is fine: connect creates it. Anything unsafe,
+    a conflicting ``.gitignore``, a tracked path, or an unconfirmed git check is a problem.
+    """
+
+    layout = ProjectLayout(home)
+    problems: list[str] = []
+    entries = [
+        (name, _entry_status(path, partial(check_private_directory, layout, path), problems))
+        for name, path in (
+            ("home", layout.home),
+            ("config", layout.config_dir),
+            ("data", layout.data_dir),
+            ("secrets", layout.secrets_dir),
+        )
+    ]
+    entries.append(
+        (
+            "connect.env",
+            _entry_status(layout.env_file, partial(_check_env_file, layout), problems),
+        )
+    )
+    gitignore, gitignore_problem = _gitignore_state(layout)
+    if gitignore_problem is not None:
+        problems.append(gitignore_problem)
+    git_guard = "clean"
+    tracked: tuple[str, ...] = ()
+    try:
+        if not _inside_git(layout.home):
+            git_guard = "not_applicable"
+        else:
+            guard_git_tracking(layout.home, runner=runner)
+    except ProjectHomeTrackedError as failure:
+        git_guard, tracked = "tracked", failure.tracked_paths
+        problems.append(str(failure))
+    except ProjectHomeError as failure:
+        git_guard = "unavailable"
+        problems.append(str(failure))
+    return ProjectHomeInspection(
+        layout.home, tuple(entries), gitignore, git_guard, tracked, tuple(problems)
+    )
+
+
+def _entry_status(path: Path, check: Callable[[], None], problems: list[str]) -> str:
+    if not _lexists(path):
+        return "absent"
+    try:
+        check()
+    except ProjectHomeError as failure:
+        problems.append(str(failure))
+        return "unsafe"
+    return "private"
+
+
+def _check_env_file(layout: ProjectLayout) -> None:
+    label = _label(layout, layout.env_file)
+    try:
+        metadata = layout.env_file.lstat()
+    except OSError:
+        raise ProjectHomeError(f"{label} could not be inspected safely") from None
+    _validate_project_env_metadata(metadata, label)

@@ -225,6 +225,9 @@ Solercia Connect reads process environment variables and, only when explicitly s
 | `SOLERCIA_CONNECT_ENV_FILE` | Explicit environment file path |
 | `SOLERCIA_CONNECT_BROWSER_FALLBACK` | Makes the Microsoft browser route locally available; it never authorizes an invocation |
 | `SOLERCIA_CONNECT_M365_PROFILE_DIR` | Explicit root for dedicated Microsoft browser profiles |
+| `SOLERCIA_CONNECT_GOOGLE_PROFILE_DIR` | Explicit root for dedicated Google browser profiles |
+| `SOLERCIA_CONNECT_JIRA_PROFILE_DIR` | Explicit root for dedicated Jira browser profiles |
+| `SOLERCIA_CONNECT_HOME` | Project mode: one absolute, private, git-ignored folder for config, browser profiles, plaintext file secrets and `connect.env`; see `docs/USO-CON-AGENTES.md` |
 | `SOLERCIA_CONNECT_API_HOST` / `PORT` | Loopback service bind; host defaults to `127.0.0.1` |
 | `SOLERCIA_CONNECT_API_KEY` | Required local key for POST connection-test/run endpoints |
 | `SOLERCIA_CONNECT_OUTPUT_DIR` | Optional default output location for callers |

@@ -155,6 +155,171 @@ fechas que te den: si no hay resultados, son cero. Escribe siempre a archivo con
 
 Verifica que el agente lo reconoce preguntándole qué skills tiene disponibles.
 
+## 7. Por proyecto
+
+Cuando un agente trabaja dentro de un repositorio y necesita Gmail o Jira sin que
+vuelvas a ingresar las credenciales en cada sesión, activa el **modo proyecto**.
+Connect guarda entonces todo su estado en una sola carpeta del proyecto: la
+configuración, los perfiles, las sesiones de navegador, los secretos y
+`connect.env`. La decisión está en
+[`decisions/2026-10-25-modo-proyecto-secretos-en-archivo.md`](decisions/2026-10-25-modo-proyecto-secretos-en-archivo.md).
+
+> **Riesgo que aceptas.** En modo proyecto los tokens quedan en texto plano en
+> `.solercia-connect/secrets`. Cualquier agente o proceso con permiso de lectura
+> sobre esa carpeta (en la práctica, cualquier programa que corra con tu
+> usuario) puede leerlos. Connect impide que entren a git, pero no los protege
+> de copias, respaldos ni carpetas sincronizadas. No uses el modo proyecto en
+> una carpeta compartida o sincronizada con la nube.
+
+### Activar
+
+```bash
+cd /ruta/a/tu-proyecto
+export SOLERCIA_CONNECT_HOME="$PWD/.solercia-connect"
+```
+
+La ruta debe ser absoluta y sin enlaces simbólicos. Sin esta variable, Connect
+sigue usando las carpetas XDG y el llavero del sistema, como siempre.
+
+| Ruta dentro de la carpeta | Contenido |
+|---|---|
+| `config/` | Perfiles de conexión, sin secretos |
+| `data/` | Sesiones de navegador: `data/m365`, `data/google` y `data/jira` |
+| `secrets/` | Tokens OAuth y API tokens, un archivo por clave |
+| `connect.env` | Tus variables de entorno para este proyecto |
+| `.gitignore` | Contiene `*`: git ignora toda la carpeta |
+
+La primera vez que conectas, Connect crea las carpetas con permisos `0700` y el
+`.gitignore`. No hace falta tocar el `.gitignore` del repositorio. Si git ya
+rastrea algún archivo dentro de la carpeta, Connect se detiene y te indica qué
+ruta sacar del índice.
+
+### Llenar `connect.env`
+
+Crea el archivo vacío con permisos `600` y ábrelo con tu editor:
+
+```bash
+mkdir -m 700 -p "$SOLERCIA_CONNECT_HOME"
+install -m 600 /dev/null "$SOLERCIA_CONNECT_HOME/connect.env"
+```
+
+Agrega solo las variables que vayas a usar, una por línea con la forma
+`NOMBRE=valor`:
+
+| Variable | Para qué |
+|---|---|
+| `SOLERCIA_CONNECT_GOOGLE_CLIENT_ID` | Cliente OAuth de escritorio de Google, para Gmail |
+| `SOLERCIA_CONNECT_GOOGLE_CLIENT_SECRET` | Solo si tu cliente de Google lo exige |
+| `PANDORA_JIRA_TOKEN` (o el nombre que elijas) | API token de Jira, que lee `--token-env` |
+| `SOLERCIA_CONNECT_ATLASSIAN_CLIENT_ID` y `SOLERCIA_CONNECT_ATLASSIAN_CLIENT_SECRET` | Solo para Jira por OAuth |
+
+- Si el archivo no tiene permisos `600`, Connect se detiene y te indica el
+  `chmod 600` que falta. Nunca muestra los valores.
+- Una variable del entorno del proceso gana sobre `SOLERCIA_CONNECT_ENV_FILE`, y
+  esta gana sobre `connect.env`.
+- `connect.env` no puede definir `SOLERCIA_CONNECT_HOME` ni
+  `SOLERCIA_CONNECT_ENV_FILE`.
+
+### Conectar una vez
+
+```bash
+solercia-connect connect gmail tu-correo@entidad.gov.co
+solercia-connect connect jira tu-correo@entidad.gov.co \
+  --site https://tu-sitio.atlassian.net --token-env PANDORA_JIRA_TOKEN
+```
+
+Gmail abre el navegador para que autorices el acceso. Para Jira, `--token-env`
+lee el API token de la variable que nombras y nunca lo muestra; no se combina
+con `--token-stdin`. Si prefieres Jira por OAuth, con la aplicación de
+Atlassian configurada en `connect.env`:
+
+```bash
+solercia-connect connect jira tu-correo@entidad.gov.co \
+  --site https://tu-sitio.atlassian.net --token-kind oauth
+```
+
+Revisa el estado con `doctor`. Su informe trae `project_mode`: la carpeta, si
+cada parte existe y es privada, el `.gitignore` y el resultado de la revisión de
+git. Nunca incluye valores secretos.
+
+```bash
+solercia-connect doctor jira tu-correo@entidad.gov.co
+```
+
+### Usar desde un agente
+
+El agente solo necesita la misma variable en su sesión. Los comandos no cambian:
+
+```bash
+export SOLERCIA_CONNECT_HOME="$PWD/.solercia-connect"
+solercia-connect run \
+  --provider jira.cloud \
+  --capability external.issues.search \
+  --start '2026-08-01T00:00:00-05:00' \
+  --end   '2026-09-01T00:00:00-05:00' \
+  --account tu-correo@entidad.gov.co \
+  --output incidencias.json
+```
+
+Para que el agente no lo olvide, agrega esto al `CLAUDE.md` del proyecto:
+
+```markdown
+## Solercia Connect en modo proyecto
+
+Antes de usar `solercia-connect`, ejecuta
+`export SOLERCIA_CONNECT_HOME="$PWD/.solercia-connect"` desde la raíz del
+repositorio. Nunca leas ni muestres el contenido de `.solercia-connect`.
+```
+
+### Usar como librería
+
+`run_application` es el punto de entrada de Python que usan la CLI y el
+servicio HTTP. Recibe la misma solicitud que `POST /v1/run` y lee el mismo
+entorno que la CLI, así que respeta el modo proyecto sin configuración extra:
+
+```python
+import os
+
+from solercia_connect.application import run_application
+
+os.environ["SOLERCIA_CONNECT_HOME"] = "/ruta/a/tu-proyecto/.solercia-connect"
+
+resultado = run_application(
+    {
+        "type": "jira",
+        "account": "tu-correo@entidad.gov.co",
+        "capability": "external.issues.search",
+        "start": "2026-08-01T00:00:00-05:00",
+        "end": "2026-09-01T00:00:00-05:00",
+    }
+)
+print(resultado.ok, resultado.status)
+```
+
+El resultado es el mismo sobre `solercia.connect/v1` de la CLI; `to_dict()` lo
+convierte en un diccionario.
+
+### Ejemplo: un repositorio como `pandora_proxy`
+
+```bash
+cd /ruta/a/pandora_proxy
+export SOLERCIA_CONNECT_HOME="$PWD/.solercia-connect"
+mkdir -m 700 -p "$SOLERCIA_CONNECT_HOME"
+install -m 600 /dev/null "$SOLERCIA_CONNECT_HOME/connect.env"
+# Con tu editor, agrega a connect.env SOLERCIA_CONNECT_GOOGLE_CLIENT_ID
+# y PANDORA_JIRA_TOKEN.
+solercia-connect connect gmail usuario@entidad.example
+solercia-connect connect jira usuario@entidad.example \
+  --site https://sitio.atlassian.net --token-env PANDORA_JIRA_TOKEN
+solercia-connect doctor jira usuario@entidad.example
+```
+
+Desde ese momento, cualquier agente que trabaje en ese repositorio con la
+variable exportada lee Gmail y Jira sin volver a pedir credenciales. Para
+dejar de usar el modo proyecto, quita la variable; si ya no vas a volver a
+usarlo, borra la carpeta `.solercia-connect` y revoca los tokens en el
+proveedor.
+
 ## Dos costumbres que ahorran problemas
 
 1. **Escribe siempre a archivo con `--output`.** Un mes de correos son cientos
@@ -167,6 +332,8 @@ Verifica que el agente lo reconoce preguntándole qué skills tiene disponibles.
 
 - **El perfil del navegador y el llavero del sistema.** Contienen tu sesión.
   Copiarlos a otra máquina es entregar el acceso a tu cuenta.
+- **La carpeta `.solercia-connect` del modo proyecto.** Guarda tus tokens en
+  texto plano.
 - **Tu archivo `.env` con valores reales.** Se comparte la plantilla, no el
   archivo lleno.
 - **La llave del servicio local** (`SOLERCIA_CONNECT_API_KEY`), si llegas a
@@ -181,6 +348,7 @@ Verifica que el agente lo reconoce preguntándole qué skills tiene disponibles.
 | `action_required` | Hay que completar la autorización en la CLI, no por el servicio HTTP |
 | Cero registros | El rango está vacío. No lo amplíes: revisa las fechas |
 | `configuration_invalid` | Falta el archivo de entorno o la variable que nombra el error |
+| `configuration_invalid` que menciona `SOLERCIA_CONNECT_HOME` | Permisos, `.gitignore` o archivos rastreados por git: sigue la indicación del error |
 
 Diagnóstico estructurado:
 

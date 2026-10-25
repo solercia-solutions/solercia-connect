@@ -22,6 +22,7 @@ from solercia_connect.config import (
 )
 from solercia_connect.domain import ProviderFamily
 from solercia_connect.errors import ConnectorFailure
+from solercia_connect.project_home import GitRunner, ProjectHomeInspection, inspect_project_home
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,9 +56,11 @@ class DoctorReport:
     service_host: str
     service_port: int
     api_key_configured: bool
+    # Present only in project mode, so the report is unchanged without SOLERCIA_CONNECT_HOME.
+    project_mode: ProjectHomeInspection | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "type": self.type.value,
             "account": self.account,
             "ready": self.ready,
@@ -72,6 +75,9 @@ class DoctorReport:
                 "api_key_configured": self.api_key_configured,
             },
         }
+        if self.project_mode is not None:
+            payload["project_mode"] = self.project_mode.to_dict()
+        return payload
 
 
 class DoctorService:
@@ -83,12 +89,15 @@ class DoctorService:
         module_available: Callable[[str], bool] | None = None,
         keyring_probe: Callable[[], tuple[bool, str]] | None = None,
         browser_probe: Callable[[], tuple[bool, str]] | None = None,
+        git_runner: GitRunner | None = None,
     ) -> None:
         self._settings = settings
         self._profiles = profiles
         self._module_available = module_available or _module_available
         self._keyring_probe = keyring_probe or _keyring_backend_probe
         self._browser_probe = browser_probe or _playwright_browser_probe
+        self._git_runner = git_runner
+        self._project_inspection: ProjectHomeInspection | None = None
 
     def inspect(
         self,
@@ -137,9 +146,29 @@ class DoctorService:
                 browser_route_detail = browser_runtime_detail
 
         official_configuration_ready = not missing
+        project = self._project_mode()
         keyring_ready = not oauth_target
         keyring_checks: list[DoctorCheck] = []
-        if oauth_target:
+        if oauth_target and project is not None:
+            # Project mode keeps secrets in files, so the folder's safety replaces the keyring.
+            keyring_ready = project.ready
+            keyring_checks.extend(
+                (
+                    DoctorCheck(
+                        "keyring_package",
+                        "not_required",
+                        "Project mode stores secrets in files under SOLERCIA_CONNECT_HOME/secrets",
+                        False,
+                    ),
+                    DoctorCheck(
+                        "keyring_backend",
+                        "not_required",
+                        "Project mode does not use the OS keyring",
+                        False,
+                    ),
+                )
+            )
+        elif oauth_target:
             if official_configuration_ready:
                 package_available = self._module_available("keyring")
                 keyring_checks.append(
@@ -214,6 +243,20 @@ class DoctorService:
             )
         ]
         checks.extend(keyring_checks)
+        if project is not None:
+            checks.append(
+                DoctorCheck(
+                    "project_mode",
+                    "ready" if project.ready else "unsafe",
+                    (
+                        "SOLERCIA_CONNECT_HOME is private and git tracks nothing inside it"
+                        if project.ready
+                        else "SOLERCIA_CONNECT_HOME is not safe for project mode"
+                    ),
+                    True,
+                    project.problems,
+                )
+            )
 
         if microsoft_target:
             checks.append(
@@ -358,7 +401,8 @@ class DoctorService:
                 if browser_target
                 else official_route_ready
             )
-            and not personal_account_blocked,
+            and not personal_account_blocked
+            and (project is None or project.ready),
             missing,
             spec.capabilities,
             spec.oauth_scopes,
@@ -367,7 +411,16 @@ class DoctorService:
             self._settings.api_host,
             self._settings.api_port,
             self._settings.api_key is not None,
+            project,
         )
+
+    def _project_mode(self) -> ProjectHomeInspection | None:
+        home = self._settings.project_home
+        if home is None:
+            return None
+        if self._project_inspection is None:
+            self._project_inspection = inspect_project_home(home, runner=self._git_runner)
+        return self._project_inspection
 
     def _browser_profile_check(
         self,
