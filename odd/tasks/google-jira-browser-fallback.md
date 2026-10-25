@@ -150,7 +150,7 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
 
 ### Fase 2 — Jira oficial con cualquier cuenta
 
-- [ ] **T2.1** Conexión de Jira por cuenta.
+- [x] **T2.1** Conexión de Jira por cuenta.
   - El sitio se guarda en `ConnectionProfile` como dato no secreto y el API token en keyring, con
     la clave `jira:<email>`.
   - `connect jira --site … --account …` pide el token sin mostrarlo.
@@ -165,6 +165,11 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
   - Rotar el refresh token y tratar el `invalid_grant` con error tipado.
 - [ ] **T2.4** Clasificar los fallos de Jira: token bloqueado por política, 401 y 403 se tratan
   según D0.1.
+  - **Bloqueada por evidencia.** Atlassian no documenta qué código devuelve un token bloqueado por
+    la organización.
+  - Mientras no se pueda distinguir de un token inválido, el 401 sigue siendo
+    `INVALID_CREDENTIALS` y falla de forma cerrada, como exige `AGENTS.md`.
+  - Se clasifica cuando T3.2 aporte la respuesta real.
 
 ### Fase 3 — Jira por navegador
 
@@ -253,7 +258,44 @@ Detalle de T4.1:
   - `mypy src`: limpio
 - **Riesgo RDD:** apagado, no aplica.
 
-El commit se registra en la tarea siguiente.
+El commit es `a982184`.
+
+Detalle de T2.1 (commit `d76cdbd`):
+
+- **Rojo:**
+  - Al cargar las pruebas: `ImportError: normalize_jira_site`.
+  - Después fallaron 23 pruebas por `secret_store` inexistente.
+  - El servicio respondía `invalid_input` donde se esperaba `configuration_error`.
+- **Verde:**
+  - Se creó `secret_store.py`, que guarda el token en keyring bajo el servicio
+    `solercia-connect.api-token` y la clave `jira:<email>`.
+  - El perfil ganó los campos opcionales `site` y `provider_account_id`. Los perfiles v1 se siguen
+    cargando y el esquema no cambió.
+  - Se agregó `connect_jira` con identidad por `/myself` y reversión si algo falla.
+  - El CLI admite `--site`, prompt oculto y `--token-stdin` (que rechaza una terminal interactiva).
+  - El servicio HTTP rechaza tokens de Jira con 422.
+  - `bootstrap` construye Jira por cuenta y nunca cae a las variables de entorno de otra cuenta.
+- **Prueba existente ajustada:**
+  `test_connect_reports_non_oauth_targets_and_missing_configuration`. Jira ahora espera
+  `configuration_invalid` y GLPI sigue sin cambio.
+- **Compuertas:**
+  - pruebas: 566 aprobadas
+  - cobertura: 83,88 %
+  - `ruff` y `mypy`: limpios (verificado por el orquestador)
+- **Tamaño:** 1.055 líneas, de las cuales unas 567 son pruebas. Supera la heurística de 400 porque
+  la tarea toca config, almacén, servicio, bootstrap, CLI y HTTP, cada uno con sus pruebas.
+- **Brechas:**
+  - Un mismo correo solo puede conectarse a un sitio. El API token de Atlassian sirve en todos los
+    sitios de la cuenta, así que se puede ampliar si hace falta.
+  - `doctor` sigue pidiendo `JIRA_*`; lo corrige T6.1.
+  - Un perfil de Jira con ruta de navegador falla de forma cerrada hasta T3.1.
+
+### Rebanadas de entrega (`feature-branch-chain`)
+
+| Rebanada | Commits | Líneas | Contenido |
+| --- | --- | --- | --- |
+| R1 | `9a186db` | 640 | ADR y documentos |
+| R2 | `a982184`, `d76cdbd` | ~1.110 | Meet y Jira por cuenta |
 
 ## Seguimiento fuera de alcance
 
@@ -264,4 +306,5 @@ El commit se registra en la tarea siguiente.
 
 ## Siguiente paso
 
-T2.1: conexión de Jira por cuenta, con el sitio en el perfil y el token en keyring.
+Siguen T2.2 (tokens con alcance) y T4.2 (clasificar `admin_policy_enforced`, `org_internal` y los
+403 de política de Google). Después va T2.3 (Atlassian OAuth 3LO).
