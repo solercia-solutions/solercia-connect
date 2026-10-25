@@ -73,10 +73,6 @@ GOOGLE_POLICY_BLOCK_REMEDIATION = (
 )
 
 
-# The operations that write local profiles, tokens or browser sessions on success.
-_CONNECT_OPERATIONS = frozenset({"connect", "connections.connect"})
-
-
 class OAuthProvider(Protocol):
     def authorization_header(self) -> str: ...
 
@@ -1140,9 +1136,10 @@ class ConnectionService:
                 ),
             )
         home = self._settings.project_home
-        if home is not None and operation in _CONNECT_OPERATIONS:
-            # Every connect entry point validates its identity first, so project mode prepares
-            # its folder and checks git here, before any profile, token or session is written.
+        if home is not None:
+            # Every entry point validates its identity first, so project mode prepares its folder
+            # and checks git here: status and test can refresh tokens or reopen a browser session,
+            # which writes under the home just like connect does.
             try:
                 prepare_project_home(home, runner=self._git_runner)
             except ProjectHomeError as failure:

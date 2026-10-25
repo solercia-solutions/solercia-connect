@@ -32,6 +32,7 @@ from solercia_connect.domain import Capability, ReasonCode
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.oauth import OAuthTokenStore
 from solercia_connect.ports import HTTPTransport
+from solercia_connect.project_home import prepare_project_home
 from solercia_connect.project_secrets import (
     api_token_store_from_settings,
     oauth_token_store_from_settings,
@@ -66,6 +67,10 @@ def registry_from_environment(
 ) -> ProviderRegistry:
     values = effective_environment(environ=environ)
     settings = settings_override or load_settings(environ=values)
+    if settings.project_home is not None:
+        # Every run builds its registry here, before a token refresh or a browser session can
+        # write under the project home, so project mode prepares and git-checks it first.
+        prepare_project_home(settings.project_home)
     registry = ProviderRegistry()
     transport = transport or HttpxTransport()
     parsed_type = ConnectionType.parse(connection_type) if connection_type is not None else None

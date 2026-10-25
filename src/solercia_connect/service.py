@@ -19,6 +19,7 @@ from solercia_connect.config import (
     ConnectionType,
     ConnectSettings,
     ProfileStore,
+    ProjectHomeError,
     http_interactive_allowed,
     load_settings,
     normalize_account,
@@ -34,6 +35,7 @@ from solercia_connect.envelope import ErrorDetail, ResultEnvelope
 from solercia_connect.interactive_sessions import InteractiveSessionRegistry
 from solercia_connect.matrix import CAPABILITY_MATRIX
 from solercia_connect.oauth import OAuthTokenStore
+from solercia_connect.project_home import prepare_project_home
 from solercia_connect.project_secrets import oauth_token_store_from_settings
 from solercia_connect.serialization import to_json, to_primitive
 
@@ -208,6 +210,13 @@ def create_app(
         except ValueError as failure:
             startup_error = failure
             settings = load_settings(environ={})
+    if startup_error is None and settings.project_home is not None:
+        # The service can refresh tokens and open browser sessions, so project mode prepares and
+        # git-checks its home before serving anything; a tracked path keeps every route closed.
+        try:
+            prepare_project_home(settings.project_home)
+        except ProjectHomeError as failure:
+            startup_error = failure
     profiles = ProfileStore.from_settings(settings)
     tokens = token_store or oauth_token_store_from_settings(settings)
     connections = connection_service or ConnectionService(
