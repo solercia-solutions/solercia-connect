@@ -247,6 +247,28 @@ para que no haya que ponerle las claves a cada rato […] y que esos archivos de
   - Toca otro repositorio, así que requiere autorización explícita antes de hacerlo.
   - El inicio de sesión lo hace Camilo.
 
+Pedido de Camilo, 2026-10-25: «es mejor compartirlo con todo como un skill general […] quisiera
+que eso ya viniera como un skill y todo se hiciera transparente». Decisión D3.1, «Skill +
+descubrimiento»: el lanzador por proyecto se reemplaza por el CLI global y el skill global.
+
+- [ ] **T7.6** Descubrimiento de la carpeta del proyecto y comando `project init`.
+  - Si `SOLERCIA_CONNECT_HOME` no está definida y `SOLERCIA_CONNECT_PROJECT_DISCOVERY=1`, el CLI
+    busca la raíz de git desde el directorio actual.
+  - Si existe `<raíz>/.solercia-connect/`, entra en modo proyecto. Si no, usa el modo global.
+  - El descubrimiento lo resuelve código determinista, nunca el modelo, y aplica las mismas
+    protecciones del modo proyecto.
+  - `solercia-connect project init` crea la carpeta, las protecciones y la plantilla de
+    `connect.env`.
+  - Hay que actualizar la ADR del modo proyecto y la promesa del README sobre `.env` en el
+    directorio actual.
+- [ ] **T7.7** Skill global.
+  - `agents/skills/solercia-connect/SKILL.md` siempre invoca `solercia-connect`, sin rutas.
+  - El modo proyecto es transparente.
+  - Ante `action_required`, el agente se detiene y pide el `connect`.
+  - El agente nunca lee `connect.env`, `secrets/` ni `data/`.
+- [ ] **T7.8** Retirar el lanzador de `pandora_proxy`. Esta tarea depende de que la herramienta
+  global tenga este código; esa decisión de entrega la toma Camilo.
+
 ### Fase 6 — Cierre
 
 - [ ] **T6.1** Documentación:
