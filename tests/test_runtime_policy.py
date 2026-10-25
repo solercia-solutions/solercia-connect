@@ -17,6 +17,7 @@ from solercia_connect.domain import (
     ReasonCode,
     RouteKind,
     StepOutcome,
+    TicketQuery,
 )
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.providers.m365_browser import Microsoft365BrowserAdapter
@@ -396,31 +397,46 @@ def test_missing_official_capability_is_recorded_before_disabled_fallback() -> N
     ]
 
 
-def test_browser_fallback_is_denied_for_non_microsoft_family() -> None:
+@pytest.mark.parametrize(
+    ("family", "official_id", "browser_id", "capability"),
+    [
+        # A family on no browser allowlist, with a capability on no family's list.
+        (ProviderFamily.GLPI, "glpi.rest", "glpi.browser", Capability.TICKETS_SEARCH),
+        # An allowlisted family asking for a capability outside its own list.
+        (ProviderFamily.GOOGLE, "google.gmail", "google.browser", Capability.MAIL_INBOX_LIST),
+    ],
+)
+def test_browser_fallback_is_denied_outside_the_family_allowlist(
+    family: ProviderFamily,
+    official_id: str,
+    browser_id: str,
+    capability: Capability,
+) -> None:
     official = FakeAdapter(
-        "google.gmail",
-        ProviderFamily.GOOGLE,
+        official_id,
+        family,
         RouteKind.OFFICIAL,
         frozenset(),
     )
     browser = FakeAdapter(
-        "google.browser",
-        ProviderFamily.GOOGLE,
+        browser_id,
+        family,
         RouteKind.BROWSER,
-        frozenset({Capability.MAIL_SENT_LIST}),
-        (mail_record("google.browser", ProviderFamily.GOOGLE, RouteKind.BROWSER),),
+        frozenset({capability}),
     )
     registry = ProviderRegistry()
     registry.register(official)
     registry.register(browser)
-    google_request = ConnectorRequest.create(
-        "google.gmail",
-        Capability.MAIL_SENT_LIST,
-        request().payload,
+    denied_request = ConnectorRequest.create(
+        official_id,
+        capability,
+        TicketQuery(request().payload.window)
+        if capability is Capability.TICKETS_SEARCH
+        else request().payload,
     )
 
     outcome = ConnectorRuntime(registry, clock=lambda: NOW).execute(
-        google_request,
+        denied_request,
         browser_fallback_enabled=True,
     )
 

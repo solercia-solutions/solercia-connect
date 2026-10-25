@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from solercia_connect.auth import BasicAuthProvider
 from solercia_connect.browser_profile import microsoft_browser_profile_path
+from solercia_connect.browser_routes import has_browser_route, target_family
 from solercia_connect.config import (
     MICROSOFT_TARGETS,
     ConnectionProfile,
@@ -24,7 +25,7 @@ from solercia_connect.config import (
     normalize_jira_token_binding,
     target_spec,
 )
-from solercia_connect.domain import ReasonCode, utc_now
+from solercia_connect.domain import ProviderFamily, ReasonCode, utc_now
 from solercia_connect.envelope import ErrorDetail, ResultEnvelope
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.oauth import (
@@ -35,7 +36,7 @@ from solercia_connect.oauth import (
     OAuthTokenStore,
 )
 from solercia_connect.oauth_session import LoopbackCallbackServer, build_pkce_pair
-from solercia_connect.ports import HTTPTransport
+from solercia_connect.ports import BrowserProviderAdapter, HTTPTransport
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
 from solercia_connect.providers.jira import (
@@ -51,13 +52,11 @@ from solercia_connect.providers.m365_browser import (
     browser_extraction_report,
 )
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
+from solercia_connect.runtime import CONNECT_FALLBACK_REASONS
 from solercia_connect.secret_store import KeyringSecretStore, SecretStore
 from solercia_connect.secrets import SecretValue
 from solercia_connect.transport import HttpxTransport
 
-_MICROSOFT_FALLBACK_REASONS = frozenset(
-    {ReasonCode.ADMIN_CONSENT_REQUIRED, ReasonCode.OFFICIAL_CAPABILITY_UNAVAILABLE}
-)
 _GOOGLE_TARGETS = frozenset(
     {ConnectionType.GMAIL, ConnectionType.GOOGLE_CALENDAR, ConnectionType.GOOGLE_MEET}
 )
@@ -222,9 +221,9 @@ class ConnectionService:
             )
         except ConnectorFailure as failure:
             if (
-                parsed in MICROSOFT_TARGETS
+                has_browser_route(parsed)
                 and self._browser_route_authorized(allow_browser_fallback)
-                and failure.reason in _MICROSOFT_FALLBACK_REASONS
+                and failure.reason in CONNECT_FALLBACK_REASONS
             ):
                 return self._browser_fallback(parsed, normalized)
             return self._connector_failure("connect", parsed, normalized, failure)
@@ -614,7 +613,7 @@ class ConnectionService:
         if invalid is not None:
             return invalid
         assert parsed is not None and normalized is not None
-        if parsed not in MICROSOFT_TARGETS:
+        if not has_browser_route(parsed):
             return self._failure(
                 "connections.connect",
                 parsed,
@@ -1000,7 +999,12 @@ class ConnectionService:
         self,
         parsed: ConnectionType,
         account: str,
-    ) -> Microsoft365BrowserAdapter:
+    ) -> BrowserProviderAdapter:
+        if target_family(parsed) is not ProviderFamily.MICROSOFT:
+            raise ConnectorFailure(
+                ReasonCode.BROWSER_CAPABILITY_NOT_IMPLEMENTED,
+                f"No browser adapter exists for {parsed.value}",
+            )
         return Microsoft365BrowserAdapter(
             PlaywrightBrowserDriver(),
             connection_type=parsed,

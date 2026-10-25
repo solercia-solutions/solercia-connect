@@ -13,8 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from solercia_connect import __version__
 from solercia_connect.application import http_write_rejection, run_application
 from solercia_connect.bootstrap import registry_from_environment
+from solercia_connect.browser_routes import has_browser_route
 from solercia_connect.config import (
-    MICROSOFT_TARGETS,
     TARGET_SPECS,
     ConnectionType,
     ConnectSettings,
@@ -95,7 +95,7 @@ class ConnectionConnectRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_browser_target(self) -> ConnectionConnectRequest:
-        if self.allow_browser_fallback and self.type not in MICROSOFT_TARGETS:
+        if self.allow_browser_fallback and not has_browser_route(self.type):
             raise ValueError("browser fallback is available only for Microsoft targets")
         return self
 
@@ -160,11 +160,7 @@ class RunRequest(BaseModel):
             and self.account is None
         ):
             raise ValueError("account is required for OAuth provider runs")
-        if self.allow_browser_fallback and self.type not in {
-            ConnectionType.OUTLOOK,
-            ConnectionType.TEAMS,
-            ConnectionType.ONEDRIVE,
-        }:
+        if self.allow_browser_fallback and not has_browser_route(self.type):
             raise ValueError("browser fallback is available only for Microsoft targets")
         return self
 

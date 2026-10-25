@@ -105,19 +105,34 @@ Official references: [Teams transcript listing](https://learn.microsoft.com/en-u
 ## Routing and browser status
 
 Official failures are typed before routing. Only `admin_consent_required`,
-`official_capability_unavailable`, and `configuration_invalid`
-(`RoutePolicy.browser_fallback_reasons` in `runtime.py`) can enter browser fallback, only for an
-allowlisted capability and provider family, and only after the current CLI invocation explicitly
-supplies `--allow-browser-fallback`. Configuration can make the route available but cannot
-authorize a call; every browser attempt requires --allow-browser-fallback. Invalid credentials,
-identity mismatch, tenant transcript policy, malformed data, and unknown errors never fall back.
+`official_capability_unavailable`, and `configuration_invalid` can enter browser fallback, only
+for a capability on the requesting family's own allowlist, and only after the current CLI
+invocation explicitly supplies `--allow-browser-fallback`. Configuration can make the route
+available but cannot authorize a call; every browser attempt requires --allow-browser-fallback.
+Invalid credentials, identity mismatch, tenant transcript policy, malformed data, and unknown
+errors never fall back.
+
+The reasons have one source in `runtime.py`: `RUNTIME_FALLBACK_REASONS`, shared by every family,
+and `CONNECT_FALLBACK_REASONS`, the same set without `configuration_invalid`, which `connect`
+uses because a missing client ID is detected before OAuth starts and offered the browser route
+on its own.
 
 `docs/decisions/2026-10-25-fallback-navegador-google-jira.md` extends the fallback families from
-Microsoft to Google and Jira, with one browser package and one profile root per family. Its D0.1
-adds Google `admin_policy_enforced` and a Jira API token blocked by organization policy as
-organizational permission not available, eligible like `admin_consent_required`. Until later tasks
-implement them, `RoutePolicy.browser_fallback_families` still holds only Microsoft and those
-Google/Jira failures do not enter the fallback.
+Microsoft to Google and Jira, with one browser package and one profile root per family.
+`RoutePolicy.browser_fallback_families` holds the three families, and
+`BROWSER_FALLBACK_CAPABILITIES` in `runtime.py` lists what each one may serve:
+
+| Family | Browser capabilities |
+| --- | --- |
+| Microsoft | `mail.sent.list`, `mail.inbox.list`, `mail.categories.set`, `calendar.events.list`, `meeting.transcripts.list`, `meeting.transcript.get`, `files.search`, `files.get` |
+| Google | `mail.sent.list`, `calendar.events.list`, `meeting.transcripts.list`, `meeting.transcript.get` |
+| Jira | `external.issues.search` |
+
+A family's route exists only once its browser adapter does (`browser_routes.py`). Today that is
+Microsoft alone, so a Google or Jira run that is allowed by policy ends in
+`browser_capability_not_implemented`. The decision's D0.1 adds Google `admin_policy_enforced` and
+a Jira API token blocked by organization policy as organizational permission not available,
+eligible like `admin_consent_required`.
 
 The only write, `mail.categories.set`, adds a second per-invocation gate: the runtime refuses it
 with `write_not_authorized` before any adapter runs unless the request carries the CLI's

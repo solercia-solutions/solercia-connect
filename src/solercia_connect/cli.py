@@ -16,6 +16,7 @@ from solercia_connect.bootstrap import (
     browser_adapter_from_environment,
     registry_from_environment,
 )
+from solercia_connect.browser_routes import BROWSER_PROVIDER_IDS
 from solercia_connect.config import (
     TARGET_SPECS,
     ConnectionType,
@@ -136,7 +137,7 @@ def health(
 ) -> None:
     """Validate one configured adapter without printing credentials."""
 
-    if provider == "microsoft365.browser" and not allow_browser_fallback:
+    if provider in BROWSER_PROVIDER_IDS and not allow_browser_fallback:
         _finish(
             ResultEnvelope.failure(
                 operation="health",
@@ -148,9 +149,7 @@ def health(
                     "action_required",
                     "Browser health inspection requires explicit authorization",
                     True,
-                    remediation=(
-                        "solercia-connect health microsoft365.browser --allow-browser-fallback",
-                    ),
+                    remediation=(f"solercia-connect health {provider} --allow-browser-fallback",),
                     cause_category="interactive_authorization",
                 ),
             ),

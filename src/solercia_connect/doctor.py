@@ -8,9 +8,10 @@ from typing import Any
 
 from solercia_connect.browser_profile import (
     audit_browser_profile_path,
-    microsoft_browser_profile_path,
-    microsoft_browser_profile_root,
+    browser_profile_path,
+    browser_profile_root,
 )
+from solercia_connect.browser_routes import has_browser_route, target_family
 from solercia_connect.config import (
     MICROSOFT_TARGETS,
     ConnectionType,
@@ -19,6 +20,7 @@ from solercia_connect.config import (
     normalize_account,
     target_spec,
 )
+from solercia_connect.domain import ProviderFamily
 from solercia_connect.errors import ConnectorFailure
 
 
@@ -100,6 +102,7 @@ class DoctorService:
             name for name in spec.required_configuration if name not in configured_names
         )
         microsoft_target = spec.type in MICROSOFT_TARGETS
+        browser_target = has_browser_route(spec.type)
         oauth_target = spec.type in {
             ConnectionType.OUTLOOK,
             ConnectionType.TEAMS,
@@ -113,9 +116,10 @@ class DoctorService:
         browser_route_status = "not_applicable"
         browser_route_detail = "Microsoft browser fallback does not apply to this target"
         browser_route_ready = False
-        if microsoft_target:
+        if browser_target:
             browser_profile_status, browser_profile_detail = self._browser_profile_check(
-                normalized_account
+                target_family(spec.type),
+                normalized_account,
             )
             if not self._settings.browser_fallback_enabled:
                 browser_route_status = "disabled"
@@ -189,7 +193,7 @@ class DoctorService:
                 )
 
         official_route_ready = official_configuration_ready and keyring_ready
-        configuration_required = not (microsoft_target and browser_route_ready)
+        configuration_required = not (browser_target and browser_route_ready)
         checks: list[DoctorCheck] = [
             DoctorCheck(
                 "configuration",
@@ -198,13 +202,13 @@ class DoctorService:
                     "Required non-secret configuration names are present"
                     if not missing
                     else "Configuration is missing only for the official provider route"
-                    if microsoft_target
+                    if browser_target
                     else "Required configuration names are missing"
                 ),
                 configuration_required,
                 (
                     ()
-                    if microsoft_target and browser_route_ready
+                    if browser_target and browser_route_ready
                     else tuple(f"Set {name}." for name in missing)
                 ),
             )
@@ -238,6 +242,7 @@ class DoctorService:
                     not browser_route_ready,
                 )
             )
+        if browser_target:
             profile_remediation = (
                 ()
                 if browser_profile_status == "ready"
@@ -350,7 +355,7 @@ class DoctorService:
             normalized_account,
             (
                 (official_route_ready or browser_route_ready)
-                if microsoft_target
+                if browser_target
                 else official_route_ready
             )
             and not personal_account_blocked,
@@ -364,10 +369,14 @@ class DoctorService:
             self._settings.api_key is not None,
         )
 
-    def _browser_profile_check(self, account: str | None) -> tuple[str, str]:
-        root = microsoft_browser_profile_root(self._settings)
+    def _browser_profile_check(
+        self,
+        family: ProviderFamily,
+        account: str | None,
+    ) -> tuple[str, str]:
+        root = browser_profile_root(self._settings, family)
         profile = (
-            microsoft_browser_profile_path(self._settings, account)
+            browser_profile_path(self._settings, family, account)
             if account is not None
             else root / "legacy"
         )

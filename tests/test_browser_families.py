@@ -20,7 +20,10 @@ from solercia_connect.domain import (
     Capability,
     ConnectorRequest,
     DateWindow,
+    ExternalIssue,
+    IssueQuery,
     MailQuery,
+    Provenance,
     ProviderFamily,
     ReasonCode,
     RouteKind,
@@ -330,3 +333,278 @@ def test_a_target_whose_family_has_no_browser_adapter_never_borrows_another_fami
 
     assert outcome.ok is False
     assert outcome.receipt.final_reason is ReasonCode.BROWSER_CAPABILITY_NOT_IMPLEMENTED
+
+
+# --- Route policy: Google and Jira families ------------------------------------------------
+
+
+def _window() -> DateWindow:
+    return DateWindow(datetime(2026, 8, 1, tzinfo=UTC), datetime(2026, 9, 1, tzinfo=UTC))
+
+
+def _issue(provider_id: str, route: RouteKind) -> ExternalIssue:
+    return ExternalIssue(
+        "10001",
+        "OPS-1",
+        "Status",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Provenance(provider_id, ProviderFamily.JIRA, route, "10001", NOW),
+    )
+
+
+def _family_case(family: ProviderFamily) -> tuple[str, str, ConnectorRequest, FakeAdapter]:
+    """Official provider ID, browser provider ID, request, and a browser adapter for it."""
+    if family is ProviderFamily.JIRA:
+        browser = FakeAdapter(
+            "jira.browser",
+            family,
+            RouteKind.BROWSER,
+            frozenset({Capability.EXTERNAL_ISSUES_SEARCH}),
+            (_issue("jira.browser", RouteKind.BROWSER),),
+        )
+        request = ConnectorRequest.create(
+            "jira.cloud", Capability.EXTERNAL_ISSUES_SEARCH, IssueQuery(_window())
+        )
+        return "jira.cloud", "jira.browser", request, browser
+    return (
+        "google.gmail",
+        "google.browser",
+        _request("google.gmail"),
+        _browser("google.browser", family),
+    )
+
+
+def _official_failing(provider_id: str, family: ProviderFamily, reason: ReasonCode) -> FakeAdapter:
+    capability = (
+        Capability.EXTERNAL_ISSUES_SEARCH
+        if family is ProviderFamily.JIRA
+        else Capability.MAIL_SENT_LIST
+    )
+    return FakeAdapter(
+        provider_id,
+        family,
+        RouteKind.OFFICIAL,
+        frozenset({capability}),
+        ConnectorFailure(reason, "official route unavailable"),
+    )
+
+
+@pytest.mark.parametrize("family", [ProviderFamily.GOOGLE, ProviderFamily.JIRA])
+@pytest.mark.parametrize(
+    "reason",
+    [ReasonCode.ADMIN_CONSENT_REQUIRED, ReasonCode.OFFICIAL_CAPABILITY_UNAVAILABLE],
+)
+def test_google_and_jira_reach_their_browser_adapter_under_the_default_policy(
+    family: ProviderFamily,
+    reason: ReasonCode,
+) -> None:
+    official_id, browser_id, request, browser = _family_case(family)
+    registry = ProviderRegistry()
+    registry.register(_official_failing(official_id, family, reason))
+    registry.register(browser)
+
+    outcome = ConnectorRuntime(registry, clock=lambda: NOW).execute(
+        request, browser_fallback_enabled=True
+    )
+
+    assert outcome.ok is True
+    assert outcome.receipt.selected_route is RouteKind.BROWSER
+    assert outcome.receipt.steps[-1].provider_id == browser_id
+    assert browser.calls == 1
+
+
+@pytest.mark.parametrize("family", [ProviderFamily.GOOGLE, ProviderFamily.JIRA])
+def test_an_unconfigured_google_or_jira_official_route_may_enter_its_browser_route(
+    family: ProviderFamily,
+) -> None:
+    _, browser_id, request, browser = _family_case(family)
+    registry = ProviderRegistry()
+    registry.register(browser)
+
+    outcome = ConnectorRuntime(registry, clock=lambda: NOW).execute(
+        request, browser_fallback_enabled=True
+    )
+
+    assert outcome.ok is True
+    assert outcome.receipt.steps[0].reason is ReasonCode.CONFIGURATION_INVALID
+    assert outcome.receipt.steps[-1].provider_id == browser_id
+
+
+@pytest.mark.parametrize("family", [ProviderFamily.GOOGLE, ProviderFamily.JIRA])
+def test_google_and_jira_browser_routes_still_need_the_per_invocation_flag(
+    family: ProviderFamily,
+) -> None:
+    official_id, _, request, browser = _family_case(family)
+    registry = ProviderRegistry()
+    registry.register(_official_failing(official_id, family, ReasonCode.ADMIN_CONSENT_REQUIRED))
+    registry.register(browser)
+
+    outcome = ConnectorRuntime(registry, clock=lambda: NOW).execute(request)
+
+    assert outcome.ok is False
+    assert outcome.receipt.final_reason is ReasonCode.ADMIN_CONSENT_REQUIRED
+    assert outcome.receipt.steps[-1].reason is ReasonCode.BROWSER_FALLBACK_DISABLED
+    assert browser.calls == 0
+
+
+@pytest.mark.parametrize("family", [ProviderFamily.GOOGLE, ProviderFamily.JIRA])
+@pytest.mark.parametrize(
+    "reason",
+    [
+        ReasonCode.INVALID_CREDENTIALS,
+        ReasonCode.AUTHORIZATION_DENIED,
+        ReasonCode.TENANT_POLICY_BLOCKED,
+        ReasonCode.MALFORMED_PROVIDER_DATA,
+        ReasonCode.UNKNOWN_ERROR,
+    ],
+)
+def test_google_and_jira_never_fall_back_on_a_reason_outside_the_allowlist(
+    family: ProviderFamily,
+    reason: ReasonCode,
+) -> None:
+    official_id, _, request, browser = _family_case(family)
+    registry = ProviderRegistry()
+    registry.register(_official_failing(official_id, family, reason))
+    registry.register(browser)
+
+    outcome = ConnectorRuntime(registry, clock=lambda: NOW).execute(
+        request, browser_fallback_enabled=True
+    )
+
+    assert outcome.ok is False
+    assert outcome.receipt.final_reason is reason
+    assert outcome.receipt.steps[-1].reason is ReasonCode.BROWSER_FALLBACK_DENIED
+    assert browser.calls == 0
+
+
+@pytest.mark.parametrize("family", [ProviderFamily.GOOGLE, ProviderFamily.JIRA])
+@pytest.mark.parametrize("registered_official", [True, False])
+def test_without_a_google_or_jira_browser_adapter_the_outcome_is_not_implemented(
+    family: ProviderFamily,
+    registered_official: bool,
+) -> None:
+    official_id, _, request, _ = _family_case(family)
+    registry = ProviderRegistry()
+    if registered_official:
+        registry.register(_official_failing(official_id, family, ReasonCode.ADMIN_CONSENT_REQUIRED))
+
+    outcome = ConnectorRuntime(registry, clock=lambda: NOW).execute(
+        request, browser_fallback_enabled=True
+    )
+
+    assert outcome.ok is False
+    assert outcome.receipt.final_reason is ReasonCode.BROWSER_CAPABILITY_NOT_IMPLEMENTED
+    assert outcome.receipt.steps[-1].detail == (
+        "No browser adapter is configured for the provider family"
+    )
+
+
+# --- Per-family capability allowlist (ADR 2026-10-25, D0) ----------------------------------
+
+_MICROSOFT_BROWSER_CAPABILITIES = frozenset(
+    {
+        Capability.MAIL_SENT_LIST,
+        Capability.MAIL_INBOX_LIST,
+        Capability.MAIL_CATEGORIES_SET,
+        Capability.CALENDAR_EVENTS_LIST,
+        Capability.MEETING_TRANSCRIPTS_LIST,
+        Capability.MEETING_TRANSCRIPT_GET,
+        Capability.FILES_SEARCH,
+        Capability.FILES_GET,
+    }
+)
+
+
+def _allows(family: ProviderFamily, capability: Capability) -> bool:
+    request = ConnectorRequest.create("any.provider", capability, MailQuery(_window()))
+    failure = ConnectorFailure(ReasonCode.ADMIN_CONSENT_REQUIRED, "official route unavailable")
+    return RoutePolicy().allows_browser(request, failure, family)
+
+
+def test_each_family_lists_exactly_the_capabilities_its_decision_names() -> None:
+    assert RoutePolicy().browser_fallback_capabilities_by_family == {
+        ProviderFamily.MICROSOFT: _MICROSOFT_BROWSER_CAPABILITIES,
+        ProviderFamily.GOOGLE: {
+            Capability.MAIL_SENT_LIST,
+            Capability.CALENDAR_EVENTS_LIST,
+            Capability.MEETING_TRANSCRIPTS_LIST,
+            Capability.MEETING_TRANSCRIPT_GET,
+        },
+        ProviderFamily.JIRA: {Capability.EXTERNAL_ISSUES_SEARCH},
+    }
+
+
+@pytest.mark.parametrize(
+    ("family", "capability", "allowed"),
+    [
+        (ProviderFamily.JIRA, Capability.MAIL_CATEGORIES_SET, False),
+        (ProviderFamily.JIRA, Capability.MAIL_SENT_LIST, False),
+        (ProviderFamily.GOOGLE, Capability.MAIL_INBOX_LIST, False),
+        (ProviderFamily.GOOGLE, Capability.MAIL_CATEGORIES_SET, False),
+        (ProviderFamily.GOOGLE, Capability.FILES_GET, False),
+        (ProviderFamily.GOOGLE, Capability.EXTERNAL_ISSUES_SEARCH, False),
+        (ProviderFamily.GLPI, Capability.TICKETS_SEARCH, False),
+        (ProviderFamily.GOOGLE, Capability.MAIL_SENT_LIST, True),
+        (ProviderFamily.GOOGLE, Capability.CALENDAR_EVENTS_LIST, True),
+        (ProviderFamily.GOOGLE, Capability.MEETING_TRANSCRIPTS_LIST, True),
+        (ProviderFamily.GOOGLE, Capability.MEETING_TRANSCRIPT_GET, True),
+        (ProviderFamily.JIRA, Capability.EXTERNAL_ISSUES_SEARCH, True),
+    ],
+)
+def test_a_family_falls_back_only_for_a_capability_on_its_own_list(
+    family: ProviderFamily,
+    capability: Capability,
+    allowed: bool,
+) -> None:
+    assert _allows(family, capability) is allowed
+
+
+@pytest.mark.parametrize("capability", list(Capability))
+def test_microsoft_browser_policy_is_exactly_what_it_was(capability: Capability) -> None:
+    assert _allows(ProviderFamily.MICROSOFT, capability) is (
+        capability in _MICROSOFT_BROWSER_CAPABILITIES
+    )
+
+
+def test_the_shared_reason_set_applies_to_every_family() -> None:
+    policy = RoutePolicy()
+    request = ConnectorRequest.create(
+        "jira.cloud", Capability.EXTERNAL_ISSUES_SEARCH, IssueQuery(_window())
+    )
+
+    for reason in ReasonCode:
+        failure = ConnectorFailure(reason, "official route unavailable")
+        assert policy.allows_browser(request, failure, ProviderFamily.JIRA) is (
+            reason in policy.browser_fallback_reasons
+        )
+
+
+def test_a_google_capability_outside_its_list_is_denied_even_with_a_google_adapter() -> None:
+    browser = FakeAdapter(
+        "google.browser",
+        ProviderFamily.GOOGLE,
+        RouteKind.BROWSER,
+        frozenset({Capability.MAIL_INBOX_LIST}),
+        (mail_record("google.browser", ProviderFamily.GOOGLE, RouteKind.BROWSER),),
+    )
+    registry = ProviderRegistry()
+    registry.register(browser)
+    inbox = ConnectorRequest.create(
+        "google.gmail", Capability.MAIL_INBOX_LIST, MailQuery(_window())
+    )
+
+    outcome = ConnectorRuntime(registry, clock=lambda: NOW).execute(
+        inbox, browser_fallback_enabled=True
+    )
+
+    assert outcome.receipt.steps[-1].reason is ReasonCode.BROWSER_FALLBACK_DENIED
+    assert browser.calls == 0

@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from solercia_connect.bootstrap import registry_from_environment
+from solercia_connect.browser_routes import has_browser_route
 from solercia_connect.config import (
     ConnectionType,
     ConnectSettings,
@@ -77,7 +78,11 @@ def run_application(
         fallback = payload.get("allow_browser_fallback", False)
         if not isinstance(fallback, bool):
             raise ValueError("allow_browser_fallback must be a boolean")
-        if fallback and type_value is ConnectionType.GOOGLE_MEET:
+        if (
+            fallback
+            and type_value is ConnectionType.GOOGLE_MEET
+            and not has_browser_route(type_value)
+        ):
             raise ValueError("Browser fallback is not available for Google Meet")
         if not interactive and type_value in _OAUTH_TYPES and account is None:
             raise ValueError("account is required for OAuth provider runs")

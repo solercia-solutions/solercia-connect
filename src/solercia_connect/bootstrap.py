@@ -12,6 +12,7 @@ from solercia_connect.browser_profile import (
     microsoft_browser_profile_path,
     microsoft_browser_profile_root,
 )
+from solercia_connect.browser_routes import has_browser_route
 from solercia_connect.config import (
     MICROSOFT_TARGETS,
     ConnectionType,
@@ -218,7 +219,9 @@ def registry_from_environment(
     ) or parsed_type
     browser_profile = (
         profiles.get(browser_type, normalized_account)
-        if browser_type in MICROSOFT_TARGETS and normalized_account is not None
+        if browser_type is not None
+        and has_browser_route(browser_type)
+        and normalized_account is not None
         else None
     )
     if (
