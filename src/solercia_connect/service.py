@@ -28,6 +28,7 @@ from solercia_connect.config import (
 )
 from solercia_connect.connections import (
     ConnectionService,
+    bitbucket_connect_requires_cli,
     connect_command,
     jira_connect_requires_cli,
 )
@@ -429,6 +430,11 @@ def create_app(
         if body.type is ConnectionType.JIRA:
             # A Jira API token is read only by the CLI hidden prompt; it never travels over HTTP.
             return _response(jira_connect_requires_cli("connections.connect", body.account), 422)
+        if body.type is ConnectionType.BITBUCKET:
+            # The Bitbucket API token, like Jira's, is read only by the CLI.
+            return _response(
+                bitbucket_connect_requires_cli("connections.connect", body.account), 422
+            )
         if not body.allow_browser_fallback:
             envelope = ResultEnvelope.failure(
                 operation="connections.connect",

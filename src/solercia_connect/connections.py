@@ -23,6 +23,7 @@ from solercia_connect.config import (
     ProjectHomeError,
     missing_atlassian_configuration,
     normalize_account,
+    normalize_bitbucket_workspace,
     normalize_jira_site,
     normalize_jira_token_binding,
     target_spec,
@@ -42,6 +43,11 @@ from solercia_connect.oauth_session import LoopbackCallbackServer, build_pkce_pa
 from solercia_connect.ports import BrowserProviderAdapter, HTTPTransport
 from solercia_connect.project_home import GitRunner, prepare_project_home
 from solercia_connect.project_secrets import api_token_store_from_settings
+from solercia_connect.providers.bitbucket import (
+    BITBUCKET_TOKEN_GUIDANCE,
+    BitbucketAdapter,
+    BitbucketIdentity,
+)
 from solercia_connect.providers.gmail_compose import GmailComposeAdapter
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
@@ -141,6 +147,8 @@ class ConnectionService:
         spec = target_spec(parsed)
         if parsed is ConnectionType.JIRA:
             return jira_connect_requires_cli("connect", normalized)
+        if parsed is ConnectionType.BITBUCKET:
+            return bitbucket_connect_requires_cli("connect", normalized)
         if parsed is ConnectionType.GLPI:
             return self._failure(
                 "connect",
@@ -330,6 +338,77 @@ class ConnectionService:
                 "unknown",
             )
 
+    def connect_bitbucket(
+        self,
+        account: str,
+        *,
+        workspace: str,
+        token: SecretValue,
+    ) -> ResultEnvelope:
+        """Connect one Bitbucket Cloud account with an API token read by the canonical CLI.
+
+        The three-step identity proof of decision B-D2 runs before anything is stored. The token
+        then goes to the secret store under ``bitbucket:<email>`` and the profile keeps only the
+        workspace and the observed account ID; a profile that cannot be written takes the token
+        back out.
+        """
+
+        parsed = ConnectionType.BITBUCKET
+        _, normalized, invalid = self._validated_identity(parsed, account, "connect")
+        if invalid is not None:
+            return invalid
+        assert normalized is not None
+        try:
+            slug = normalize_bitbucket_workspace(workspace)
+        except ValueError as failure:
+            return _bitbucket_invalid_input(normalized, failure)
+        spec = target_spec(parsed)
+        key = _token_key(parsed, normalized)
+        try:
+            identity = self._bitbucket_identity(normalized, slug, token)
+            profile = ConnectionProfile.create(
+                parsed,
+                normalized,
+                route="official",
+                now=self._clock(),
+                provider_account_id=identity.account_id,
+                workspace=slug,
+            )
+            self._secrets.save(key, token)
+            try:
+                self._profiles.save(profile)
+            except Exception:
+                with suppress(Exception):
+                    self._secrets.delete(key)
+                raise
+            return ResultEnvelope.success(
+                operation="connect",
+                status="connected_official",
+                provider=parsed.value,
+                account=normalized,
+                route="official",
+                data={
+                    "provider_id": spec.provider_id,
+                    "capabilities": list(spec.capabilities),
+                    "identity_verified": True,
+                    **_bitbucket_identity_data(identity),
+                },
+            )
+        except ConnectorFailure as failure:
+            return self._connector_failure("connect", parsed, normalized, failure, workspace=slug)
+        except (TypeError, ValueError) as failure:
+            return self._configuration_exception("connect", parsed, normalized, failure)
+        except Exception:
+            return self._failure(
+                "connect",
+                parsed,
+                normalized,
+                ReasonCode.UNKNOWN_ERROR,
+                "Connection failed with an unknown error",
+                ("Run doctor for structured readiness diagnostics.",),
+                "unknown",
+            )
+
     def connect_jira_oauth(
         self,
         account: str,
@@ -490,6 +569,8 @@ class ConnectionService:
                 )
             if parsed is ConnectionType.JIRA:
                 return self._status_jira(profile, normalized)
+            if parsed is ConnectionType.BITBUCKET:
+                return self._status_bitbucket(profile, normalized)
             tokens = self._tokens.load(_token_key(parsed, normalized))
             if tokens is None:
                 return self._action_required("status", parsed, normalized)
@@ -691,6 +772,9 @@ class ConnectionService:
                 self._secrets.delete(key)
                 if self._tokens.load(key) is not None:
                     self._tokens.delete(key)
+            elif parsed is ConnectionType.BITBUCKET:
+                # Only the API token of this account; Bitbucket keeps no OAuth state.
+                self._secrets.delete(_token_key(parsed, normalized))
             else:
                 self._tokens.delete(_token_key(parsed, normalized))
             return ResultEnvelope.success(
@@ -920,6 +1004,56 @@ class ConnectionService:
                 **_jira_identity_data(profile, identity.account_id, identity.email_source),
             },
         )
+
+    def _status_bitbucket(self, profile: ConnectionProfile, account: str) -> ResultEnvelope:
+        """Repeat the identity proof against the stored account ID and workspace."""
+
+        parsed = ConnectionType.BITBUCKET
+        workspace = profile.workspace
+        try:
+            token = self._secrets.load(_token_key(parsed, account))
+            if workspace is None or profile.provider_account_id is None or token is None:
+                return self._action_required(
+                    "status",
+                    parsed,
+                    account,
+                    "The Bitbucket API token connection must be renewed in the canonical CLI",
+                    workspace=workspace,
+                )
+            identity = self._bitbucket_identity(
+                account, workspace, token, expected_account_id=profile.provider_account_id
+            )
+        except ConnectorFailure as failure:
+            if failure.reason is ReasonCode.INVALID_CREDENTIALS:
+                return self._action_required(
+                    "status", parsed, account, failure.safe_message, workspace=workspace
+                )
+            return self._connector_failure("status", parsed, account, failure, workspace=workspace)
+        return ResultEnvelope.success(
+            operation="status",
+            status="connected_official",
+            provider=parsed.value,
+            account=account,
+            route="official",
+            data={"identity_verified": True, **_bitbucket_identity_data(identity)},
+        )
+
+    def _bitbucket_identity(
+        self,
+        account: str,
+        workspace: str,
+        token: SecretValue,
+        *,
+        expected_account_id: str | None = None,
+    ) -> BitbucketIdentity:
+        return BitbucketAdapter(
+            self._transport,
+            BasicAuthProvider(account, token),
+            account=account,
+            workspace=workspace,
+            expected_account_id=expected_account_id,
+            clock=self._clock,
+        ).verify_identity()
 
     def _discard_oauth_tokens(self, key: str) -> None:
         """Delete stored OAuth state if present; a keyring refuses to delete a missing entry."""
@@ -1173,6 +1307,7 @@ class ConnectionService:
         site: str | None = None,
         cloud_id: str | None = None,
         token_kind: JiraTokenKind | None = None,
+        workspace: str | None = None,
     ) -> ResultEnvelope:
         return ResultEnvelope.failure(
             operation=operation,
@@ -1191,6 +1326,7 @@ class ConnectionService:
                         site=site,
                         cloud_id=cloud_id,
                         token_kind=token_kind,
+                        workspace=workspace,
                     ),
                 ),
                 cause_category="interactive_authorization",
@@ -1207,8 +1343,11 @@ class ConnectionService:
         site: str | None = None,
         cloud_id: str | None = None,
         token_kind: JiraTokenKind | None = None,
+        workspace: str | None = None,
     ) -> ResultEnvelope:
-        remediation = _remediation(failure.reason, parsed, account, site, cloud_id, token_kind)
+        remediation = _remediation(
+            failure.reason, parsed, account, site, cloud_id, token_kind, workspace=workspace
+        )
         return self._failure(
             operation,
             parsed,
@@ -1291,6 +1430,52 @@ def _jira_identity_data(
 def _api_token_email_source(identity: JiraIdentity) -> str:
     # A hidden emailAddress leaves the account proven by Basic authentication alone.
     return "myself" if identity.email_visible else "authentication"
+
+
+def _bitbucket_identity_data(identity: BitbucketIdentity) -> dict[str, Any]:
+    # The email is proven by /user/emails, where Bitbucket marks it confirmed.
+    return {
+        "workspace": identity.workspace,
+        "provider_account_id": identity.account_id,
+        "email_source": "user/emails",
+    }
+
+
+def _bitbucket_invalid_input(account: str, failure: ValueError) -> ResultEnvelope:
+    return ResultEnvelope.failure(
+        operation="connect",
+        status="invalid_input",
+        provider=ConnectionType.BITBUCKET.value,
+        account=account,
+        error=ErrorDetail(
+            "invalid_input",
+            str(failure),
+            False,
+            remediation=(connect_command(ConnectionType.BITBUCKET, account),),
+            cause_category="input",
+        ),
+    )
+
+
+def bitbucket_connect_requires_cli(operation: str, account: str) -> ResultEnvelope:
+    """Refuse a Bitbucket connect that lacks the workspace and the token only the CLI may read."""
+
+    return ResultEnvelope.failure(
+        operation=operation,
+        status="configuration_error",
+        provider=ConnectionType.BITBUCKET.value,
+        account=account,
+        data={"interactive_flow_started": False},
+        error=ErrorDetail(
+            "configuration_invalid",
+            "Bitbucket connects with --workspace and an API token read by the CLI: the hidden "
+            "prompt, --token-stdin or --token-env",
+            False,
+            ("workspace", "api_token"),
+            (connect_command(ConnectionType.BITBUCKET, account),),
+            "configuration",
+        ),
+    )
 
 
 def _jira_invalid_input(
@@ -1425,8 +1610,11 @@ def connect_command(
     site: str | None = None,
     cloud_id: str | None = None,
     token_kind: JiraTokenKind | None = None,
+    workspace: str | None = None,
 ) -> str:
     command = f"solercia-connect connect {parsed.value} {account}"
+    if parsed is ConnectionType.BITBUCKET:
+        command += f" --workspace {workspace or '<workspace>'}"
     if parsed is ConnectionType.JIRA:
         command += f" --site {site or '<site>'}"
         if token_kind is JiraTokenKind.OAUTH:
@@ -1462,7 +1650,14 @@ def _remediation(
     site: str | None = None,
     cloud_id: str | None = None,
     token_kind: JiraTokenKind | None = None,
+    *,
+    workspace: str | None = None,
 ) -> tuple[str, ...]:
+    if (
+        parsed is ConnectionType.BITBUCKET
+        and (guidance := _BITBUCKET_REMEDIATION.get(reason)) is not None
+    ):
+        return (guidance, connect_command(parsed, account, workspace=workspace))
     oauth_jira = parsed is ConnectionType.JIRA and token_kind is JiraTokenKind.OAUTH
     if oauth_jira and reason is ReasonCode.INVALID_CREDENTIALS:
         return (
@@ -1522,6 +1717,20 @@ def _remediation(
     }:
         return (connect_command(parsed, account),)
     return ("Run solercia-connect doctor for structured remediation.",)
+
+
+# The next step of each Bitbucket failure the user can fix, followed by the exact connect command.
+_BITBUCKET_REMEDIATION: dict[ReasonCode, str] = {
+    ReasonCode.INVALID_CREDENTIALS: BITBUCKET_TOKEN_GUIDANCE,
+    ReasonCode.AUTHORIZATION_DENIED: (
+        "Create a new API token with scopes for the Bitbucket app that holds all four read "
+        "scopes; the scopes of an existing token cannot be changed."
+    ),
+    ReasonCode.WORKSPACE_NOT_FOUND: (
+        "Check the workspace slug in bitbucket.org/<workspace>/<repository> and that this "
+        "account belongs to that workspace."
+    ),
+}
 
 
 def _cause_category(reason: ReasonCode) -> str:

@@ -222,6 +222,7 @@ def test_every_target_provider_has_one_declared_family() -> None:
         "google.meet": ProviderFamily.GOOGLE,
         "jira.cloud": ProviderFamily.JIRA,
         "glpi.rest": ProviderFamily.GLPI,
+        "bitbucket.cloud": ProviderFamily.BITBUCKET,
     }
     assert official_provider_family("unknown.provider") is None
 

@@ -28,6 +28,7 @@ from solercia_connect.config import (
     effective_environment,
     load_settings,
     normalize_account,
+    normalize_bitbucket_workspace,
     normalize_jira_site,
     normalize_jira_token_binding,
     project_selection,
@@ -413,17 +414,26 @@ def connect(
         str | None,
         typer.Option("--site", help="Jira site URL, such as https://your-site.atlassian.net"),
     ] = None,
+    workspace: Annotated[
+        str | None,
+        typer.Option(
+            "--workspace",
+            help="Bitbucket workspace slug, as in bitbucket.org/<workspace>/<repository>",
+        ),
+    ] = None,
     token_stdin: Annotated[
         bool,
-        typer.Option("--token-stdin", help="Read the Jira API token from one stdin line"),
+        typer.Option(
+            "--token-stdin", help="Read the Jira or Bitbucket API token from one stdin line"
+        ),
     ] = False,
     token_env: Annotated[
         str | None,
         typer.Option(
             "--token-env",
             metavar="NAME",
-            help="Read the Jira API token from variable NAME of the process environment, "
-            "SOLERCIA_CONNECT_ENV_FILE or SOLERCIA_CONNECT_HOME/connect.env",
+            help="Read the Jira or Bitbucket API token from variable NAME of the process "
+            "environment, SOLERCIA_CONNECT_ENV_FILE or SOLERCIA_CONNECT_HOME/connect.env",
         ),
     ] = None,
     token_kind: Annotated[
@@ -453,19 +463,45 @@ def connect(
     unless the site is on atlassian.net.
     --token-kind oauth uses Atlassian OAuth 2.0 (3LO) with the app configured in the environment
     and prompts for nothing.
+
+    Bitbucket takes --workspace and reads an API token with Bitbucket scopes the same three ways;
+    it is read-only and official-only.
     """
 
     try:
         service = connection_service_from_environment(action_sink=_interactive_action)
-        jira = ConnectionType.parse(type_value) is ConnectionType.JIRA
+        parsed_type = ConnectionType.parse(type_value)
+        jira = parsed_type is ConnectionType.JIRA
+        bitbucket = parsed_type is ConnectionType.BITBUCKET
+        if bitbucket:
+            _refuse_jira_options_for_bitbucket(
+                site, token_kind, cloud_id, allow_browser_fallback=allow_browser_fallback
+            )
+        elif workspace is not None:
+            raise _InputError("--workspace applies only to bitbucket")
         jira_options = (site, token_kind, cloud_id, token_env)
-        if not jira and (token_stdin or any(option is not None for option in jira_options)):
+        if not (jira or bitbucket) and (
+            token_stdin or any(option is not None for option in jira_options)
+        ):
             raise _InputError(
-                "--site, --token-stdin, --token-env, --token-kind and --cloud-id apply only to jira"
+                "--site, --token-kind and --cloud-id apply only to jira; --token-stdin and "
+                "--token-env apply only to jira and bitbucket"
             )
         if token_stdin and token_env is not None:
             raise _InputError("--token-env and --token-stdin are mutually exclusive")
-        if jira and site is not None:
+        if bitbucket and workspace is not None:
+            normalized_account = _valid_input(normalize_account, account)
+            slug = _valid_input(normalize_bitbucket_workspace, workspace)
+            envelope = service.connect_bitbucket(
+                normalized_account,
+                workspace=slug,
+                token=(
+                    _jira_token_from_environment(token_env)
+                    if token_env is not None
+                    else _jira_token(from_stdin=token_stdin, label="Bitbucket API token")
+                ),
+            )
+        elif jira and site is not None:
             normalized_account = _valid_input(normalize_account, account)
             origin = _valid_input(normalize_jira_site, site)
             try:
@@ -927,6 +963,28 @@ def _valid_input(normalize: Callable[[str], str], value: str) -> str:
         raise _InputError(str(failure)) from None
 
 
+def _refuse_jira_options_for_bitbucket(
+    site: str | None,
+    token_kind: str | None,
+    cloud_id: str | None,
+    *,
+    allow_browser_fallback: bool,
+) -> None:
+    """Name the first option that does not apply to a Bitbucket connect."""
+
+    for option, value in (("--site", site), ("--token-kind", token_kind), ("--cloud-id", cloud_id)):
+        if value is not None:
+            raise _InputError(
+                f"{option} does not apply to bitbucket; it connects with --workspace and an API "
+                "token with Bitbucket scopes"
+            )
+    if allow_browser_fallback:
+        raise _InputError(
+            "--allow-browser-fallback does not apply to bitbucket; it connects only over the "
+            "official API"
+        )
+
+
 def _jira_token_from_environment(name: str) -> SecretValue:
     """Read the API token from one variable of the effective environment; only its name shows."""
 
@@ -981,7 +1039,9 @@ def _draft_body(path: Path | None, *, from_stdin: bool) -> str:
         raise _InputError(f"{source} must be UTF-8 text") from None
 
 
-def _jira_token(*, from_stdin: bool) -> SecretValue:
+def _jira_token(*, from_stdin: bool, label: str = "Jira API token") -> SecretValue:
+    """Read one API token from piped stdin or the hidden prompt; Bitbucket reuses it by label."""
+
     if from_stdin and sys.stdin.isatty():
         # A terminal would echo the token as it is typed; only piped input skips the prompt.
         raise _InputError("--token-stdin needs piped input; omit it to use the hidden prompt")
@@ -989,13 +1049,13 @@ def _jira_token(*, from_stdin: bool) -> SecretValue:
         raw = (
             sys.stdin.readline()
             if from_stdin
-            else str(typer.prompt("Jira API token", hide_input=True, err=True))
+            else str(typer.prompt(label, hide_input=True, err=True))
         )
     except _click.exceptions.Abort:
-        raise _InputError("Jira API token entry was cancelled") from None
+        raise _InputError(f"{label} entry was cancelled") from None
     token = raw.strip()
     if not token:
-        raise _InputError("The Jira API token is empty")
+        raise _InputError(f"The {label} is empty")
     return SecretValue(token)
 
 

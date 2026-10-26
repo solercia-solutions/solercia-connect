@@ -17,6 +17,10 @@ from urllib.parse import urlsplit
 
 from solercia_connect.domain import EMAIL_ADDRESS_PATTERN
 
+# The workspace slug rule lives in the domain, next to the queries it validates; it is importable
+# from here for the CLI and the connection service, like normalize_jira_site.
+from solercia_connect.domain import normalize_bitbucket_workspace as normalize_bitbucket_workspace
+
 # normalize_jira_site moved next to the Jira adapter, which matches accessible resources with it;
 # it stays importable from here for the CLI, the connection service and existing callers.
 from solercia_connect.providers.jira import (
@@ -55,6 +59,7 @@ class ConnectionType(StrEnum):
     GOOGLE_MEET = "google-meet"
     JIRA = "jira"
     GLPI = "glpi"
+    BITBUCKET = "bitbucket"
 
     @classmethod
     def parse(cls, value: str | ConnectionType) -> ConnectionType:
@@ -210,6 +215,21 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
         "glpi.rest",
         ("tickets.search",),
         ("GLPI_BASE_URL", "GLPI_APP_TOKEN", "GLPI_USER_TOKEN"),
+    ),
+    TargetSpec(
+        ConnectionType.BITBUCKET,
+        "bitbucket.cloud",
+        # Read-only and official-only (docs/decisions/2026-10-26-conector-bitbucket.md). Each read
+        # joins this list when its adapter exists. The account connects with an API token, so no
+        # environment configuration and no OAuth scope apply.
+        (),
+        (),
+        (),
+        (
+            "Atlassian API token created with scopes for the Bitbucket app: read:user:bitbucket, "
+            "read:workspace:bitbucket, read:repository:bitbucket and read:pullrequest:bitbucket",
+            "Membership in the Bitbucket workspace that is read",
+        ),
     ),
 )
 
@@ -635,6 +655,8 @@ class ConnectionProfile:
     # Absent on files written before scoped tokens; a Jira profile without it is classic.
     token_kind: JiraTokenKind | None = None
     cloud_id: str | None = None
+    # The default Bitbucket workspace of a bitbucket profile; never set on another type.
+    workspace: str | None = None
 
     @classmethod
     def create(
@@ -648,6 +670,7 @@ class ConnectionProfile:
         provider_account_id: str | None = None,
         token_kind: str | None = None,
         cloud_id: str | None = None,
+        workspace: str | None = None,
     ) -> ConnectionProfile:
         parsed = ConnectionType.parse(type)
         if route not in {"official", "browser"}:
@@ -667,6 +690,7 @@ class ConnectionProfile:
             normalize_jira_site(site) if site is not None else None,
             _provider_account_id(provider_account_id),
             *_jira_token_fields(token_kind, cloud_id),
+            _profile_workspace(parsed, workspace),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -688,6 +712,8 @@ class ConnectionProfile:
             payload["token_kind"] = self.token_kind.value
         if self.cloud_id is not None:
             payload["cloud_id"] = self.cloud_id
+        if self.workspace is not None:
+            payload["workspace"] = self.workspace
         return payload
 
     @classmethod
@@ -722,6 +748,10 @@ class ConnectionProfile:
             token_kind, cloud_id = _jira_token_fields(raw_kind, raw_cloud_id)
             if (raw_kind, raw_cloud_id) != (token_kind, cloud_id):
                 raise ValueError("Connection profile Jira token fields are not normalized")
+            raw_workspace = payload.get("workspace")
+            workspace = _profile_workspace(parsed_type, raw_workspace)
+            if workspace != raw_workspace:
+                raise ValueError("Connection profile workspace is not a normalized slug")
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("Connection profile is malformed") from exc
         return cls(
@@ -737,7 +767,18 @@ class ConnectionProfile:
             provider_account_id,
             token_kind,
             cloud_id,
+            workspace,
         )
+
+
+def _profile_workspace(type: ConnectionType, workspace: object) -> str | None:
+    """Only a Bitbucket profile carries a workspace, always as a normalized slug."""
+
+    if workspace is None:
+        return None
+    if type is not ConnectionType.BITBUCKET:
+        raise ValueError("Only a Bitbucket connection profile has a workspace")
+    return normalize_bitbucket_workspace(workspace)
 
 
 def _jira_token_fields(

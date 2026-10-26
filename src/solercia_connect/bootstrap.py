@@ -39,6 +39,7 @@ from solercia_connect.project_secrets import (
     api_token_store_from_settings,
     oauth_token_store_from_settings,
 )
+from solercia_connect.providers.bitbucket import BitbucketAdapter
 from solercia_connect.providers.glpi import GlpiAdapter
 from solercia_connect.providers.gmail_compose import GmailComposeAdapter
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
@@ -221,6 +222,22 @@ def registry_from_environment(
             )
         )
 
+    if parsed_type is ConnectionType.BITBUCKET:
+        # Bitbucket has no environment credentials: a run reads one account's own connection.
+        if normalized_account is None:
+            raise ValueError(
+                "An account is required for Bitbucket runs; connect it with "
+                f"{connect_command(ConnectionType.BITBUCKET, '<account>')}"
+            )
+        registry.register(
+            _bitbucket_adapter_for_account(
+                transport,
+                profiles,
+                secret_store or api_token_store_from_settings(settings),
+                normalized_account,
+            )
+        )
+
     glpi_url = _value(values, "GLPI_BASE_URL")
     glpi_app_token = _value(values, "GLPI_APP_TOKEN")
     glpi_user_token = _value(values, "GLPI_USER_TOKEN")
@@ -386,6 +403,43 @@ def _jira_adapter_for_account(
         expected_account=account,
         # The Atlassian OAuth grant requests read scopes only, so it can never transition.
         grant_can_write=profile.token_kind is not JiraTokenKind.OAUTH,
+    )
+
+
+def _bitbucket_adapter_for_account(
+    transport: HTTPTransport,
+    profiles: ProfileStore,
+    secrets: SecretStore,
+    account: str,
+) -> BitbucketAdapter:
+    """Build Bitbucket from this account's profile and stored API token.
+
+    The base URL is fixed in the adapter, the profile's account ID is the one every read must
+    prove again, and its workspace is the default for reads that name none.
+    """
+
+    parsed = ConnectionType.BITBUCKET
+    profile = profiles.get(parsed, account)
+    if (
+        profile is None
+        or profile.route != "official"
+        or profile.workspace is None
+        or profile.provider_account_id is None
+    ):
+        command = connect_command(parsed, account, workspace=profile.workspace if profile else None)
+        raise ValueError(f"No Bitbucket connection exists for this account; run {command}")
+    token = secrets.load(f"{parsed.value}:{account}")
+    if token is None:
+        raise ConnectorFailure(
+            ReasonCode.INVALID_CREDENTIALS,
+            "The Bitbucket API token for this account is not stored; reconnect it in the CLI",
+        )
+    return BitbucketAdapter(
+        transport,
+        BasicAuthProvider(account, token),
+        account=account,
+        workspace=profile.workspace,
+        expected_account_id=profile.provider_account_id,
     )
 
 

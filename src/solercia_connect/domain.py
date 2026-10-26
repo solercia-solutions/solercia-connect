@@ -36,6 +36,8 @@ class ProviderFamily(StrEnum):
     GOOGLE = "google"
     JIRA = "jira"
     GLPI = "glpi"
+    # Read-only and official-only: docs/decisions/2026-10-26-conector-bitbucket.md.
+    BITBUCKET = "bitbucket"
 
 
 # The family each official provider belongs to. A request names its official provider even when
@@ -48,6 +50,7 @@ _OFFICIAL_PROVIDER_FAMILIES: dict[str, ProviderFamily] = {
     "google.meet": ProviderFamily.GOOGLE,
     "jira.cloud": ProviderFamily.JIRA,
     "glpi.rest": ProviderFamily.GLPI,
+    "bitbucket.cloud": ProviderFamily.BITBUCKET,
 }
 
 
@@ -105,6 +108,7 @@ class ReasonCode(StrEnum):
     DRAFT_NOT_FOUND = "draft_not_found"
     DUPLICATE_SUSPECTED = "duplicate_suspected"
     DUPLICATE_CHECK_UNAVAILABLE = "duplicate_check_unavailable"
+    WORKSPACE_NOT_FOUND = "workspace_not_found"
 
 
 # Capabilities that change provider state. Each one needs explicit authorization per invocation,
@@ -267,6 +271,23 @@ class IssueTransitionRequest:
         if not isinstance(self.to_status, str) or not self.to_status.strip():
             raise ValueError("A Jira transition needs a target status name")
         object.__setattr__(self, "to_status", self.to_status.strip())
+
+
+# One Bitbucket workspace slug, as it appears in bitbucket.org/<workspace>/<repository>. Nothing
+# that could reshape the URL path it is joined to ever matches.
+_BITBUCKET_WORKSPACE = re.compile(r"[a-z0-9][a-z0-9_-]{0,61}")
+
+
+def normalize_bitbucket_workspace(value: object) -> str:
+    """Return the lower-case workspace slug, or refuse anything that is not one slug."""
+    # lower(), not casefold(): casefold would turn a non-ASCII letter such as ß into a valid slug.
+    candidate = value.strip().lower() if isinstance(value, str) else ""
+    if _BITBUCKET_WORKSPACE.fullmatch(candidate) is None:
+        raise ValueError(
+            "The Bitbucket workspace must be one slug of lower-case letters, digits, '-' or '_', "
+            "such as idartes-tecnologia"
+        )
+    return candidate
 
 
 def same_status_name(first: str, second: str) -> bool:

@@ -29,6 +29,7 @@ def test_connection_types_are_ordered_and_accounts_are_validated_before_use() ->
         "google-meet",
         "jira",
         "glpi",
+        "bitbucket",
     ]
     assert ConnectionType.parse("GOOGLE_CALENDAR") is ConnectionType.GOOGLE_CALENDAR
     assert ConnectionType.parse(" CALENDAR ") is ConnectionType.GOOGLE_CALENDAR
