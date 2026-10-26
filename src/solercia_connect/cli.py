@@ -20,6 +20,7 @@ from solercia_connect.bootstrap import (
 )
 from solercia_connect.browser_routes import BROWSER_PROVIDER_IDS
 from solercia_connect.config import (
+    BITBUCKET_TARGETS,
     PROJECT_DISCOVERY_VARIABLE,
     TARGET_SPECS,
     ConnectionType,
@@ -520,27 +521,32 @@ def connect(
     and prompts for nothing.
 
     Bitbucket takes --workspace and reads an API token with Bitbucket scopes the same three ways;
-    it is read-only and official-only.
+    it is official-only. bitbucket is read-only; bitbucket-admin is the separate connection, with
+    its own token, that creates repositories.
     """
 
     try:
         service = connection_service_from_environment(action_sink=_interactive_action)
         parsed_type = ConnectionType.parse(type_value)
         jira = parsed_type is ConnectionType.JIRA
-        bitbucket = parsed_type is ConnectionType.BITBUCKET
+        bitbucket = parsed_type in BITBUCKET_TARGETS
         if bitbucket:
             _refuse_jira_options_for_bitbucket(
-                site, token_kind, cloud_id, allow_browser_fallback=allow_browser_fallback
+                parsed_type,
+                site,
+                token_kind,
+                cloud_id,
+                allow_browser_fallback=allow_browser_fallback,
             )
         elif workspace is not None:
-            raise _InputError("--workspace applies only to bitbucket")
+            raise _InputError("--workspace applies only to bitbucket and bitbucket-admin")
         jira_options = (site, token_kind, cloud_id, token_env)
         if not (jira or bitbucket) and (
             token_stdin or any(option is not None for option in jira_options)
         ):
             raise _InputError(
                 "--site, --token-kind and --cloud-id apply only to jira; --token-stdin and "
-                "--token-env apply only to jira and bitbucket"
+                "--token-env apply only to jira, bitbucket and bitbucket-admin"
             )
         if token_stdin and token_env is not None:
             raise _InputError("--token-env and --token-stdin are mutually exclusive")
@@ -553,8 +559,16 @@ def connect(
                 token=(
                     _jira_token_from_environment(token_env)
                     if token_env is not None
-                    else _jira_token(from_stdin=token_stdin, label="Bitbucket API token")
+                    else _jira_token(
+                        from_stdin=token_stdin,
+                        label=(
+                            "Bitbucket admin API token"
+                            if parsed_type is ConnectionType.BITBUCKET_ADMIN
+                            else "Bitbucket API token"
+                        ),
+                    )
                 ),
+                connection_type=parsed_type,
             )
         elif jira and site is not None:
             normalized_account = _valid_input(normalize_account, account)
@@ -1021,6 +1035,7 @@ def _valid_input(normalize: Callable[[str], str], value: str) -> str:
 
 
 def _refuse_jira_options_for_bitbucket(
+    target: ConnectionType,
     site: str | None,
     token_kind: str | None,
     cloud_id: str | None,
@@ -1032,13 +1047,13 @@ def _refuse_jira_options_for_bitbucket(
     for option, value in (("--site", site), ("--token-kind", token_kind), ("--cloud-id", cloud_id)):
         if value is not None:
             raise _InputError(
-                f"{option} does not apply to bitbucket; it connects with --workspace and an API "
-                "token with Bitbucket scopes"
+                f"{option} does not apply to {target.value}; it connects with --workspace and an "
+                "API token with Bitbucket scopes"
             )
     if allow_browser_fallback:
         raise _InputError(
-            "--allow-browser-fallback does not apply to bitbucket; it connects only over the "
-            "official API"
+            f"--allow-browser-fallback does not apply to {target.value}; it connects only over "
+            "the official API"
         )
 
 

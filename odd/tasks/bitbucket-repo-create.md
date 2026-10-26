@@ -76,7 +76,7 @@ Reglas de la escritura (R-D2):
   - Enmendar el registro de plataforma, `AGENTS.md` (de tres a cuatro escrituras acotadas),
     `SECURITY.md` y el skill.
   - Agregar la prueba de política de documentos.
-- [ ] **R1** Conexión `bitbucket-admin`: `connect`, `status`, `disconnect` y `doctor`.
+- [x] **R1** Conexión `bitbucket-admin`: `connect`, `status`, `disconnect` y `doctor`.
   - El token se guarda con la clave `bitbucket-admin:<email>`.
   - La identidad se prueba igual que en B-D2.
   - La plantilla de `project init` incluye `BITBUCKET_ADMIN_API_TOKEN`.
@@ -105,7 +105,8 @@ Reglas de la escritura (R-D2):
 | Tarea | Estado | Evidencia |
 | --- | --- | --- |
 | Exploración | Hecha | El push ya funciona por git; el alcance se verificó en OpenAPI |
-| R0 | Hecha | ADR y documentos de política; rojo con 3 fallos en `test_bitbucket_repo_create_policy_docs.py` (ADR inexistente, AGENTS.md sin «four» y skill sin las reglas nuevas) |
+| R0 | Hecha | `df0d706`: ADR y documentos de política; rojo con 3 fallos en `test_bitbucket_repo_create_policy_docs.py` (ADR inexistente, AGENTS.md sin «four» y skill sin las reglas nuevas) |
+| R1 | Hecha | Conexión `bitbucket-admin`; rojo por `ImportError` de `BITBUCKET_TARGETS` en `test_bitbucket_admin_connection.py` y 2 fallos en las líneas agregadas a pruebas existentes |
 
 Detalle:
 
@@ -119,7 +120,13 @@ Detalle:
     «four».
   - La prueba nueva de R0 verifica además que «exactly three bounded writes» ya no aparezca en
     AGENTS.md. Ninguna otra línea de esos archivos cambió.
+- **Pruebas existentes en R1:** solo se agregaron líneas: `"bitbucket-admin"` en la lista de
+  `test_standalone_foundation` y `BITBUCKET_ADMIN_API_TOKEN` en `TEMPLATE_NAMES` de
+  `test_project_discovery`.
+- **Conexión `bitbucket-admin` (R1):** reutiliza `connect_bitbucket` con el parámetro
+  `connection_type`. Los mensajes del target `bitbucket` no cambiaron. El target nuevo no declara
+  capacidades hasta R2.
 
 ## Siguiente paso
 
-R1, la conexión `bitbucket-admin`.
+R2, la capacidad `scm.repositories.create`.

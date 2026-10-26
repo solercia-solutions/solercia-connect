@@ -60,6 +60,8 @@ class ConnectionType(StrEnum):
     JIRA = "jira"
     GLPI = "glpi"
     BITBUCKET = "bitbucket"
+    # The separate repository-creation connection (decision R-D1); bitbucket stays read-only.
+    BITBUCKET_ADMIN = "bitbucket-admin"
 
     @classmethod
     def parse(cls, value: str | ConnectionType) -> ConnectionType:
@@ -109,6 +111,13 @@ GOOGLE_TARGETS: frozenset[ConnectionType] = frozenset(
         ConnectionType.GMAIL_COMPOSE,
         ConnectionType.GOOGLE_CALENDAR,
         ConnectionType.GOOGLE_MEET,
+    }
+)
+# Every target connected with a Bitbucket API token, a workspace and the B-D2 identity proof.
+BITBUCKET_TARGETS: frozenset[ConnectionType] = frozenset(
+    {
+        ConnectionType.BITBUCKET,
+        ConnectionType.BITBUCKET_ADMIN,
     }
 )
 
@@ -229,6 +238,21 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
             "Atlassian API token created with scopes for the Bitbucket app: read:user:bitbucket, "
             "read:workspace:bitbucket, read:repository:bitbucket and read:pullrequest:bitbucket",
             "Membership in the Bitbucket workspace that is read",
+        ),
+    ),
+    TargetSpec(
+        ConnectionType.BITBUCKET_ADMIN,
+        "bitbucket.cloud",
+        # Writes only, official route only, with its own API token
+        # (docs/decisions/2026-10-25-escritura-creacion-repositorios-bitbucket.md, R-D1).
+        (),
+        (),
+        (),
+        (
+            "Atlassian API token created with scopes for the Bitbucket app: read:user:bitbucket, "
+            "read:workspace:bitbucket, read:repository:bitbucket, read:project:bitbucket and "
+            "admin:repository:bitbucket",
+            "Membership in the Bitbucket workspace with permission to create repositories",
         ),
     ),
 )
@@ -655,7 +679,7 @@ class ConnectionProfile:
     # Absent on files written before scoped tokens; a Jira profile without it is classic.
     token_kind: JiraTokenKind | None = None
     cloud_id: str | None = None
-    # The default Bitbucket workspace of a bitbucket profile; never set on another type.
+    # The default workspace of a bitbucket or bitbucket-admin profile; never set on another type.
     workspace: str | None = None
 
     @classmethod
@@ -776,7 +800,7 @@ def _profile_workspace(type: ConnectionType, workspace: object) -> str | None:
 
     if workspace is None:
         return None
-    if type is not ConnectionType.BITBUCKET:
+    if type not in BITBUCKET_TARGETS:
         raise ValueError("Only a Bitbucket connection profile has a workspace")
     return normalize_bitbucket_workspace(workspace)
 

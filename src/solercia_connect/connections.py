@@ -13,6 +13,7 @@ from solercia_connect.auth import BasicAuthProvider
 from solercia_connect.browser_profile import microsoft_browser_profile_path
 from solercia_connect.browser_routes import has_browser_route, target_family
 from solercia_connect.config import (
+    BITBUCKET_TARGETS,
     GOOGLE_TARGETS,
     MICROSOFT_TARGETS,
     ConnectionProfile,
@@ -44,6 +45,7 @@ from solercia_connect.ports import BrowserProviderAdapter, HTTPTransport
 from solercia_connect.project_home import GitRunner, prepare_project_home
 from solercia_connect.project_secrets import api_token_store_from_settings
 from solercia_connect.providers.bitbucket import (
+    BITBUCKET_ADMIN_TOKEN_GUIDANCE,
     BITBUCKET_TOKEN_GUIDANCE,
     BitbucketAdapter,
     BitbucketIdentity,
@@ -147,8 +149,8 @@ class ConnectionService:
         spec = target_spec(parsed)
         if parsed is ConnectionType.JIRA:
             return jira_connect_requires_cli("connect", normalized)
-        if parsed is ConnectionType.BITBUCKET:
-            return bitbucket_connect_requires_cli("connect", normalized)
+        if parsed in BITBUCKET_TARGETS:
+            return bitbucket_connect_requires_cli("connect", normalized, parsed)
         if parsed is ConnectionType.GLPI:
             return self._failure(
                 "connect",
@@ -344,16 +346,20 @@ class ConnectionService:
         *,
         workspace: str,
         token: SecretValue,
+        connection_type: str | ConnectionType = ConnectionType.BITBUCKET,
     ) -> ResultEnvelope:
         """Connect one Bitbucket Cloud account with an API token read by the canonical CLI.
 
         The three-step identity proof of decision B-D2 runs before anything is stored. The token
-        then goes to the secret store under ``bitbucket:<email>`` and the profile keeps only the
-        workspace and the observed account ID; a profile that cannot be written takes the token
-        back out.
+        then goes to the secret store under ``<type>:<email>``, so the read-only ``bitbucket`` and
+        the separate ``bitbucket-admin`` connections never share a token, and the profile keeps
+        only the workspace and the observed account ID; a profile that cannot be written takes the
+        token back out.
         """
 
-        parsed = ConnectionType.BITBUCKET
+        parsed = ConnectionType.parse(connection_type)
+        if parsed not in BITBUCKET_TARGETS:
+            raise ValueError("connect_bitbucket connects only bitbucket or bitbucket-admin")
         _, normalized, invalid = self._validated_identity(parsed, account, "connect")
         if invalid is not None:
             return invalid
@@ -361,7 +367,7 @@ class ConnectionService:
         try:
             slug = normalize_bitbucket_workspace(workspace)
         except ValueError as failure:
-            return _bitbucket_invalid_input(normalized, failure)
+            return _bitbucket_invalid_input(normalized, failure, parsed)
         spec = target_spec(parsed)
         key = _token_key(parsed, normalized)
         try:
@@ -569,8 +575,8 @@ class ConnectionService:
                 )
             if parsed is ConnectionType.JIRA:
                 return self._status_jira(profile, normalized)
-            if parsed is ConnectionType.BITBUCKET:
-                return self._status_bitbucket(profile, normalized)
+            if parsed in BITBUCKET_TARGETS:
+                return self._status_bitbucket(profile, normalized, parsed)
             tokens = self._tokens.load(_token_key(parsed, normalized))
             if tokens is None:
                 return self._action_required("status", parsed, normalized)
@@ -772,8 +778,8 @@ class ConnectionService:
                 self._secrets.delete(key)
                 if self._tokens.load(key) is not None:
                     self._tokens.delete(key)
-            elif parsed is ConnectionType.BITBUCKET:
-                # Only the API token of this account; Bitbucket keeps no OAuth state.
+            elif parsed in BITBUCKET_TARGETS:
+                # Only this target's API token of this account; Bitbucket keeps no OAuth state.
                 self._secrets.delete(_token_key(parsed, normalized))
             else:
                 self._tokens.delete(_token_key(parsed, normalized))
@@ -1005,10 +1011,11 @@ class ConnectionService:
             },
         )
 
-    def _status_bitbucket(self, profile: ConnectionProfile, account: str) -> ResultEnvelope:
+    def _status_bitbucket(
+        self, profile: ConnectionProfile, account: str, parsed: ConnectionType
+    ) -> ResultEnvelope:
         """Repeat the identity proof against the stored account ID and workspace."""
 
-        parsed = ConnectionType.BITBUCKET
         workspace = profile.workspace
         try:
             token = self._secrets.load(_token_key(parsed, account))
@@ -1441,29 +1448,33 @@ def _bitbucket_identity_data(identity: BitbucketIdentity) -> dict[str, Any]:
     }
 
 
-def _bitbucket_invalid_input(account: str, failure: ValueError) -> ResultEnvelope:
+def _bitbucket_invalid_input(
+    account: str, failure: ValueError, parsed: ConnectionType
+) -> ResultEnvelope:
     return ResultEnvelope.failure(
         operation="connect",
         status="invalid_input",
-        provider=ConnectionType.BITBUCKET.value,
+        provider=parsed.value,
         account=account,
         error=ErrorDetail(
             "invalid_input",
             str(failure),
             False,
-            remediation=(connect_command(ConnectionType.BITBUCKET, account),),
+            remediation=(connect_command(parsed, account),),
             cause_category="input",
         ),
     )
 
 
-def bitbucket_connect_requires_cli(operation: str, account: str) -> ResultEnvelope:
+def bitbucket_connect_requires_cli(
+    operation: str, account: str, parsed: ConnectionType = ConnectionType.BITBUCKET
+) -> ResultEnvelope:
     """Refuse a Bitbucket connect that lacks the workspace and the token only the CLI may read."""
 
     return ResultEnvelope.failure(
         operation=operation,
         status="configuration_error",
-        provider=ConnectionType.BITBUCKET.value,
+        provider=parsed.value,
         account=account,
         data={"interactive_flow_started": False},
         error=ErrorDetail(
@@ -1472,7 +1483,7 @@ def bitbucket_connect_requires_cli(operation: str, account: str) -> ResultEnvelo
             "prompt, --token-stdin or --token-env",
             False,
             ("workspace", "api_token"),
-            (connect_command(ConnectionType.BITBUCKET, account),),
+            (connect_command(parsed, account),),
             "configuration",
         ),
     )
@@ -1613,7 +1624,7 @@ def connect_command(
     workspace: str | None = None,
 ) -> str:
     command = f"solercia-connect connect {parsed.value} {account}"
-    if parsed is ConnectionType.BITBUCKET:
+    if parsed in BITBUCKET_TARGETS:
         command += f" --workspace {workspace or '<workspace>'}"
     if parsed is ConnectionType.JIRA:
         command += f" --site {site or '<site>'}"
@@ -1653,8 +1664,10 @@ def _remediation(
     *,
     workspace: str | None = None,
 ) -> tuple[str, ...]:
-    if parsed is ConnectionType.BITBUCKET and (
-        steps := bitbucket_failure_remediation(reason, account, workspace=workspace)
+    if parsed in BITBUCKET_TARGETS and (
+        steps := bitbucket_failure_remediation(
+            reason, account, workspace=workspace, connection_type=parsed
+        )
     ):
         return steps
     oauth_jira = parsed is ConnectionType.JIRA and token_kind is JiraTokenKind.OAUTH
@@ -1732,15 +1745,35 @@ _BITBUCKET_REMEDIATION: dict[ReasonCode, str] = {
 }
 
 
+# The bitbucket-admin token carries the five scopes of decision R-D1, not the four read scopes.
+_BITBUCKET_ADMIN_REMEDIATION: dict[ReasonCode, str] = {
+    **_BITBUCKET_REMEDIATION,
+    ReasonCode.INVALID_CREDENTIALS: BITBUCKET_ADMIN_TOKEN_GUIDANCE,
+    ReasonCode.AUTHORIZATION_DENIED: (
+        "Create a new API token with scopes for the Bitbucket app that holds all five scopes of "
+        "the bitbucket-admin connection; the scopes of an existing token cannot be changed."
+    ),
+}
+
+
 def bitbucket_failure_remediation(
-    reason: ReasonCode, account: str, *, workspace: str | None = None
+    reason: ReasonCode,
+    account: str,
+    *,
+    workspace: str | None = None,
+    connection_type: ConnectionType = ConnectionType.BITBUCKET,
 ) -> tuple[str, ...] | None:
     """The next step of a Bitbucket failure the user can fix, or ``None`` when there is none."""
 
-    guidance = _BITBUCKET_REMEDIATION.get(reason)
+    remediation = (
+        _BITBUCKET_ADMIN_REMEDIATION
+        if connection_type is ConnectionType.BITBUCKET_ADMIN
+        else _BITBUCKET_REMEDIATION
+    )
+    guidance = remediation.get(reason)
     if guidance is None:
         return None
-    return (guidance, connect_command(ConnectionType.BITBUCKET, account, workspace=workspace))
+    return (guidance, connect_command(connection_type, account, workspace=workspace))
 
 
 def _cause_category(reason: ReasonCode) -> str:

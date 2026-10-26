@@ -380,6 +380,11 @@ CONNECT_ENV_TEMPLATE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("BITBUCKET_API_TOKEN",),
     ),
     (
+        "Separate Bitbucket API token that creates repositories, read by: connect bitbucket-admin "
+        "... --token-env BITBUCKET_ADMIN_API_TOKEN",
+        ("BITBUCKET_ADMIN_API_TOKEN",),
+    ),
+    (
         "Jira over Atlassian OAuth: connect jira ... --token-kind oauth",
         ATLASSIAN_OAUTH_CONFIGURATION,
     ),

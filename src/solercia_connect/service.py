@@ -15,6 +15,7 @@ from solercia_connect.application import http_write_rejection, run_application
 from solercia_connect.bootstrap import registry_from_environment
 from solercia_connect.browser_routes import has_browser_route
 from solercia_connect.config import (
+    BITBUCKET_TARGETS,
     GOOGLE_TARGETS,
     MICROSOFT_TARGETS,
     TARGET_SPECS,
@@ -430,10 +431,10 @@ def create_app(
         if body.type is ConnectionType.JIRA:
             # A Jira API token is read only by the CLI hidden prompt; it never travels over HTTP.
             return _response(jira_connect_requires_cli("connections.connect", body.account), 422)
-        if body.type is ConnectionType.BITBUCKET:
-            # The Bitbucket API token, like Jira's, is read only by the CLI.
+        if body.type in BITBUCKET_TARGETS:
+            # The Bitbucket API tokens, like Jira's, are read only by the CLI.
             return _response(
-                bitbucket_connect_requires_cli("connections.connect", body.account), 422
+                bitbucket_connect_requires_cli("connections.connect", body.account, body.type), 422
             )
         if not body.allow_browser_fallback:
             envelope = ResultEnvelope.failure(

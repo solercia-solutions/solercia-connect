@@ -64,6 +64,21 @@ BITBUCKET_TOKEN_GUIDANCE = (
     + ", ".join(BITBUCKET_READ_SCOPES[:-1])
     + f" and {BITBUCKET_READ_SCOPES[-1]}; a classic Jira API token does not work."
 )
+# The five scopes of the separate bitbucket-admin token (decision R-D1): the identity proof, the
+# checks before a repository is created, and the creation itself.
+BITBUCKET_ADMIN_SCOPES = (
+    "read:user:bitbucket",
+    "read:workspace:bitbucket",
+    "read:repository:bitbucket",
+    "read:project:bitbucket",
+    "admin:repository:bitbucket",
+)
+BITBUCKET_ADMIN_TOKEN_GUIDANCE = (
+    "Create a separate API token with scopes for the Bitbucket app at "
+    "https://id.atlassian.com/manage-profile/security/api-tokens, with "
+    + ", ".join(BITBUCKET_ADMIN_SCOPES[:-1])
+    + f" and {BITBUCKET_ADMIN_SCOPES[-1]}; a classic Jira API token does not work."
+)
 _REJECTED_CREDENTIALS = (
     "Bitbucket rejected the credentials: it needs the account email and an API token with scopes "
     "for the Bitbucket app; a classic Jira API token does not work"

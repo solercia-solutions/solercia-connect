@@ -13,6 +13,7 @@ from solercia_connect.browser_profile import (
 )
 from solercia_connect.browser_routes import has_browser_route, target_family
 from solercia_connect.config import (
+    BITBUCKET_TARGETS,
     GOOGLE_TARGETS,
     MICROSOFT_TARGETS,
     ConnectionProfile,
@@ -119,7 +120,7 @@ class DoctorService:
         browser_target = has_browser_route(spec.type)
         oauth_target = spec.type in MICROSOFT_TARGETS | GOOGLE_TARGETS
         # Bitbucket keeps its API token in the same secure store, so it needs it just as much.
-        secret_target = oauth_target or spec.type is ConnectionType.BITBUCKET
+        secret_target = oauth_target or spec.type in BITBUCKET_TARGETS
         browser_profile_status = "not_applicable"
         browser_profile_detail = "Microsoft browser profiles do not apply to this target"
         browser_route_status = "not_applicable"
@@ -356,6 +357,8 @@ class DoctorService:
 
         if spec.type is ConnectionType.BITBUCKET:
             checks.append(_bitbucket_connection_check(profile))
+        if spec.type is ConnectionType.BITBUCKET_ADMIN:
+            checks.append(_bitbucket_admin_connection_check(profile))
 
         for module in ("fastapi", "uvicorn", "playwright"):
             available = self._module_available(module)
@@ -473,6 +476,31 @@ def _bitbucket_connection_check(profile: ConnectionProfile | None) -> DoctorChec
         (
             "solercia-connect connect bitbucket <account> --workspace <workspace> "
             "--token-env BITBUCKET_API_TOKEN",
+            "Create the token as docs/runbooks/bitbucket.md describes.",
+        ),
+    )
+
+
+def _bitbucket_admin_connection_check(profile: ConnectionProfile | None) -> DoctorCheck:
+    """Report the separate repository-creation binding; its token is never read or tested."""
+
+    if profile is not None and profile.workspace is not None:
+        return DoctorCheck(
+            "bitbucket_admin_connection",
+            "present",
+            f"The admin connection binds workspace {profile.workspace} and a Bitbucket account "
+            "ID; status proves the stored API token again",
+            False,
+        )
+    return DoctorCheck(
+        "bitbucket_admin_connection",
+        "absent",
+        "No bitbucket-admin connection exists; it needs its own API token with the five scopes "
+        "of the repository creation",
+        False,
+        (
+            "solercia-connect connect bitbucket-admin <account> --workspace <workspace> "
+            "--token-env BITBUCKET_ADMIN_API_TOKEN",
             "Create the token as docs/runbooks/bitbucket.md describes.",
         ),
     )
