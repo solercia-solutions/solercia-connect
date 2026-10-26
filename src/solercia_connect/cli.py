@@ -320,6 +320,13 @@ def run_capability(
         bool,
         typer.Option("--allow-write", help="Authorize one write for this invocation only"),
     ] = False,
+    workspace: Annotated[
+        str | None,
+        typer.Option(
+            "--workspace",
+            help="Bitbucket workspace slug; defaults to the connected one (scm capabilities)",
+        ),
+    ] = None,
     browser_fallback: Annotated[
         bool,
         typer.Option("--allow-browser-fallback", "--browser-fallback"),
@@ -383,6 +390,9 @@ def run_capability(
             payload["draft_id"] = draft_id
         if allow_duplicate:
             payload["allow_duplicate"] = True
+        # Bitbucket options travel only when given, so other capabilities keep their payload.
+        if workspace is not None:
+            payload["workspace"] = workspace
         if capability is Capability.MAIL_DRAFT_CREATE:
             payload["body"] = _draft_body(body_file, from_stdin=body_stdin)
         elif body_file is not None or body_stdin:

@@ -29,6 +29,8 @@ class Capability(StrEnum):
     # docs/decisions/2026-10-25-envio-correo-gmail-dos-pasos.md. It is the third write.
     MAIL_DRAFT_CREATE = "mail.draft.create"
     MAIL_DRAFT_SEND = "mail.draft.send"
+    # Bitbucket Cloud reads, official route only: docs/decisions/2026-10-26-conector-bitbucket.md.
+    SCM_REPOSITORIES_LIST = "scm.repositories.list"
 
 
 class ProviderFamily(StrEnum):
@@ -109,6 +111,8 @@ class ReasonCode(StrEnum):
     DUPLICATE_SUSPECTED = "duplicate_suspected"
     DUPLICATE_CHECK_UNAVAILABLE = "duplicate_check_unavailable"
     WORKSPACE_NOT_FOUND = "workspace_not_found"
+    # A paged read reached its fixed page bound: nothing is returned rather than a partial list.
+    RESULT_INCOMPLETE = "result_incomplete"
 
 
 # Capabilities that change provider state. Each one needs explicit authorization per invocation,
@@ -288,6 +292,21 @@ def normalize_bitbucket_workspace(value: object) -> str:
             "such as idartes-tecnologia"
         )
     return candidate
+
+
+@dataclass(frozen=True, slots=True)
+class ScmRepositoryQuery:
+    """List the repositories of one Bitbucket workspace the account is a member of.
+
+    Without a workspace the adapter reads the one stored with the connection.
+    """
+
+    workspace: str | None = None
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.workspace is not None:
+            object.__setattr__(self, "workspace", normalize_bitbucket_workspace(self.workspace))
 
 
 def same_status_name(first: str, second: str) -> bool:
@@ -528,6 +547,7 @@ type QueryPayload = (
     | MailCategoriesUpdate
     | MailDraftRequest
     | MailDraftSendRequest
+    | ScmRepositoryQuery
 )
 
 
@@ -781,6 +801,22 @@ class MailSendResult:
     provenance: Provenance
 
 
+@dataclass(frozen=True, slots=True)
+class ScmRepository:
+    """One Bitbucket repository, with the time of its last update as Bitbucket reports it."""
+
+    workspace: str
+    slug: str
+    name: str
+    full_name: str
+    is_private: bool
+    main_branch: str | None
+    project_key: str | None
+    updated_at: datetime
+    web_url: str | None
+    provenance: Provenance
+
+
 type DomainRecord = (
     MailMessage
     | CalendarEvent
@@ -793,6 +829,7 @@ type DomainRecord = (
     | MailCategoryAssignment
     | MailDraft
     | MailSendResult
+    | ScmRepository
 )
 
 
@@ -881,6 +918,7 @@ _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.TICKETS_SEARCH: TicketCase,
     Capability.MAIL_DRAFT_CREATE: MailDraft,
     Capability.MAIL_DRAFT_SEND: MailSendResult,
+    Capability.SCM_REPOSITORIES_LIST: ScmRepository,
 }
 
 

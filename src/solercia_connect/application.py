@@ -15,7 +15,11 @@ from solercia_connect.config import (
     normalize_account,
     target_spec,
 )
-from solercia_connect.connections import connect_command, http_connect_hint
+from solercia_connect.connections import (
+    bitbucket_failure_remediation,
+    connect_command,
+    http_connect_hint,
+)
 from solercia_connect.domain import (
     WRITE_CAPABILITIES,
     CalendarQuery,
@@ -32,6 +36,7 @@ from solercia_connect.domain import (
     MailQuery,
     QueryPayload,
     ReasonCode,
+    ScmRepositoryQuery,
     TicketQuery,
     TranscriptQuery,
 )
@@ -94,6 +99,18 @@ def run_application(
             raise ValueError("draft_id and allow_duplicate apply only to mail.draft.send")
         if capability not in _TO_CAPABILITIES and payload.get("to") is not None:
             raise ValueError("to applies only to external.issues.transition and mail.draft.create")
+        if capability not in _SCM_CAPABILITIES and any(
+            payload.get(name) is not None for name in _SCM_OPTIONS
+        ):
+            raise ValueError(
+                "The Bitbucket read options (" + ", ".join(_SCM_OPTIONS) + ") apply only to the "
+                "scm capabilities"
+            )
+        if type_value is ConnectionType.BITBUCKET and account is None:
+            raise ValueError(
+                "account is required for bitbucket runs; connect it first with "
+                + connect_command(ConnectionType.BITBUCKET, "<account>")
+            )
         if writes and account is None:
             raise ValueError(f"account is required for {capability.value}")
         query = _query(type_value, capability, account, payload)
@@ -104,6 +121,11 @@ def run_application(
             raise ValueError(
                 "gmail-compose runs only over the official Gmail API; browser fallback does not "
                 "apply"
+            )
+        if fallback and type_value is ConnectionType.BITBUCKET:
+            raise ValueError(
+                "bitbucket runs only over the official Bitbucket Cloud API; browser fallback does "
+                "not apply"
             )
         if (
             fallback
@@ -219,6 +241,8 @@ def run_application(
             provider=type_value.value,
             account=account,
             receipt=outcome.receipt,
+            # A read that hit its page bound reports nothing, and says so explicitly.
+            data={"complete": False} if final_reason is ReasonCode.RESULT_INCOMPLETE else None,
             error=_reason_error(
                 final_reason,
                 detail,
@@ -265,6 +289,9 @@ _OAUTH_TYPES = MICROSOFT_TARGETS | GOOGLE_TARGETS
 _ISSUE_CAPABILITIES = frozenset(
     {Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST, Capability.EXTERNAL_ISSUES_TRANSITION}
 )
+# The Bitbucket reads and the options that apply to them alone.
+_SCM_CAPABILITIES = frozenset({Capability.SCM_REPOSITORIES_LIST})
+_SCM_OPTIONS = ("workspace",)
 # `to` is the target status of a Jira transition and the recipients of a Gmail draft.
 _TO_CAPABILITIES = frozenset({Capability.EXTERNAL_ISSUES_TRANSITION, Capability.MAIL_DRAFT_CREATE})
 # What each write changes, named in the refusals of a write that cannot run.
@@ -378,7 +405,14 @@ def _write_command(type_value: ConnectionType, account: str | None, capability: 
 def _failure_remediation(
     reason: ReasonCode, type_value: ConnectionType, account: str | None
 ) -> tuple[str, ...] | None:
-    """Name the next step of a failed write; ``None`` keeps the generic doctor remediation."""
+    """Name the next step of a failed run; ``None`` keeps the generic doctor remediation."""
+    if reason is ReasonCode.RESULT_INCOMPLETE:
+        return (
+            "The read stopped at its fixed page bound and returned nothing rather than a partial "
+            "list; narrow the request, such as a shorter --start/--end window, and report it.",
+        )
+    if type_value is ConnectionType.BITBUCKET:
+        return bitbucket_failure_remediation(reason, account or "<account>")
     if reason is ReasonCode.WRITE_SCOPE_MISSING:
         return _write_scope_remediation(type_value, account)
     if reason is ReasonCode.DUPLICATE_CHECK_UNAVAILABLE:
@@ -467,6 +501,11 @@ def _query(
         return _draft_request(account, payload)
     if capability is Capability.MAIL_DRAFT_SEND:
         return _draft_send(account, payload)
+    if capability is Capability.SCM_REPOSITORIES_LIST:
+        # The whole workspace listing, bounded by pages; a window or a limit does not apply.
+        if payload.get("start") is not None or payload.get("end") is not None:
+            raise ValueError("scm.repositories.list takes no --start/--end window")
+        return ScmRepositoryQuery(_optional_string(payload.get("workspace")), account)
     limit = payload.get("limit", 50)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
         raise ValueError("limit must be an integer between 1 and 1000")

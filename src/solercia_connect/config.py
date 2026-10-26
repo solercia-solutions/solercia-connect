@@ -219,10 +219,9 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
     TargetSpec(
         ConnectionType.BITBUCKET,
         "bitbucket.cloud",
-        # Read-only and official-only (docs/decisions/2026-10-26-conector-bitbucket.md). Each read
-        # joins this list when its adapter exists. The account connects with an API token, so no
-        # environment configuration and no OAuth scope apply.
-        (),
+        # Read-only and official-only (docs/decisions/2026-10-26-conector-bitbucket.md). The account
+        # connects with an API token, so no environment configuration and no OAuth scope apply.
+        ("scm.repositories.list",),
         (),
         (),
         (

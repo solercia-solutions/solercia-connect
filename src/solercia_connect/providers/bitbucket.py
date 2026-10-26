@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -17,19 +17,25 @@ from urllib.parse import unquote, urlparse
 
 from solercia_connect.auth import AuthorizationProvider
 from solercia_connect.domain import (
+    Capability,
     ConnectorRequest,
     DomainRecord,
     HealthReport,
     HealthState,
+    Provenance,
     ProviderFamily,
     ReasonCode,
     RouteKind,
+    ScmRepository,
+    ScmRepositoryQuery,
     normalize_bitbucket_workspace,
     utc_now,
 )
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.ports import HTTPTransport, ProviderDescriptor
 from solercia_connect.providers._shared import (
+    as_string,
+    parse_datetime,
     require_list,
     require_mapping,
     require_same_origin_https_url,
@@ -60,6 +66,9 @@ _MAX_EMAIL_PAGES = 5
 # Only names shaped like a Bitbucket scope are ever quoted back from a 403 body.
 _SCOPE_NAME = re.compile(r"[a-z]+:[a-z]+:bitbucket")
 _MAX_QUOTED_SCOPES = 8
+# Fixed page bounds: reaching one fails with result_incomplete instead of truncating.
+_MAX_REPOSITORY_PAGES = 20
+_REPOSITORY_PAGE_LENGTH = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +84,7 @@ class BitbucketAdapter:
         "bitbucket.cloud",
         ProviderFamily.BITBUCKET,
         RouteKind.OFFICIAL,
-        frozenset(),
+        frozenset({Capability.SCM_REPOSITORIES_LIST}),
     )
 
     def __init__(
@@ -107,10 +116,35 @@ class BitbucketAdapter:
         )
 
     def execute(self, request: ConnectorRequest) -> tuple[DomainRecord, ...]:
-        del request
+        if request.capability is Capability.SCM_REPOSITORIES_LIST and isinstance(
+            request.payload, ScmRepositoryQuery
+        ):
+            return self.list_repositories(request.payload)
         raise ConnectorFailure(
             ReasonCode.CAPABILITY_NOT_IMPLEMENTED,
             "Bitbucket request does not match a source-control capability contract",
+        )
+
+    def list_repositories(self, query: ScmRepositoryQuery) -> tuple[ScmRepository, ...]:
+        """List the workspace repositories the account is a member of, newest update first."""
+
+        workspace = query.workspace or self._workspace
+        identity = self.verify_identity(workspace)
+        found: dict[str, ScmRepository] = {}
+        for page in self._pages(
+            f"{BITBUCKET_API_BASE_URL}/repositories/{workspace}",
+            {"role": "member", "sort": "-updated_on", "pagelen": _REPOSITORY_PAGE_LENGTH},
+            max_pages=_MAX_REPOSITORY_PAGES,
+            what="repositories",
+            not_found=_workspace_not_found(workspace),
+        ):
+            for raw in require_list(page.get("values"), "bitbucket.repositories.values"):
+                repository = self._repository(
+                    require_mapping(raw, "bitbucket.repository"), identity
+                )
+                found[repository.slug] = repository
+        return tuple(
+            sorted(found.values(), key=lambda item: (-item.updated_at.timestamp(), item.slug))
         )
 
     def verify_identity(self, workspace: str | None = None) -> BitbucketIdentity:
@@ -128,13 +162,79 @@ class BitbucketAdapter:
             raise _boundary("Authenticated Bitbucket account does not match the connection profile")
         self._prove_confirmed_email()
         self._get(
-            f"{BITBUCKET_API_BASE_URL}/workspaces/{target}",
-            not_found=ConnectorFailure(
-                ReasonCode.WORKSPACE_NOT_FOUND,
-                f"Bitbucket workspace {target} was not found or is not visible to this account",
-            ),
+            f"{BITBUCKET_API_BASE_URL}/workspaces/{target}", not_found=_workspace_not_found(target)
         )
         return BitbucketIdentity(account_id, target)
+
+    def _pages(
+        self,
+        collection: str,
+        params: Mapping[str, Any],
+        *,
+        max_pages: int,
+        what: str,
+        not_found: ConnectorFailure | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """Yield the pages of one collection, following only its ``next`` link.
+
+        A caller may stop early. Reaching the bound while a next page still exists fails with
+        ``result_incomplete``, so a read is either complete or reports nothing.
+        """
+
+        url: str = collection
+        query: Mapping[str, Any] | None = params
+        for _ in range(max_pages):
+            page = require_mapping(
+                self._get(url, params=query, not_found=not_found), f"bitbucket.{what}"
+            )
+            yield page
+            next_url = next_page_url(page, collection)
+            if next_url is None:
+                return
+            url, query = next_url, None
+        raise ConnectorFailure(
+            ReasonCode.RESULT_INCOMPLETE,
+            f"Bitbucket has more {what} than the fixed bound of {max_pages} pages; nothing is "
+            "reported rather than a partial list",
+        )
+
+    def _repository(self, item: dict[str, Any], identity: BitbucketIdentity) -> ScmRepository:
+        full_name = require_string(item.get("full_name"), "bitbucket.repository.full_name")
+        owner, _, path_slug = full_name.partition("/")
+        if owner.lower() != identity.workspace or not path_slug or "/" in path_slug:
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Bitbucket returned a repository outside the requested workspace",
+            )
+        is_private = item.get("is_private")
+        if not isinstance(is_private, bool):
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Provider field is not a boolean: bitbucket.repository.is_private",
+            )
+        return ScmRepository(
+            identity.workspace,
+            as_string(item.get("slug")) or path_slug,
+            require_string(item.get("name"), "bitbucket.repository.name"),
+            full_name,
+            is_private,
+            _nested(item, "mainbranch", "name"),
+            _nested(item, "project", "key"),
+            parse_datetime(item.get("updated_on"), "bitbucket.repository.updated_on"),
+            _nested(item, "links", "html", "href"),
+            self._provenance(full_name, identity, "/2.0/repositories/{workspace}"),
+        )
+
+    def _provenance(self, source_id: str, identity: BitbucketIdentity, endpoint: str) -> Provenance:
+        return Provenance(
+            self.descriptor.provider_id,
+            self.descriptor.family,
+            self.descriptor.route,
+            source_id,
+            self._clock(),
+            identity.account_id,
+            endpoint,
+        )
 
     def _prove_confirmed_email(self) -> None:
         collection = f"{BITBUCKET_API_BASE_URL}/user/emails"
@@ -204,6 +304,22 @@ def next_page_url(data: Mapping[str, Any], collection: str) -> str | None:
     if _collection_path(raw) != _collection_path(collection):
         raise _boundary("Bitbucket pagination left the requested collection")
     return raw
+
+
+def _workspace_not_found(workspace: str) -> ConnectorFailure:
+    return ConnectorFailure(
+        ReasonCode.WORKSPACE_NOT_FOUND,
+        f"Bitbucket workspace {workspace} was not found or is not visible to this account",
+    )
+
+
+def _nested(value: Any, *keys: str) -> str | None:
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return as_string(current)
 
 
 def _collection_path(url: str) -> str:

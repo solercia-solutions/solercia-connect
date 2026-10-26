@@ -1653,11 +1653,10 @@ def _remediation(
     *,
     workspace: str | None = None,
 ) -> tuple[str, ...]:
-    if (
-        parsed is ConnectionType.BITBUCKET
-        and (guidance := _BITBUCKET_REMEDIATION.get(reason)) is not None
+    if parsed is ConnectionType.BITBUCKET and (
+        steps := bitbucket_failure_remediation(reason, account, workspace=workspace)
     ):
-        return (guidance, connect_command(parsed, account, workspace=workspace))
+        return steps
     oauth_jira = parsed is ConnectionType.JIRA and token_kind is JiraTokenKind.OAUTH
     if oauth_jira and reason is ReasonCode.INVALID_CREDENTIALS:
         return (
@@ -1731,6 +1730,17 @@ _BITBUCKET_REMEDIATION: dict[ReasonCode, str] = {
         "account belongs to that workspace."
     ),
 }
+
+
+def bitbucket_failure_remediation(
+    reason: ReasonCode, account: str, *, workspace: str | None = None
+) -> tuple[str, ...] | None:
+    """The next step of a Bitbucket failure the user can fix, or ``None`` when there is none."""
+
+    guidance = _BITBUCKET_REMEDIATION.get(reason)
+    if guidance is None:
+        return None
+    return (guidance, connect_command(ConnectionType.BITBUCKET, account, workspace=workspace))
 
 
 def _cause_category(reason: ReasonCode) -> str:
