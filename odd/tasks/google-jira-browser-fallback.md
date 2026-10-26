@@ -251,7 +251,7 @@ Pedido de Camilo, 2026-10-25: «es mejor compartirlo con todo como un skill gene
 que eso ya viniera como un skill y todo se hiciera transparente». Decisión D3.1, «Skill +
 descubrimiento»: el lanzador por proyecto se reemplaza por el CLI global y el skill global.
 
-- [ ] **T7.6** Descubrimiento de la carpeta del proyecto y comando `project init`.
+- [x] **T7.6** Descubrimiento de la carpeta del proyecto y comando `project init`.
   - Si `SOLERCIA_CONNECT_HOME` no está definida y `SOLERCIA_CONNECT_PROJECT_DISCOVERY=1`, el CLI
     busca la raíz de git desde el directorio actual.
   - Si existe `<raíz>/.solercia-connect/`, entra en modo proyecto. Si no, usa el modo global.
@@ -261,7 +261,7 @@ descubrimiento»: el lanzador por proyecto se reemplaza por el CLI global y el s
     `connect.env`.
   - Hay que actualizar la ADR del modo proyecto y la promesa del README sobre `.env` en el
     directorio actual.
-- [ ] **T7.7** Skill global.
+- [x] **T7.7** Skill global.
   - `agents/skills/solercia-connect/SKILL.md` siempre invoca `solercia-connect`, sin rutas.
   - El modo proyecto es transparente.
   - Ante `action_required`, el agente se detiene y pide el `connect`.
@@ -551,6 +551,43 @@ Detalle de la Fase 7 (commits `a6142b4` a `6ad07e3` y `0ab30c7`):
   existente se modificó en la Fase 7.
 - **Brecha:** el `.gitignore` debe contener exactamente `*\n`; si el archivo tiene otro contenido,
   se rechaza y no se reescribe.
+
+Detalle de T7.6 (commit `5e1c367`) y T7.7 (commit `80d4103`):
+
+- **Rojo:**
+  - Fallaron 27 pruebas nuevas: `load_settings` no aceptaba `cwd`, no existía el comando
+    `project`, y `connect.env` no rechazaba la variable de descubrimiento.
+  - Un clon con la carpeta rastreada terminaba con código 0.
+  - Además fallaron 4 pruebas de contrato del skill.
+- **Protección probada desactivándola:** el redactor verificó con grep que la edición sí se aplicó.
+  Sin la verificación de git, un clon con `.solercia-connect/` rastreada cargaba un `CLIENT_ID`
+  ajeno.
+- **Verde:**
+  - `SOLERCIA_CONNECT_PROJECT_DISCOVERY` solo se lee del proceso o de `SOLERCIA_CONNECT_ENV_FILE`,
+    nunca de `connect.env`.
+  - Resolución: `SOLERCIA_CONNECT_HOME` explícita, luego `<raíz git>/.solercia-connect` si es una
+    carpeta real, y si no, el modo global.
+  - La carpeta descubierta se verifica con git y por privacidad antes de leer `connect.env`.
+  - `project init [--path]` crea la carpeta y la plantilla, y nunca sobrescribe.
+  - El skill 2.1 siempre usa `solercia-connect`. Ante `action_required`, el usuario hace el
+    `connect`, y el agente nunca lee `connect.env`, `secrets/` ni `data/`.
+- **Pruebas existentes:** solo se agregaron 9 líneas a `tests/conftest.py`, un fixture que limpia
+  la variable de descubrimiento. No se modificó ninguna prueba.
+- **Compuertas:** 973 pruebas (verificado por el orquestador), cobertura 86,99 %, `ruff` y `mypy`
+  limpios.
+- **Brechas:**
+  - Con descubrimiento, los mensajes de permisos todavía dicen
+    `chmod 700 "$SOLERCIA_CONNECT_HOME"`.
+  - `git ls-files` se ejecuta de 2 a 4 veces por comando.
+  - Tres ramas de error no tienen pruebas.
+
+**Estado global verificado el 2026-10-25:**
+
+- No hay skill instalado en `~/.claude/skills`, `~/.agents/skills` ni `~/.codex/skills`.
+- No hay `uv tool` instalado.
+- El `solercia-connect` del PATH sale de `solercia-connect/.venv`, el checkout principal en
+  `feat/http-interactive-login`.
+- La transparencia depende de T7.8 y de la decisión de entrega.
 
 ### Rebanadas de entrega (`feature-branch-chain`)
 
