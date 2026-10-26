@@ -21,6 +21,7 @@ from solercia_connect.connections import (
     http_connect_hint,
 )
 from solercia_connect.domain import (
+    PULL_REQUEST_STATES,
     WRITE_CAPABILITIES,
     CalendarQuery,
     Capability,
@@ -36,6 +37,7 @@ from solercia_connect.domain import (
     MailQuery,
     QueryPayload,
     ReasonCode,
+    ScmPullRequestQuery,
     ScmRepositoryQuery,
     TicketQuery,
     TranscriptQuery,
@@ -99,13 +101,11 @@ def run_application(
             raise ValueError("draft_id and allow_duplicate apply only to mail.draft.send")
         if capability not in _TO_CAPABILITIES and payload.get("to") is not None:
             raise ValueError("to applies only to external.issues.transition and mail.draft.create")
-        if capability not in _SCM_CAPABILITIES and any(
-            payload.get(name) is not None for name in _SCM_OPTIONS
-        ):
-            raise ValueError(
-                "The Bitbucket read options (" + ", ".join(_SCM_OPTIONS) + ") apply only to the "
-                "scm capabilities"
-            )
+        for name in _SCM_OPTIONS:
+            if payload.get(name) is not None and name not in _SCM_OPTIONS_BY_CAPABILITY.get(
+                capability, ()
+            ):
+                raise ValueError(f"{name} does not apply to {capability.value}")
         if type_value is ConnectionType.BITBUCKET and account is None:
             raise ValueError(
                 "account is required for bitbucket runs; connect it first with "
@@ -290,8 +290,11 @@ _ISSUE_CAPABILITIES = frozenset(
     {Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST, Capability.EXTERNAL_ISSUES_TRANSITION}
 )
 # The Bitbucket reads and the options that apply to them alone.
-_SCM_CAPABILITIES = frozenset({Capability.SCM_REPOSITORIES_LIST})
-_SCM_OPTIONS = ("workspace",)
+_SCM_OPTIONS = ("workspace", "repo", "state")
+_SCM_OPTIONS_BY_CAPABILITY: dict[Capability, tuple[str, ...]] = {
+    Capability.SCM_REPOSITORIES_LIST: ("workspace",),
+    Capability.SCM_PULLREQUESTS_LIST: ("workspace", "repo", "state"),
+}
 # `to` is the target status of a Jira transition and the recipients of a Gmail draft.
 _TO_CAPABILITIES = frozenset({Capability.EXTERNAL_ISSUES_TRANSITION, Capability.MAIL_DRAFT_CREATE})
 # What each write changes, named in the refusals of a write that cannot run.
@@ -411,6 +414,11 @@ def _failure_remediation(
             "The read stopped at its fixed page bound and returned nothing rather than a partial "
             "list; narrow the request, such as a shorter --start/--end window, and report it.",
         )
+    if type_value is ConnectionType.BITBUCKET and reason is ReasonCode.REPOSITORY_NOT_FOUND:
+        return (
+            "Check the repository slug; list the slugs this account reaches with "
+            "--capability scm.repositories.list.",
+        )
     if type_value is ConnectionType.BITBUCKET:
         return bitbucket_failure_remediation(reason, account or "<account>")
     if reason is ReasonCode.WRITE_SCOPE_MISSING:
@@ -506,6 +514,14 @@ def _query(
         if payload.get("start") is not None or payload.get("end") is not None:
             raise ValueError("scm.repositories.list takes no --start/--end window")
         return ScmRepositoryQuery(_optional_string(payload.get("workspace")), account)
+    if capability is Capability.SCM_PULLREQUESTS_LIST:
+        return ScmPullRequestQuery(
+            _required_string(payload, "repo"),
+            _required_window(_window(payload.get("start"), payload.get("end"))),
+            _pull_request_states(payload.get("state")),
+            _optional_string(payload.get("workspace")),
+            account,
+        )
     limit = payload.get("limit", 50)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
         raise ValueError("limit must be an integer between 1 and 1000")
@@ -671,6 +687,15 @@ def _draft_send(account: str | None, payload: dict[str, Any]) -> MailDraftSendRe
     return MailDraftSendRequest(
         _required_string(payload, "draft_id"), account, allow_write, allow_duplicate
     )
+
+
+def _pull_request_states(value: Any) -> tuple[str, ...]:
+    """Read the repeatable state option; without it every documented state is listed."""
+    if value is None:
+        return PULL_REQUEST_STATES
+    if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
+        raise ValueError("state must be a list of pull request states")
+    return tuple(value)
 
 
 def _address_list(value: Any, name: str) -> tuple[str, ...]:

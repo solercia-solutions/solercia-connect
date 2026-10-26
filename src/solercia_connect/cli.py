@@ -327,6 +327,20 @@ def run_capability(
             help="Bitbucket workspace slug; defaults to the connected one (scm capabilities)",
         ),
     ] = None,
+    repo: Annotated[
+        str | None,
+        typer.Option(
+            "--repo", help="Bitbucket repository slug (scm.pullrequests.list, scm.commits.list)"
+        ),
+    ] = None,
+    state: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--state",
+            help="Pull request state, repeatable: OPEN, MERGED, DECLINED or SUPERSEDED; all four "
+            "by default (scm.pullrequests.list)",
+        ),
+    ] = None,
     browser_fallback: Annotated[
         bool,
         typer.Option("--allow-browser-fallback", "--browser-fallback"),
@@ -393,6 +407,10 @@ def run_capability(
         # Bitbucket options travel only when given, so other capabilities keep their payload.
         if workspace is not None:
             payload["workspace"] = workspace
+        if repo is not None:
+            payload["repo"] = repo
+        if state is not None:
+            payload["state"] = list(state)
         if capability is Capability.MAIL_DRAFT_CREATE:
             payload["body"] = _draft_body(body_file, from_stdin=body_stdin)
         elif body_file is not None or body_stdin:

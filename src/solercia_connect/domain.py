@@ -31,6 +31,7 @@ class Capability(StrEnum):
     MAIL_DRAFT_SEND = "mail.draft.send"
     # Bitbucket Cloud reads, official route only: docs/decisions/2026-10-26-conector-bitbucket.md.
     SCM_REPOSITORIES_LIST = "scm.repositories.list"
+    SCM_PULLREQUESTS_LIST = "scm.pullrequests.list"
 
 
 class ProviderFamily(StrEnum):
@@ -113,6 +114,7 @@ class ReasonCode(StrEnum):
     WORKSPACE_NOT_FOUND = "workspace_not_found"
     # A paged read reached its fixed page bound: nothing is returned rather than a partial list.
     RESULT_INCOMPLETE = "result_incomplete"
+    REPOSITORY_NOT_FOUND = "repository_not_found"
 
 
 # Capabilities that change provider state. Each one needs explicit authorization per invocation,
@@ -294,6 +296,24 @@ def normalize_bitbucket_workspace(value: object) -> str:
     return candidate
 
 
+# One Bitbucket repository slug, as in bitbucket.org/<workspace>/<repository>. No slash, space or
+# query character can match, so a slug never reshapes the URL path it is joined to.
+_BITBUCKET_REPOSITORY = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
+# The pull request states Bitbucket documents, in the order a query lists them.
+PULL_REQUEST_STATES: tuple[str, ...] = ("OPEN", "MERGED", "DECLINED", "SUPERSEDED")
+
+
+def normalize_bitbucket_repository(value: object) -> str:
+    """Return the lower-case repository slug, or refuse anything that is not one slug."""
+    candidate = value.strip().lower() if isinstance(value, str) else ""
+    if _BITBUCKET_REPOSITORY.fullmatch(candidate) is None:
+        raise ValueError(
+            "The Bitbucket repository must be one slug of lower-case letters, digits, '.', '-' "
+            "or '_', such as pandora_proxy"
+        )
+    return candidate
+
+
 @dataclass(frozen=True, slots=True)
 class ScmRepositoryQuery:
     """List the repositories of one Bitbucket workspace the account is a member of.
@@ -307,6 +327,38 @@ class ScmRepositoryQuery:
     def __post_init__(self) -> None:
         if self.workspace is not None:
             object.__setattr__(self, "workspace", normalize_bitbucket_workspace(self.workspace))
+
+
+@dataclass(frozen=True, slots=True)
+class ScmPullRequestQuery:
+    """List the pull requests of one repository updated inside an end-exclusive window.
+
+    ``states`` keeps the documented order and drops repeats; it defaults to every state.
+    """
+
+    repository: str
+    window: DateWindow
+    states: tuple[str, ...] = PULL_REQUEST_STATES
+    workspace: str | None = None
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "repository", normalize_bitbucket_repository(self.repository))
+        if self.workspace is not None:
+            object.__setattr__(self, "workspace", normalize_bitbucket_workspace(self.workspace))
+        requested: set[str] = set()
+        for state in self.states:
+            name = state.strip().upper() if isinstance(state, str) else ""
+            if name not in PULL_REQUEST_STATES:
+                raise ValueError(
+                    "Each pull request state must be one of " + ", ".join(PULL_REQUEST_STATES)
+                )
+            requested.add(name)
+        if not requested:
+            raise ValueError("A pull request query needs at least one state")
+        object.__setattr__(
+            self, "states", tuple(state for state in PULL_REQUEST_STATES if state in requested)
+        )
 
 
 def same_status_name(first: str, second: str) -> bool:
@@ -548,6 +600,7 @@ type QueryPayload = (
     | MailDraftRequest
     | MailDraftSendRequest
     | ScmRepositoryQuery
+    | ScmPullRequestQuery
 )
 
 
@@ -817,6 +870,27 @@ class ScmRepository:
     provenance: Provenance
 
 
+@dataclass(frozen=True, slots=True)
+class ScmPullRequest:
+    """One Bitbucket pull request; ``merge_commit`` is set only once Bitbucket merged it."""
+
+    id: int
+    title: str
+    state: str
+    draft: bool
+    author_account_id: str | None
+    author_name: str | None
+    source_branch: str | None
+    destination_branch: str | None
+    created_at: datetime
+    updated_at: datetime
+    merge_commit: str | None
+    web_url: str | None
+    repository: str
+    workspace: str
+    provenance: Provenance
+
+
 type DomainRecord = (
     MailMessage
     | CalendarEvent
@@ -830,6 +904,7 @@ type DomainRecord = (
     | MailDraft
     | MailSendResult
     | ScmRepository
+    | ScmPullRequest
 )
 
 
@@ -919,6 +994,7 @@ _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.MAIL_DRAFT_CREATE: MailDraft,
     Capability.MAIL_DRAFT_SEND: MailSendResult,
     Capability.SCM_REPOSITORIES_LIST: ScmRepository,
+    Capability.SCM_PULLREQUESTS_LIST: ScmPullRequest,
 }
 
 

@@ -7,7 +7,7 @@ FakeTransport; nothing here reaches Bitbucket.
 from __future__ import annotations
 
 import base64
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,9 +23,12 @@ from solercia_connect.connections import ConnectionService
 from solercia_connect.domain import (
     Capability,
     ConnectorRequest,
+    DateWindow,
     ProviderFamily,
     ReasonCode,
     RouteKind,
+    ScmPullRequest,
+    ScmPullRequestQuery,
     ScmRepository,
     ScmRepositoryQuery,
 )
@@ -470,3 +473,322 @@ def test_the_cli_passes_the_workspace_to_the_read(monkeypatch: pytest.MonkeyPatc
     assert with_workspace.exit_code == 0 and default.exit_code == 0
     assert seen[0]["type"] == "bitbucket" and seen[0]["workspace"] == WORKSPACE
     assert "workspace" not in seen[1]
+
+
+# --- scm.pullrequests.list (B3) -------------------------------------------------------------
+
+REPO = "pandora_proxy"
+PULLREQUESTS = f"{API}/repositories/{WORKSPACE}/{REPO}/pullrequests"
+BOGOTA = timezone(timedelta(hours=-5))
+WINDOW = DateWindow(datetime(2026, 10, 1, tzinfo=BOGOTA), datetime(2026, 11, 1, tzinfo=BOGOTA))
+ALL_STATES = ("OPEN", "MERGED", "DECLINED", "SUPERSEDED")
+
+
+def _pull_request(number: Any, updated_on: str, *, state: str = "MERGED", **extra: Any) -> dict:
+    return {
+        "type": "pullrequest",
+        "id": number,
+        "title": f"Change {number}",
+        "state": state,
+        "draft": False,
+        "author": {"display_name": "Dev One", "account_id": "557058:dev-1"},
+        "source": {"branch": {"name": f"feature/{number}"}},
+        "destination": {"branch": {"name": "develop"}},
+        "created_on": "2026-09-30T12:00:00+00:00",
+        "updated_on": updated_on,
+        "merge_commit": {"hash": "abc1234"} if state == "MERGED" else None,
+        "links": {
+            "html": {"href": f"https://bitbucket.org/{WORKSPACE}/{REPO}/pull-requests/{number}"}
+        },
+        **extra,
+    }
+
+
+def _pull_requests(query: ScmPullRequestQuery, *responses: Any) -> tuple[tuple[Any, ...], Any]:
+    adapter, transport = _adapter(*_identity(), *responses)
+    records = adapter.execute(
+        ConnectorRequest.create("bitbucket.cloud", Capability.SCM_PULLREQUESTS_LIST, query)
+    )
+    return records, transport
+
+
+def test_the_pull_request_query_validates_the_repository_states_and_window() -> None:
+    query = ScmPullRequestQuery(" Pandora_Proxy ", WINDOW)
+
+    assert query.repository == REPO
+    assert query.states == ALL_STATES
+    assert query.workspace is None
+    assert ScmPullRequestQuery(REPO, WINDOW, ("merged", "OPEN", "MERGED")).states == (
+        "OPEN",
+        "MERGED",
+    )
+    assert ScmPullRequestQuery(REPO, WINDOW, workspace="Other").workspace == "other"
+    for invalid in ("", "a/b", "../x", ".hidden", "-x", "a b", "a?b", "x" * 129):
+        with pytest.raises(ValueError, match="repository"):
+            ScmPullRequestQuery(invalid, WINDOW)
+    for states in ((), ("QUEUED",), ("OPEN", "")):
+        with pytest.raises(ValueError, match="state"):
+            ScmPullRequestQuery(REPO, WINDOW, states)
+
+
+def test_pull_requests_are_filtered_by_updated_on_in_the_server_and_again_in_the_client() -> None:
+    second = f"{PULLREQUESTS}?page=2"
+    records, transport = _pull_requests(
+        ScmPullRequestQuery(REPO, WINDOW),
+        _page(
+            _pull_request(7, "2026-10-20T10:00:00+00:00"),
+            _pull_request(9, "2026-10-20T10:00:00+00:00", state="OPEN", merge_commit=None),
+            _pull_request(3, "2026-11-01T05:00:00+00:00"),
+            next_url=second,
+        ),
+        _page(
+            _pull_request(7, "2026-10-20T10:00:00+00:00"),
+            _pull_request(2, "2026-10-01T05:00:00+00:00", state="DECLINED", draft=True),
+            _pull_request(1, "2026-10-01T04:59:59+00:00"),
+        ),
+    )
+
+    assert [request.url for request in transport.requests] == [*IDENTITY, PULLREQUESTS, second]
+    assert transport.requests[3].params == {
+        "state": list(ALL_STATES),
+        "q": "updated_on >= 2026-10-01T05:00:00+00:00 AND updated_on < 2026-11-01T05:00:00+00:00",
+        "sort": "-updated_on",
+        "pagelen": 50,
+    }
+    assert transport.requests[4].params is None
+    assert [record.id for record in records] == [7, 9, 2]
+    first = records[0]
+    assert isinstance(first, ScmPullRequest)
+    assert first.title == "Change 7"
+    assert first.state == "MERGED" and first.draft is False
+    assert first.author_account_id == "557058:dev-1" and first.author_name == "Dev One"
+    assert first.source_branch == "feature/7" and first.destination_branch == "develop"
+    assert first.created_at == datetime(2026, 9, 30, 12, tzinfo=UTC)
+    assert first.updated_at == datetime(2026, 10, 20, 10, tzinfo=UTC)
+    assert first.merge_commit == "abc1234"
+    assert first.web_url == f"https://bitbucket.org/{WORKSPACE}/{REPO}/pull-requests/7"
+    assert first.repository == REPO and first.workspace == WORKSPACE
+    assert first.provenance.source_id == f"{WORKSPACE}/{REPO}#7"
+    assert first.provenance.endpoint == "/2.0/repositories/{workspace}/{repo_slug}/pullrequests"
+    assert first.provenance.account_id == ACCOUNT_ID
+    assert records[1].merge_commit is None and records[2].draft is True
+
+
+def test_the_server_query_rounds_the_window_outward_and_the_client_keeps_it_exact() -> None:
+    window = DateWindow(
+        datetime(2026, 10, 1, 0, 0, 0, 500, tzinfo=UTC),
+        datetime(2026, 10, 2, 0, 0, 0, 1, tzinfo=UTC),
+    )
+    records, transport = _pull_requests(
+        ScmPullRequestQuery(REPO, window, ("OPEN",)),
+        _page(
+            _pull_request(5, "2026-10-02T00:00:00.000001+00:00", state="OPEN"),
+            _pull_request(4, "2026-10-02T00:00:00+00:00", state="OPEN"),
+            _pull_request(3, "2026-10-01T00:00:00+00:00", state="OPEN"),
+            _pull_request(8, "2026-10-01T12:00:00+00:00", state="MERGED"),
+        ),
+    )
+
+    assert transport.requests[3].params is not None
+    assert transport.requests[3].params["state"] == ["OPEN"]
+    assert transport.requests[3].params["q"] == (
+        "updated_on >= 2026-10-01T00:00:00+00:00 AND updated_on < 2026-10-02T00:00:01+00:00"
+    )
+    assert [record.id for record in records] == [4]
+
+
+def test_an_unknown_repository_and_the_page_bound_fail_with_typed_reasons() -> None:
+    adapter, _ = _adapter(*_identity(), json_response(404, {"error": {"message": "x"}}))
+    with pytest.raises(ConnectorFailure) as missing:
+        adapter.execute(
+            ConnectorRequest.create(
+                "bitbucket.cloud",
+                Capability.SCM_PULLREQUESTS_LIST,
+                ScmPullRequestQuery(REPO, WINDOW),
+            )
+        )
+    assert missing.value.reason is ReasonCode.REPOSITORY_NOT_FOUND
+    assert f"{WORKSPACE}/{REPO}" in missing.value.safe_message
+
+    pages = [
+        _page(
+            _pull_request(index + 1, "2026-10-20T00:00:00Z"), next_url=f"{PULLREQUESTS}?p={index}"
+        )
+        for index in range(20)
+    ]
+    with pytest.raises(ConnectorFailure) as bounded:
+        _pull_requests(ScmPullRequestQuery(REPO, WINDOW), *pages)
+    assert bounded.value.reason is ReasonCode.RESULT_INCOMPLETE
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        _pull_request("7", "2026-10-20T00:00:00Z"),
+        _pull_request(True, "2026-10-20T00:00:00Z"),
+        _pull_request(0, "2026-10-20T00:00:00Z"),
+        _pull_request(7, "2026-10-20T00:00:00Z", state="QUEUED"),
+        _pull_request(7, "2026-10-20T00:00:00Z", draft="no"),
+        _pull_request(7, "2026-10-20T00:00:00Z", title=None),
+        _pull_request(7, "2026-10-20T00:00:00Z", created_on=None),
+        _pull_request(7, "yesterday"),
+    ],
+)
+def test_malformed_pull_requests_fail_closed(item: dict[str, Any]) -> None:
+    with pytest.raises(ConnectorFailure) as captured:
+        _pull_requests(ScmPullRequestQuery(REPO, WINDOW), _page(item))
+
+    assert captured.value.reason is ReasonCode.MALFORMED_PROVIDER_DATA
+
+
+def test_run_lists_pull_requests_with_repeated_states(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keyring = _connected(tmp_path)
+    transport = FakeTransport(*_identity(), _page(_pull_request(7, "2026-10-20T00:00:00Z")))
+    _route_runs_to(monkeypatch, tmp_path, keyring, transport)
+
+    result = application.run_application(
+        {
+            "type": "bitbucket",
+            "account": ACCOUNT,
+            "capability": "scm.pullrequests.list",
+            "repo": REPO,
+            "state": ["MERGED", "OPEN"],
+            "start": "2026-10-01T00:00:00-05:00",
+            "end": "2026-11-01T00:00:00-05:00",
+        }
+    )
+
+    assert result.ok is True, result.error
+    records = result.to_dict()["data"]["records"]
+    assert [record["id"] for record in records] == [7]
+    assert records[0]["updated_at"] == "2026-10-20T00:00:00+00:00"
+    assert transport.requests[3].url == PULLREQUESTS
+    assert transport.requests[3].params is not None
+    assert transport.requests[3].params["state"] == ["OPEN", "MERGED"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({"start": "2026-10-01T00:00:00+00:00", "end": "2026-11-01T00:00:00+00:00"}, "repo"),
+        ({"repo": REPO}, "start and end"),
+        (
+            {
+                "repo": "a/b",
+                "start": "2026-10-01T00:00:00+00:00",
+                "end": "2026-11-01T00:00:00+00:00",
+            },
+            "repository",
+        ),
+        (
+            {
+                "repo": REPO,
+                "state": ["CLOSED"],
+                "start": "2026-10-01T00:00:00+00:00",
+                "end": "2026-11-01T00:00:00+00:00",
+            },
+            "state",
+        ),
+        (
+            {
+                "repo": REPO,
+                "state": "OPEN",
+                "start": "2026-10-01T00:00:00+00:00",
+                "end": "2026-11-01T00:00:00+00:00",
+            },
+            "state",
+        ),
+    ],
+)
+def test_run_refuses_invalid_pull_request_requests_before_provider_work(
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any], message: str
+) -> None:
+    monkeypatch.setattr(application, "registry_from_environment", _no_registry)
+
+    result = application.run_application(
+        {"type": "bitbucket", "account": ACCOUNT, "capability": "scm.pullrequests.list", **payload}
+    )
+
+    assert result.status == "invalid_input"
+    assert result.error is not None and message in result.error.message
+
+
+def test_repository_and_state_options_do_not_apply_to_the_repository_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(application, "registry_from_environment", _no_registry)
+
+    for name, value in (("repo", REPO), ("state", ["OPEN"])):
+        result = application.run_application(
+            {
+                "type": "bitbucket",
+                "account": ACCOUNT,
+                "capability": "scm.repositories.list",
+                name: value,
+            }
+        )
+        assert result.status == "invalid_input"
+        assert result.error is not None and name in result.error.message
+
+
+def test_a_rejected_repository_points_to_the_slug(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keyring = _connected(tmp_path)
+    _route_runs_to(
+        monkeypatch, tmp_path, keyring, FakeTransport(*_identity(), json_response(404, {}))
+    )
+
+    result = application.run_application(
+        {
+            "type": "bitbucket",
+            "account": ACCOUNT,
+            "capability": "scm.pullrequests.list",
+            "repo": "missing",
+            "start": "2026-10-01T00:00:00+00:00",
+            "end": "2026-11-01T00:00:00+00:00",
+        }
+    )
+
+    assert result.error is not None and result.error.code == "repository_not_found"
+    assert "scm.repositories.list" in " ".join(result.error.remediation)
+
+
+def test_the_cli_passes_the_repository_and_repeated_states(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict[str, Any]] = []
+
+    def fake_run(payload: dict[str, Any]) -> Any:
+        seen.append(payload)
+        return ResultEnvelope.success(operation="run", data={"records": []})
+
+    monkeypatch.setattr(cli, "run_application", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "--provider",
+            "bitbucket.cloud",
+            "--capability",
+            "scm.pullrequests.list",
+            "--account",
+            ACCOUNT,
+            "--repo",
+            REPO,
+            "--start",
+            "2026-10-01T00:00:00-05:00",
+            "--end",
+            "2026-11-01T00:00:00-05:00",
+            "--state",
+            "OPEN",
+            "--state",
+            "MERGED",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen[0]["repo"] == REPO
+    assert seen[0]["state"] == ["OPEN", "MERGED"]
+    assert seen[0]["type"] == "bitbucket"

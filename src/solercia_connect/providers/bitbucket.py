@@ -11,14 +11,16 @@ import json
 import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import unquote, urlparse
 
 from solercia_connect.auth import AuthorizationProvider
 from solercia_connect.domain import (
+    PULL_REQUEST_STATES,
     Capability,
     ConnectorRequest,
+    DateWindow,
     DomainRecord,
     HealthReport,
     HealthState,
@@ -26,6 +28,8 @@ from solercia_connect.domain import (
     ProviderFamily,
     ReasonCode,
     RouteKind,
+    ScmPullRequest,
+    ScmPullRequestQuery,
     ScmRepository,
     ScmRepositoryQuery,
     normalize_bitbucket_workspace,
@@ -69,6 +73,9 @@ _MAX_QUOTED_SCOPES = 8
 # Fixed page bounds: reaching one fails with result_incomplete instead of truncating.
 _MAX_REPOSITORY_PAGES = 20
 _REPOSITORY_PAGE_LENGTH = 100
+_MAX_PULL_REQUEST_PAGES = 20
+# Pull request listings may cap their page length below the global maximum of 100.
+_PULL_REQUEST_PAGE_LENGTH = 50
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +91,7 @@ class BitbucketAdapter:
         "bitbucket.cloud",
         ProviderFamily.BITBUCKET,
         RouteKind.OFFICIAL,
-        frozenset({Capability.SCM_REPOSITORIES_LIST}),
+        frozenset({Capability.SCM_REPOSITORIES_LIST, Capability.SCM_PULLREQUESTS_LIST}),
     )
 
     def __init__(
@@ -120,6 +127,10 @@ class BitbucketAdapter:
             request.payload, ScmRepositoryQuery
         ):
             return self.list_repositories(request.payload)
+        if request.capability is Capability.SCM_PULLREQUESTS_LIST and isinstance(
+            request.payload, ScmPullRequestQuery
+        ):
+            return self.list_pull_requests(request.payload)
         raise ConnectorFailure(
             ReasonCode.CAPABILITY_NOT_IMPLEMENTED,
             "Bitbucket request does not match a source-control capability contract",
@@ -145,6 +156,43 @@ class BitbucketAdapter:
                 found[repository.slug] = repository
         return tuple(
             sorted(found.values(), key=lambda item: (-item.updated_at.timestamp(), item.slug))
+        )
+
+    def list_pull_requests(self, query: ScmPullRequestQuery) -> tuple[ScmPullRequest, ...]:
+        """List one repository's pull requests updated in the window, newest update first.
+
+        Bitbucket filters by state and ``updated_on``; the window and the states are checked again
+        here, so the result is exact even when the server rounds or a page shifts.
+        """
+
+        workspace = query.workspace or self._workspace
+        identity = self.verify_identity(workspace)
+        found: dict[int, ScmPullRequest] = {}
+        for page in self._pages(
+            f"{BITBUCKET_API_BASE_URL}/repositories/{workspace}/{query.repository}/pullrequests",
+            {
+                "state": list(query.states),
+                "q": _updated_on_filter(query.window),
+                "sort": "-updated_on",
+                "pagelen": _PULL_REQUEST_PAGE_LENGTH,
+            },
+            max_pages=_MAX_PULL_REQUEST_PAGES,
+            what="pull requests",
+            not_found=_repository_not_found(workspace, query.repository),
+        ):
+            for raw in require_list(page.get("values"), "bitbucket.pullrequests.values"):
+                pull_request = self._pull_request(
+                    require_mapping(raw, "bitbucket.pullrequest"), query.repository, identity
+                )
+                if pull_request.state not in query.states or not _inside(
+                    pull_request.updated_at, query.window
+                ):
+                    continue
+                kept = found.get(pull_request.id)
+                if kept is None or pull_request.updated_at > kept.updated_at:
+                    found[pull_request.id] = pull_request
+        return tuple(
+            sorted(found.values(), key=lambda item: (-item.updated_at.timestamp(), item.id))
         )
 
     def verify_identity(self, workspace: str | None = None) -> BitbucketIdentity:
@@ -223,6 +271,57 @@ class BitbucketAdapter:
             parse_datetime(item.get("updated_on"), "bitbucket.repository.updated_on"),
             _nested(item, "links", "html", "href"),
             self._provenance(full_name, identity, "/2.0/repositories/{workspace}"),
+        )
+
+    def _pull_request(
+        self, item: dict[str, Any], repository: str, identity: BitbucketIdentity
+    ) -> ScmPullRequest:
+        number = item.get("id")
+        if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Provider field is not a positive integer: bitbucket.pullrequest.id",
+            )
+        title = item.get("title")
+        if not isinstance(title, str):
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Provider field is not a string: bitbucket.pullrequest.title",
+            )
+        state = require_string(item.get("state"), "bitbucket.pullrequest.state")
+        if state not in PULL_REQUEST_STATES:
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Bitbucket returned an undocumented pull request state",
+            )
+        draft = item.get("draft", False)
+        if draft is None:
+            draft = False
+        if not isinstance(draft, bool):
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Provider field is not a boolean: bitbucket.pullrequest.draft",
+            )
+        return ScmPullRequest(
+            number,
+            title,
+            state,
+            draft,
+            _nested(item, "author", "account_id"),
+            _nested(item, "author", "display_name"),
+            _nested(item, "source", "branch", "name"),
+            _nested(item, "destination", "branch", "name"),
+            parse_datetime(item.get("created_on"), "bitbucket.pullrequest.created_on"),
+            parse_datetime(item.get("updated_on"), "bitbucket.pullrequest.updated_on"),
+            _nested(item, "merge_commit", "hash"),
+            _nested(item, "links", "html", "href"),
+            repository,
+            identity.workspace,
+            self._provenance(
+                f"{identity.workspace}/{repository}#{number}",
+                identity,
+                "/2.0/repositories/{workspace}/{repo_slug}/pullrequests",
+            ),
         )
 
     def _provenance(self, source_id: str, identity: BitbucketIdentity, endpoint: str) -> Provenance:
@@ -311,6 +410,28 @@ def _workspace_not_found(workspace: str) -> ConnectorFailure:
         ReasonCode.WORKSPACE_NOT_FOUND,
         f"Bitbucket workspace {workspace} was not found or is not visible to this account",
     )
+
+
+def _repository_not_found(workspace: str, repository: str) -> ConnectorFailure:
+    return ConnectorFailure(
+        ReasonCode.REPOSITORY_NOT_FOUND,
+        f"Bitbucket repository {workspace}/{repository} was not found or is not visible to this "
+        "account",
+    )
+
+
+def _updated_on_filter(window: DateWindow) -> str:
+    """Build the server filter in UTC seconds, rounded outward; the client keeps it exact."""
+
+    start = window.start.astimezone(UTC).replace(microsecond=0)
+    end = window.end.astimezone(UTC)
+    if end.microsecond:
+        end = end.replace(microsecond=0) + timedelta(seconds=1)
+    return f"updated_on >= {start.isoformat()} AND updated_on < {end.isoformat()}"
+
+
+def _inside(moment: datetime, window: DateWindow) -> bool:
+    return window.start <= moment < window.end
 
 
 def _nested(value: Any, *keys: str) -> str | None:
