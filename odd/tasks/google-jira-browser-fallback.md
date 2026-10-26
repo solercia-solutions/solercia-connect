@@ -347,7 +347,7 @@ Pendientes nuevos:
   - Si el descubrimiento está apagado y existe `.solercia-connect/` en la raíz de git, el mensaje
     debe sugerir `source ~/.zshrc`.
   - `--token-env` debe explicar dónde busca la variable.
-- [ ] **T8.3** Lectura de historias abiertas, por ejemplo las del sprint actual asignadas al
+- [x] **T8.3** Lectura de historias abiertas, por ejemplo las del sprint actual asignadas al
   usuario. Hoy `external.issues.search` solo devuelve issues resueltos. Requiere la decisión de
   Camilo.
   - **Delegada** a la sesión `migracion-angular-pandora` el 2026-10-26, por pedido de Camilo.
@@ -356,6 +356,10 @@ Pendientes nuevos:
   - Capacidad acordada: `external.issues.open.list` con `--project`, `--sprint current` y `--jql`.
     El JQL por defecto es `assignee = currentUser() AND statusCategory != Done`.
   - Al terminar, el orquestador la integra, la verifica y reinstala la herramienta.
+  - **Hecha:** commit `6422999` de la otra sesión, integrado con cherry-pick como `23e42cf`.
+    - El orquestador verificó 1.288 pruebas, cobertura 88,58 %, `ruff` y `mypy` limpios.
+    - Ninguna prueba existente perdió líneas y la lista de navegador sigue igual.
+    - Documento propio de la tarea: `odd/tasks/jira-open-issues.md`.
 - **Gmail compose:** Camilo conectó `gmail-compose` el 2026-10-26. La autorización pidió solo
   `gmail.compose` y la conexión está en `connected_official`.
 - **Bitbucket:** es una feature aparte (`feat/bitbucket-connector` desde `7c2b8fb`), con worktree
