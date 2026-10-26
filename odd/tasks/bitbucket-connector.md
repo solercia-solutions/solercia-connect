@@ -107,6 +107,7 @@ propia ADR.
 | B4 | Hecha | `f48be93`: commits; se probó relajando la regla de corte |
 | B5 | Hecha | `fcb1aa0`: runbook, doctor, matriz y plantilla; rojo con 8 fallos |
 | Integración | Hecha | Merge `beab5e8` de `feat/google-jira-fallback` (T8.3 y documentos), sin conflictos. El orquestador verificó 1.405 pruebas, cobertura 89,28 %, `ruff` y `mypy` limpios |
+| Validación en vivo | Hecha | 2026-10-25, workspace `idartes-tecnologia`, ver detalle abajo |
 
 Detalle:
 
@@ -117,17 +118,27 @@ Detalle:
   `data.complete=false` y sin devolver una lista parcial.
   - Topes de páginas: 20 para repositorios, 20 para PR y 30 para commits.
 - **Códigos nuevos:** `workspace_not_found`, `repository_not_found` y `result_incomplete`.
-- **Brechas de validación en vivo:**
-  - La forma de `/user/emails` y la lista `required` del 403 no están documentadas.
-  - No se probaron ramas con `/` en el nombre.
+- **Validación en vivo (2026-10-25):**
+  - Camilo conectó la cuenta y corrió `scm.repositories.list`; el orquestador lo repitió: 80
+    repositorios. La identidad con `/user/emails` pasó, así que la forma real coincide con la
+    implementada.
+  - `scm.commits.list` en `pandora_proxy`: rama `masterIDT_proxy` con 6 commits y rama
+    `feature/idartes-cve-2026-109618-session-upload-progress` con 4. Ambos conteos coinciden con
+    `git rev-list --count --since` sobre las referencias remotas locales. Las ramas con `/`
+    funcionan.
+  - La rama principal (`master`, último commit de 2024) devuelve 0 commits, lo cual es correcto. Una
+    rama sin publicar devuelve `repository_not_found`, también correcto.
+  - `scm.pullrequests.list`: `pandora_proxy` no tiene PR (el historial no tiene merges de PR). En
+    `hub` devuelve 19 PR `MERGED` dentro de la ventana y en orden determinista.
+- **Brechas que siguen abiertas:**
+  - La lista `required` del 403 no se ha observado en vivo.
   - Cada lectura hace 3 llamadas de identidad.
   - El modelo HTTP solo admite `scm.repositories.list`.
+- **Hallazgo de entorno:** una sesión de agente que hereda `VIRTUAL_ENV` del checkout principal
+  resuelve primero `solercia-connect/.venv/bin/solercia-connect`, que es una versión anterior y
+  responde `No such option: --repo`. Un shell nuevo resuelve `~/.local/bin/solercia-connect`.
 
 ## Siguiente paso
 
-Camilo:
-
-1. Crea el token en id.atlassian.com con «Create API token with scopes», eligiendo la app Bitbucket
-   y los cuatro alcances de lectura.
-2. Lo agrega a `connect.env` como `BITBUCKET_API_TOKEN`.
-3. Ejecuta `connect bitbucket … --workspace idartes-tecnologia --token-env BITBUCKET_API_TOKEN`.
+Lectura de Bitbucket validada. Lo que queda es decisión de Camilo: integrar las ramas en `main` y
+decidir si Bitbucket necesita escrituras, como comentar PR, cada una con su propia ADR.
