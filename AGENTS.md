@@ -2,11 +2,14 @@
 
 Solercia Connect is a Python 3.12, official-first connector runtime for Microsoft 365,
 Google Workspace, Jira, and GLPI. It normalizes read operations into typed records with
-provenance and deterministic execution receipts. It has exactly two bounded writes: assigning
+provenance and deterministic execution receipts. It has exactly three bounded writes: assigning
 Outlook categories to one message (`mail.categories.set`), accepted in
-`docs/decisions/2026-10-19-escritura-categorias-outlook.md`, and the status transition of one Jira
+`docs/decisions/2026-10-19-escritura-categorias-outlook.md`; the status transition of one Jira
 issue (`external.issues.transition`), accepted in
-`docs/decisions/2026-10-25-escritura-transiciones-jira.md`.
+`docs/decisions/2026-10-25-escritura-transiciones-jira.md`; and sending Gmail in two steps, a
+draft (`mail.draft.create`) and then the send of that reviewed draft (`mail.draft.send`) over the
+separate `gmail-compose` connection, accepted in
+`docs/decisions/2026-10-25-envio-correo-gmail-dos-pasos.md`.
 
 ## Stack
 
@@ -50,10 +53,13 @@ uv build
   malformed provider data, and unknown failures.
 - Never log credentials, cookies, bearer tokens, authorization headers, or raw error bodies.
 - Browser operations are read-only, except the category write above, and use a dedicated profile,
-  never a personal Chrome profile. The Jira transition runs only over the official REST API.
+  never a personal Chrome profile. The Jira transition and the Gmail writes run only over the
+  official REST APIs.
 - Writes need an explicit per-invocation `--allow-write` flag, off by default, never run over HTTP,
-  never retry, and touch nothing but either the categories of one Outlook message or the status of
-  one Jira issue through one transition that requires no fields. Any other write needs a new ADR.
+  never retry, and touch nothing but the categories of one Outlook message, the status of one Jira
+  issue through one transition that requires no fields, or one plain-text Gmail draft from the
+  connected account and the send of one named draft after a duplicate check. The `gmail` target
+  stays read-only. Any other write needs a new ADR.
 - Keep provider access behind semantic ports; do not add CRUD repositories for vendor APIs.
 - Use timezone-aware datetimes and end-exclusive ranges.
 - Tests stay with the behavior they prove. Do not commit or push unless explicitly requested.

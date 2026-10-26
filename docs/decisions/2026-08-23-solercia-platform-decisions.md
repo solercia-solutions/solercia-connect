@@ -102,7 +102,14 @@ este registro fija la línea base aceptada al 2026-08-23.
    [`2026-10-25-escritura-transiciones-jira.md`](2026-10-25-escritura-transiciones-jira.md): la
    transición de estado de un issue de Jira (`external.issues.transition`), solo por la API REST
    oficial, con `--allow-write` en cada invocación, una clave por invocación, sin campos, sin HTTP,
-   sin reintentos y con lectura del estado antes y después. Ninguna otra escritura queda autorizada.
+   sin reintentos y con lectura del estado antes y después. El mismo día se aceptó una tercera
+   excepción en [`2026-10-25-envio-correo-gmail-dos-pasos.md`](2026-10-25-envio-correo-gmail-dos-pasos.md):
+   el envío de correo de Gmail en dos pasos, primero un borrador (`mail.draft.create`) y, después de
+   la revisión y la aprobación expresa de la persona usuaria, el envío de ese borrador
+   (`mail.draft.send`). Solo usa la API oficial y la conexión separada `gmail-compose` con
+   `gmail.compose`; el target `gmail` sigue siendo de solo lectura. Exige `--allow-write` en cada
+   invocación, fija el remitente en la cuenta conectada, verifica duplicados en Enviados antes de
+   enviar y no admite HTTP ni reintentos. Ninguna otra escritura queda autorizada.
 
 ### 4. Frontera de seguridad e identidad de cuenta
 
@@ -265,6 +272,8 @@ No deben presentarse como capacidades terminadas.
   modo proyecto con secretos en archivo.
 - [`2026-10-25-escritura-transiciones-jira.md`](2026-10-25-escritura-transiciones-jira.md):
   excepción de escritura para la transición de estado de un issue de Jira.
+- [`2026-10-25-envio-correo-gmail-dos-pasos.md`](2026-10-25-envio-correo-gmail-dos-pasos.md):
+  excepción de escritura para el envío de correo de Gmail en dos pasos.
 
 Las referencias anteriores amplían este registro. Si una descripción histórica queda menos
 precisa que una decisión aceptada aquí, debe corregirse mediante un cambio documental explícito,

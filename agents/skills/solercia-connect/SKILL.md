@@ -4,7 +4,7 @@ description: "Trigger: Outlook, Teams, Gmail, Google Calendar, Jira, GLPI, conne
 license: MIT
 metadata:
   author: solercia
-  version: "2.1"
+  version: "2.2"
 ---
 
 ## Activation contract
@@ -34,10 +34,15 @@ being the current working directory.
 - Keep exact timezone-aware end-exclusive ranges. **Empty remains empty**: if a range returns zero
   records, report zero. Never widen the window to find something.
 - Write large reads to a file with `--output`; never pour a month of mail through the context.
-- There are exactly two writes: `mail.categories.set` (the categories of one Outlook message) and
-  `external.issues.transition` (the status of one Jira issue). Add `--allow-write` only when the
-  user asked for that exact change in this conversation; never add it to a read, never run it over
-  HTTP, and never retry a `write_conflict` without reading the message or issue again.
+- There are exactly three writes: `mail.categories.set` (the categories of one Outlook message),
+  `external.issues.transition` (the status of one Jira issue), and the Gmail pair
+  `mail.draft.create` / `mail.draft.send` (one draft, then the send of that reviewed draft, on the
+  separate `gmail-compose` connection). Add `--allow-write` only when the user asked for that exact
+  change in this conversation; never add it to a read, never run it over HTTP, and never retry a
+  `write_conflict` without reading the message or issue again.
+- Send Gmail only in two steps: draft, user review, then send after the user explicitly approves
+  that draft id. Never send in loops, never invent recipients, and never pass `--allow-duplicate`
+  without the user's explicit approval.
 - Transition a Jira issue only when the user explicitly asks for it, one issue per invocation.
   Never loop over issues in bulk unless the user listed each key. When unsure of the exact target
   status name, run `external.issues.transitions.list` for that issue first.
@@ -110,12 +115,14 @@ installed runtime is older than this skill; ask the user to reinstall it.
 | `mail.categories.set` (write) | no, needs a scope decision | yes, with `--allow-write` |
 | `external.issues.transitions.list` (Jira) | yes | no |
 | `external.issues.transition` (Jira write) | yes, with `--allow-write`, API token only | no |
+| `mail.draft.create` / `mail.draft.send` (Gmail writes) | yes, `gmail-compose`, with `--allow-write` | no |
 
 The browser column describes Microsoft. Google (Gmail, Calendar, Meet) and Jira browser routes are
 being implemented per the 2026-10-25 ADR; until they ship, those providers are official-only.
 
 Records are identical across routes; `provenance` is the only field naming the route.
-Gmail currently offers `mail.sent.list` only.
+Gmail currently offers `mail.sent.list` only as a read; the `gmail-compose` target adds the two
+Gmail writes described below.
 
 **Outlook categories.** Every Outlook mail record carries `categories`, the category names on the
 message (empty list when none). Read a case's state from it; do not infer state from the subject.
@@ -154,6 +161,35 @@ lists the reachable statuses: report them and ask, do not guess. `transition_amb
 the transitions again and report before any retry. `write_scope_missing` means the account is
 connected over OAuth: ask the user to reconnect it with an API token (`--token-env`).
 
+**Sending Gmail (two steps).** Only when the user explicitly asks to send an email, from an account
+the user connected once with `solercia-connect connect gmail-compose <account>` (the read-only
+`gmail` connection of the same account lets the send check Sent for duplicates). Follow every step:
+
+1. Confirm with the user which account sends the email; never assume it.
+2. Create the draft. Put the body in a UTF-8 text file (or pipe it with `--body-stdin`); never pass
+   it as an argument. Name every recipient explicitly with `--to`, `--cc` or `--bcc` (20 at most).
+3. Show the user a preview in chat from the returned record (draft id, from, recipients, subject,
+   body preview) and ask them to review the draft in Gmail > Drafts.
+4. Send only after the user explicitly approves that draft id in this conversation.
+5. Never send in loops or batches, never invent or guess recipients, and never pass
+   `--allow-duplicate` without the user's explicit approval.
+
+```bash
+solercia-connect run --provider google.gmail --capability mail.draft.create \
+  --account user@example.com --to recipient@example.com --cc copy@example.com \
+  --subject 'Weekly report' --body-file ./body.txt --allow-write
+solercia-connect run --provider google.gmail --capability mail.draft.send \
+  --account user@example.com --draft-id '<draft id>' --allow-write
+```
+
+`From` is always the connected account. `duplicate_suspected` means Sent already holds a message
+with the same subject and recipients: report its date and ask; add `--allow-duplicate` only if the
+user approves. `duplicate_check_unavailable` means the read-only `gmail` connection is missing:
+ask the user to run `solercia-connect connect gmail <account>`. `write_unverified` means the draft
+may exist or the message may have been sent: ask the user to check Gmail and never retry on your
+own. `write_scope_missing` means the user must run `solercia-connect connect gmail-compose
+<account>`. `draft_not_found` means the draft was already sent or deleted.
+
 **Transcripts.** The official route addresses the online meeting, so it needs `--meeting-id` plus
 tenant-granted scopes. The browser route reads the recording that carries the transcript, which is
 a drive item, so it takes `--drive-id` with `--item-id`, or just a window that reads every
@@ -177,6 +213,7 @@ yet; until it ships, Playwright is not offered for Google Meet.
 | Existing read | Run the narrow capability; preserve record schema, provenance and receipt |
 | Category change | Only on an explicit user request; pass `--allow-write` for that one run |
 | Jira status change | Only on an explicit user request, one issue key per run with `--allow-write`; list the transitions first when the target name is uncertain |
+| Sending a Gmail email | Confirm the account, create the draft, show the preview, and send only after the user explicitly approves that draft id |
 | Microsoft admin-consent failure | Use browser only when the user explicitly allowed it |
 | Google `admin_policy_enforced` or Jira API token blocked by the organization | Report the typed error; the browser route for these families is still being implemented |
 | Teams tenant policy or personal account | Stop with typed remediation; never bypass |

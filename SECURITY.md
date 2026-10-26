@@ -1,10 +1,13 @@
 # Solercia Connect security boundary
 
-Solercia Connect reads institutional communication and service-management data. It has exactly two
-bounded writes: assigning Outlook categories to one message, and the status transition of one Jira
-issue; see [Write exception: Outlook categories](#write-exception-outlook-categories) and
-[Write exception: Jira issue transition](#write-exception-jira-issue-transition). Treat OAuth grants,
-browser profiles, raw provider payloads, normalized output, and local API access as sensitive.
+Solercia Connect reads institutional communication and service-management data. It has exactly
+three bounded writes: assigning Outlook categories to one message, the status transition of one
+Jira issue, and sending Gmail in two steps (a draft, then the send of that reviewed draft); see
+[Write exception: Outlook categories](#write-exception-outlook-categories),
+[Write exception: Jira issue transition](#write-exception-jira-issue-transition), and
+[Write exception: Gmail draft and send](#write-exception-gmail-draft-and-send). Treat OAuth
+grants, browser profiles, raw provider payloads, normalized output, and local API access as
+sensitive.
 
 ## Secret and configuration storage
 
@@ -76,11 +79,14 @@ keyring, and the same env-file rules apply.
   `OnlineMeetingTranscript.Read.All`; Google `gmail.readonly` and
   `calendar.events.readonly` are separate grants; Jira OAuth `read:jira-work`, `read:jira-user`,
   `read:me` and `offline_access`.
-- No write scope is requested. The official route of the category write would need
+- The read targets request no write scope. The official route of the category write would need
   `Mail.ReadWrite`, and adding it to the `outlook` target invalidates every existing grant, because
   a stored grant must contain all of the target's scopes. That route stays disabled until a
   separate scope decision. The Jira transition would need `write:jira-work`, which the Atlassian
   OAuth grant does not request, so an OAuth Jira profile cannot write; Jira API tokens can.
+- The only write scope is Google `gmail.compose`, requested solely by the separate `gmail-compose`
+  target (`openid`, `email`, `gmail.compose`, token key `gmail-compose:<account>`). The `gmail`
+  target keeps `gmail.readonly` alone, so no read grant can send.
 - Teams transcripts require work/school accounts and tenant permission. Personal accounts and
   Microsoft tenant/admin policy blocks never route around policy. Google and Jira organizational
   blocks follow the [browser fallback](#browser-fallback) rules below.
@@ -88,8 +94,9 @@ keyring, and the same env-file rules apply.
 ## Service and output
 
 - The FastAPI adapter binds to loopback by default and rejects non-loopback host configuration.
-- HTTP never writes: `POST /v1/run` rejects `mail.categories.set` and `external.issues.transition`
-  with 403 before the application service runs, with or without the interactive login opt-in.
+- HTTP never writes: `POST /v1/run` rejects `mail.categories.set`, `external.issues.transition`,
+  `mail.draft.create`, and `mail.draft.send` with 403 before the application service runs, with or
+  without the interactive login opt-in.
 - By default HTTP never opens or invokes a browser, starts interactive OAuth, or waits for
   login/MFA. Browser requests are rejected before application-service, runtime, or provider
   invocation. It returns an `action_required` envelope with the canonical CLI command.
@@ -166,9 +173,9 @@ mechanism is allowed.
 
 ## Write exception: Outlook categories
 
-Assigning categories to an existing Outlook message (`mail.categories.set`) is one of the two
-writes, as accepted in `docs/decisions/2026-10-19-escritura-categorias-outlook.md`. Nothing else is
-written to the mailbox: no mail is sent, moved, marked, created, or deleted, and no master
+Assigning categories to an existing Outlook message (`mail.categories.set`) is the first of the
+three writes, as accepted in `docs/decisions/2026-10-19-escritura-categorias-outlook.md`. Nothing
+else is written to the mailbox: no mail is sent, moved, marked, created, or deleted, and no master
 category, folder, calendar, file, or ticket changes.
 
 - Every invocation needs `--allow-write`, off by default. Without it the command fails with
@@ -209,6 +216,43 @@ transition screen), and no worklog, link, attachment, sprint, or project setting
   `write_scope_missing` before any provider call, because its grant lacks `write:jira-work`; the
   default Atlassian OAuth scopes do not change.
 - HTTP rejects the capability by design; it runs only in the canonical CLI and the library.
+
+## Write exception: Gmail draft and send
+
+Sending Gmail in two steps is the third write, as accepted in
+`docs/decisions/2026-10-25-envio-correo-gmail-dos-pasos.md`: `mail.draft.create` creates one
+plain-text draft, the user reviews it in Gmail > Drafts, and only after the user explicitly
+approves that draft id does `mail.draft.send` send it. Nothing else is written: no mail is sent
+without a draft (`users.messages.send` is never used), no message is replied to, forwarded, moved,
+labeled, or deleted, no draft is edited or deleted, no attachment or HTML body is written, and no
+filter, signature, or mailbox setting changes.
+
+- Both capabilities run only on the separate `gmail-compose` target and only over the official
+  Gmail API. They are not on the Google browser allowlist, and `--allow-browser-fallback` is
+  refused as `invalid_input`.
+- Every invocation needs `--allow-write`, off by default. Without it the command fails with
+  `write_not_authorized` before any registry or provider call. No environment variable or profile
+  stands in for it.
+- `--account` is required, and the Gmail identity (`users.getProfile`) is proven before the reads
+  and the write. `From` is always the connected account: no alias is accepted when creating, and a
+  draft whose `From` is missing or different fails closed when sending.
+- Recipients come only from explicit `--to` (at least one), `--cc`, and `--bcc`, at most 20 in
+  total, validated and without repeats. The subject is one non-empty line. The body is UTF-8 plain
+  text up to 200 KB, read from `--body-file` or `--body-stdin`, never from a command-line argument.
+- Unless `--allow-duplicate` is passed, the send first reads Sent of the last 30 days through the
+  read-only `gmail` connection of the same account, because `users.messages.list` and
+  `users.messages.get` do not accept `gmail.compose`. A sent message with the same normalized
+  subject and recipient set fails closed with `duplicate_suspected`, reporting its sent date only;
+  a missing read connection fails closed with `duplicate_check_unavailable`.
+- Each command sends at most one `POST` (`users.drafts.create` or `users.drafts.send` with the exact
+  body `{"id": "<draft>"}`) and never retries it. A `5xx`, a timeout, a network failure, or an
+  unreadable answer after the `POST` fails with `write_unverified`, stating the draft may exist or
+  the message may have been sent; check Gmail before any new attempt.
+- A `gmail-compose` grant without `gmail.compose` fails closed with `write_scope_missing` before any
+  provider call; the remediation is `solercia-connect connect gmail-compose <account>`.
+- Errors and records never carry the full body or a raw provider body; the draft record carries a
+  preview of the first 200 characters only.
+- HTTP rejects both capabilities by design; they run only in the canonical CLI and the library.
 
 ## Never log or serialize
 
