@@ -276,13 +276,13 @@ Pedido de Camilo, 2026-10-25: «mi idea es conectarme con Jira en pandora_proxy 
 cambio de estado de las historias que tengo acceso por api». Decisión D4, «ADR de transición»,
 aceptada ese mismo día. Contexto: sitio `idartes-tecnologia.atlassian.net`, proyecto `CP`.
 
-- [ ] **T8.0** Escribir la ADR de escritura de transiciones en Jira.
+- [x] **T8.0** Escribir la ADR de escritura de transiciones en Jira.
   - Sigue el molde de `2026-10-19-escritura-categorias-outlook.md`.
   - Actualizar `AGENTS.md`, `SECURITY.md` y el skill, para que la segunda escritura permitida sea
     la transición de estado de un issue.
-- [ ] **T8.1** Lectura `external.issues.transitions.list --issue <clave>`.
+- [x] **T8.1** Lectura `external.issues.transitions.list --issue <clave>`.
   - Devuelve las transiciones disponibles con su estado destino y si exigen campos.
-- [ ] **T8.2** Escritura `external.issues.transition --issue <clave> --to <estado> --allow-write`.
+- [x] **T8.2** Escritura `external.issues.transition --issue <clave> --to <estado> --allow-write`.
   - Solo un issue y solo su estado.
   - Exige coincidencia exacta de una sola transición. Si coinciden cero o varias, falla de forma
     cerrada.
@@ -290,6 +290,66 @@ aceptada ese mismo día. Contexto: sitio `idartes-tecnologia.atlassian.net`, pro
   - Usa solo la ruta oficial, nunca por HTTP y sin reintentos.
   - Lee el estado antes y después, y deja recibo de ambos.
   - Con OAuth falla de forma cerrada mientras el grant no incluya `write:jira-work`.
+
+Detalle de la Fase 8 (commits `1f42e9d`, `b6a043e` y `b0a413e`):
+
+- **T8.0:** se escribió la ADR `2026-10-25-escritura-transiciones-jira.md`. Se actualizaron
+  `AGENTS.md`, `SECURITY.md`, el skill y el §3.9 del registro de plataforma.
+- **T8.1:** se agregó `external.issues.transitions.list --issue`.
+  - Rojo: 28 fallos.
+  - Un 404 devuelve `issue_not_found`.
+  - Si la clave pedida resuelve a otro issue, falla de forma cerrada.
+- **T8.2:** se agregó `external.issues.transition --issue --to --allow-write`.
+  - Rojo: 42 fallos.
+  - Errores tipados: `transition_unavailable`, `transition_ambiguous`,
+    `transition_requires_fields`, `write_scope_missing` y `write_unverified`. Un 409 devuelve
+    `write_conflict`.
+  - Se probó desactivando la exclusión de reintentos y la protección de `to`.
+- **Pruebas existentes:**
+  - `test_cli_lifecycle.py` recorre todas las capacidades. Se le agregaron 6 líneas (importación,
+    entrada, `issue` y una omisión para la escritura). No se quitó nada.
+  - El orquestador lo acepta como extensión.
+- **Cambio transversal aceptado:** el `error.message` de un `run` fallido ahora sale del paso que
+  produjo la razón final, no del último paso. Antes, toda falla oficial sin respaldo decía
+  «Browser fallback was not explicitly enabled».
+- **Compuertas:** 1.069 pruebas (verificado por el orquestador), cobertura 87,42 %.
+- **Dato de uso:** `--provider` recibe el identificador del proveedor (`jira.cloud`,
+  `google.gmail`), no el destino. El `LEEME.md` de `pandora_proxy` se corrigió.
+
+Corrección en vivo `e72fb18` (verificada en `pandora_proxy`):
+
+- **Defecto:** `status gmail` fallaba porque Google guarda `email` como
+  `https://www.googleapis.com/auth/userinfo.email`.
+  - `grant_covers()` ahora reconoce los alias de `email` y `profile`.
+  - Rojo: 3 fallos.
+  - Verde: 1.073 pruebas, cobertura 87,42 %.
+- **Riesgo:** el token guardado traía `gmail.modify`, `calendar`, `drive.readonly` y
+  `gmail.settings.basic`, heredados por `include_granted_scopes=true` del cliente compartido con
+  AUTOMATINFORMES. Se eliminó ese parámetro. Camilo debe volver a ejecutar `connect gmail` para
+  quedar con un token de solo lectura.
+- **Reinstalación global:** se reinstaló la herramienta desde la rama, con la Fase 8 y esta
+  corrección, y se refrescaron las copias del skill.
+- **Validación en vivo:**
+  - `status jira`: `connected_official`, token clásico, `idartes-tecnologia`.
+  - `status gmail`: `connected_official`.
+  - `transitions.list CP-1356`: el estado actual es «Tareas por hacer» y los destinos son «Tareas por
+    hacer», «En curso», «Finalizada» (transición «Listo»), «impediment» y «Por Desplegar».
+  - Todavía no se ha probado en vivo la escritura de una transición.
+- **Aviso a la sesión `migracion-angular-pandora` (2026-10-25):**
+  - le llegaron los comandos y las reglas de la ADR, y se le aclaró que Gmail es de solo lectura y
+    no envía correos;
+  - queda abierta la aclaración sobre la cuenta `idt.gov.co` que mencionó Camilo.
+
+Pendientes nuevos:
+
+- [ ] **T7.9** Mejorar los mensajes de error.
+  - Si el descubrimiento está apagado y existe `.solercia-connect/` en la raíz de git, el mensaje
+    debe sugerir `source ~/.zshrc`.
+  - `--token-env` debe explicar dónde busca la variable.
+- [ ] **T8.3** Lectura de historias abiertas, por ejemplo las del sprint actual asignadas al
+  usuario. Hoy `external.issues.search` solo devuelve issues resueltos. Requiere la decisión de
+  Camilo.
+- Candidato a feature nueva: integración con Bitbucket Cloud. Se evalúa aparte.
 
 ### Fase 6 — Cierre
 
