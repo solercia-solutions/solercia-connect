@@ -201,11 +201,38 @@ def test_run_application_rejects_invalid_typed_requests_before_runtime(
     assert result.error is not None and result.error.cause_category == "input"
 
 
-def test_inbox_mail_request_for_gmail_is_rejected_before_any_capability_dispatch() -> None:
-    result = application.run_application(_payload(type="gmail", capability="mail.inbox.list"))
+def test_unsupported_gmail_capability_is_rejected_before_any_capability_dispatch() -> None:
+    result = application.run_application(_payload(type="gmail", capability="files.search"))
 
     assert result.status == "invalid_input"
     assert result.error is not None and result.error.cause_category == "input"
+
+
+def test_gmail_inbox_request_passes_validation_and_reaches_the_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    registry_calls: list[dict[str, object]] = []
+    outcome = ExecutionOutcome(
+        True,
+        (),
+        _receipt(ok=True, reason=ReasonCode.SUCCESS, route=RouteKind.OFFICIAL),
+    )
+
+    def registry(**kwargs: object) -> str:
+        registry_calls.append(kwargs)
+        return "registry"
+
+    monkeypatch.setattr(application, "registry_from_environment", registry)
+    monkeypatch.setattr(application, "ConnectorRuntime", _capturing_runtime(outcome, captured))
+
+    result = application.run_application(_payload(type="gmail", capability="mail.inbox.list"))
+
+    assert result.ok is True
+    assert [call["connection_type"] for call in registry_calls] == [ConnectionType.GMAIL]
+    assert captured["request"].provider_id == "google.gmail"
+    assert captured["request"].capability is Capability.MAIL_INBOX_LIST
+    assert isinstance(captured["request"].payload, MailQuery)
 
 
 def test_noninteractive_google_meet_requires_an_account() -> None:

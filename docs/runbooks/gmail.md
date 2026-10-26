@@ -22,6 +22,27 @@ Open the returned official URL while the finite loopback listener is waiting. Th
 only after Gmail observes the requested identity. Google loopback guidance:
 <https://developers.google.com/identity/protocols/oauth2/resources/loopback-migration>.
 
+## Read the inbox and the sent mail
+
+The `gmail` connection serves two reads over the official API only:
+
+```bash
+solercia-connect run --provider google.gmail --capability mail.inbox.list \
+  --account user@example.com \
+  --start '2026-08-01T00:00:00-05:00' --end '2026-09-01T00:00:00-05:00' --output entrada.json
+solercia-connect run --provider google.gmail --capability mail.sent.list \
+  --account user@example.com \
+  --start '2026-08-01T00:00:00-05:00' --end '2026-09-01T00:00:00-05:00' --output enviados.json
+```
+
+`mail.inbox.list` searches `in:inbox` with the `INBOX` label, reads each message in full, and keeps
+only the messages whose `internalDate` (the instant Google accepted them) falls inside the
+end-exclusive window. Records match the Outlook inbox record: `folder` is `inbox`, `received_at` is
+`internalDate`, `sent_at` comes from the `Date` header (or `internalDate` when that header is
+unusable), and `internet_message_id` is the `Message-ID` header. Records come oldest first; when the
+window holds more than `--limit` messages, Gmail returns the latest ones. There is no browser route
+for the inbox.
+
 ## Your own Google Cloud OAuth client
 
 The Desktop client belongs to your own Google Cloud project. Its publishing status and the policy

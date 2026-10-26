@@ -108,7 +108,7 @@ installed runtime is older than this skill; ask the user to reinstall it.
 | Capability | Official (Graph/Google) | Browser (supervised session) |
 | --- | --- | --- |
 | `mail.sent.list` | yes | yes |
-| `mail.inbox.list` (Outlook only) | yes | yes |
+| `mail.inbox.list` | yes | yes (Outlook only) |
 | `calendar.events.list` | yes | yes |
 | `files.search` / `files.get` | yes | yes |
 | `meeting.transcripts.list` / `meeting.transcript.get` | yes, needs tenant scopes | yes (Microsoft only) |
@@ -121,8 +121,9 @@ The browser column describes Microsoft. Google (Gmail, Calendar, Meet) and Jira 
 being implemented per the 2026-10-25 ADR; until they ship, those providers are official-only.
 
 Records are identical across routes; `provenance` is the only field naming the route.
-Gmail currently offers `mail.sent.list` only as a read; the `gmail-compose` target adds the two
-Gmail writes described below.
+The `gmail` target reads `mail.sent.list` and `mail.inbox.list` over the official route. In the
+browser fallback policy, Gmail currently offers `mail.sent.list` only: the Gmail inbox and the two
+`gmail-compose` writes described below are official-only.
 
 **Outlook categories.** Every Outlook mail record carries `categories`, the category names on the
 message (empty list when none). Read a case's state from it; do not infer state from the subject.

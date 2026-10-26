@@ -70,6 +70,13 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "messages.list + messages.get full MIME body",
     ),
     CapabilityRow(
+        "Gmail API",
+        "official",
+        "mail.inbox.list",
+        "implemented-offline",
+        "in:inbox query, strict range on internalDate, ascending order, full MIME body; not live",
+    ),
+    CapabilityRow(
         "Google Calendar API",
         "official",
         "calendar.events.list",

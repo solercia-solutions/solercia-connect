@@ -93,7 +93,8 @@ The root wrapper is only a convenience alias and contains no provider logic:
 | Capability | Official (Graph) | Browser (supervised session) |
 |---|---|---|
 | `mail.sent.list` (with attachments) | yes | yes |
-| `mail.inbox.list` (Outlook only) | yes | yes |
+| `mail.inbox.list` (Outlook) | yes | yes |
+| `mail.inbox.list` (Gmail) | yes — Gmail API, `in:inbox` | no (official-only) |
 | `calendar.events.list` | yes | yes |
 | `files.search` / `files.get` | yes | yes |
 | `meeting.transcripts.*` (Microsoft) | yes | yes — different selector, see below |
@@ -233,7 +234,7 @@ interchangeable: a mail token is never reused for a drive call.
 | --- | --- | --- | --- |
 | Outlook | Device-code OAuth; Graph identity, sent mail, and calendar reads | Session identity via exact read-only Outlook REST `/api/v2.0/me`; extraction remains `not_implemented` | REST identity shape verified for UAECD; Connect live command remains tenant-gated |
 | Teams | Device-code OAuth; known-meeting transcript list/download using `OnlineMeetingTranscript.Read.All` | Recording transcripts over the SharePoint drive, own and shared, by item or by period | Drive transcript contract verified live against a work tenant; official route pending admin proof |
-| Gmail | Desktop OAuth loopback with state + PKCE; read-only sent-mail capability | None | Pending dedicated account proof |
+| Gmail | Desktop OAuth loopback with state + PKCE; read-only sent-mail and inbox capabilities | None | Pending dedicated account proof |
 | Google Calendar | Desktop OAuth loopback with state + PKCE; read-only event capability | None | Pending dedicated account proof |
 | Google Meet | Desktop OAuth loopback with state + PKCE; Calendar attachment discovery and Drive text export (`text/plain`) | None (official-only) | Offline contract verified; third-party transcript export pending |
 | Jira | API-token or OAuth connection; JQL search, transition listing, and one-issue transition write (API token) | None | Pending supported-site proof |

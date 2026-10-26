@@ -136,7 +136,8 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
     TargetSpec(
         ConnectionType.GMAIL,
         "google.gmail",
-        ("mail.sent.list",),
+        # Read-only: the inbox is served by the official route alone, never by the browser.
+        ("mail.sent.list", "mail.inbox.list"),
         ("SOLERCIA_CONNECT_GOOGLE_CLIENT_ID",),
         ("openid", "email", "https://www.googleapis.com/auth/gmail.readonly"),
         ("Google OAuth Desktop app client", "Workspace admin approval when policy requires it"),

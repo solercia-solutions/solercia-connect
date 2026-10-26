@@ -3,9 +3,10 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, date, datetime, time
-from email.utils import getaddresses
-from typing import Any, cast
+from email.utils import getaddresses, parsedate_to_datetime
+from typing import Any, Literal, cast
 from urllib.parse import quote
 
 from solercia_connect.auth import AuthorizationProvider
@@ -46,6 +47,7 @@ _GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3"
 # app; no other documented reason means an organization block.
 _GOOGLE_POLICY_REASONS = frozenset({"domainPolicy"})
 _MAX_ERROR_BODY_BYTES = 64 * 1024
+_GmailFolder = Literal["sent", "inbox"]
 
 
 def google_policy_failure(status_code: int, content: bytes) -> ConnectorFailure | None:
@@ -88,7 +90,7 @@ class GoogleGmailAdapter:
         "google.gmail",
         ProviderFamily.GOOGLE,
         RouteKind.OFFICIAL,
-        frozenset({Capability.MAIL_SENT_LIST}),
+        frozenset({Capability.MAIL_SENT_LIST, Capability.MAIL_INBOX_LIST}),
     )
 
     def __init__(
@@ -126,12 +128,31 @@ class GoogleGmailAdapter:
             request.payload, MailQuery
         ):
             return self.list_sent_mail(request.payload)
+        if request.capability is Capability.MAIL_INBOX_LIST and isinstance(
+            request.payload, MailQuery
+        ):
+            return self.list_inbox_mail(request.payload)
         raise ConnectorFailure(
             ReasonCode.CAPABILITY_NOT_IMPLEMENTED,
             "Gmail request does not match the mail capability contract",
         )
 
     def list_sent_mail(self, query: MailQuery) -> tuple[MailMessage, ...]:
+        messages = self._list_folder(query, "sent")
+        messages.sort(key=lambda item: item.sent_at, reverse=True)
+        return tuple(messages[: query.limit])
+
+    def list_inbox_mail(self, query: MailQuery) -> tuple[MailMessage, ...]:
+        """Read the inbox in the window, oldest received first, like the Microsoft inbox.
+
+        Gmail lists newest first and gives no order parameter, so when the window holds more than
+        ``limit`` messages these are the latest ``limit`` of them.
+        """
+        messages = self._list_folder(query, "inbox")
+        messages.sort(key=lambda item: item.received_at or item.sent_at)
+        return tuple(messages[: query.limit])
+
+    def _list_folder(self, query: MailQuery, folder: _GmailFolder) -> list[MailMessage]:
         account = self._identity()
         if query.account_id and query.account_id.lower() != account.lower():
             raise ConnectorFailure(
@@ -140,9 +161,10 @@ class GoogleGmailAdapter:
             )
         after_epoch = int(query.window.start.timestamp()) - 1
         before_epoch = int(query.window.end.timestamp())
+        search, label = ("from:me", "SENT") if folder == "sent" else ("in:inbox", "INBOX")
         params: dict[str, Any] = {
-            "q": f"from:me after:{after_epoch} before:{before_epoch}",
-            "labelIds": "SENT",
+            "q": f"{search} after:{after_epoch} before:{before_epoch}",
+            "labelIds": label,
             "maxResults": min(query.limit, 100),
         }
         ids = self._list_message_ids(params, query.limit)
@@ -156,11 +178,18 @@ class GoogleGmailAdapter:
                 params={"format": "full"},
                 failure_refiner=google_policy_failure,
             )
-            message = self._normalize_message(require_mapping(payload, "gmail.message"), account)
-            if query.window.start <= message.sent_at < query.window.end:
+            item = require_mapping(payload, "gmail.message")
+            message = (
+                self._normalize_message(item, account)
+                if folder == "sent"
+                else self._normalize_inbox_message(item, account)
+            )
+            # The window is strict on the instant the folder is ordered by: when it was sent, or
+            # when Google accepted it into the inbox.
+            instant = message.sent_at if message.received_at is None else message.received_at
+            if query.window.start <= instant < query.window.end:
                 messages.append(message)
-        messages.sort(key=lambda item: item.sent_at, reverse=True)
-        return tuple(messages[: query.limit])
+        return messages
 
     def _identity(self) -> str:
         payload = request_json(
@@ -218,14 +247,7 @@ class GoogleGmailAdapter:
         source_id = require_string(item.get("id"), "gmail.message.id")
         payload = require_mapping(item.get("payload"), "gmail.message.payload")
         headers = _gmail_headers(payload.get("headers"))
-        internal_date = require_string(item.get("internalDate"), "gmail.message.internalDate")
-        try:
-            sent_at = datetime.fromtimestamp(int(internal_date) / 1000, tz=UTC)
-        except ValueError as exc:
-            raise ConnectorFailure(
-                ReasonCode.MALFORMED_PROVIDER_DATA,
-                "Gmail internalDate is malformed",
-            ) from exc
+        sent_at = _gmail_internal_date(item)
         body, body_format = _gmail_body(payload)
         sender_values = _addresses_from_header(headers.get("from"))
         return MailMessage(
@@ -249,6 +271,26 @@ class GoogleGmailAdapter:
                 "/users/me/messages/{id}",
             ),
             folder="sent",
+        )
+
+    def _normalize_inbox_message(self, item: dict[str, Any], account: str) -> MailMessage:
+        """Shape an inbox message like the Microsoft inbox record.
+
+        ``received_at`` is Gmail's ``internalDate``, the instant Google accepted the message. The
+        sent instant comes from the ``Date`` header and falls back to ``internalDate`` when that
+        header is missing, unparseable, or carries no time zone.
+        """
+        message = self._normalize_message(item, account)
+        headers = _gmail_headers(
+            require_mapping(item.get("payload"), "gmail.message.payload").get("headers")
+        )
+        received_at = message.sent_at
+        return replace(
+            message,
+            sent_at=_gmail_date_header(headers.get("date")) or received_at,
+            internet_message_id=as_string(headers.get("message-id")),
+            folder="inbox",
+            received_at=received_at,
         )
 
     def _headers(self) -> dict[str, str]:
@@ -474,6 +516,28 @@ def _gmail_headers(value: Any) -> dict[str, str]:
         if name and header_value:
             result[name.lower()] = header_value
     return result
+
+
+def _gmail_internal_date(item: dict[str, Any]) -> datetime:
+    internal_date = require_string(item.get("internalDate"), "gmail.message.internalDate")
+    try:
+        return datetime.fromtimestamp(int(internal_date) / 1000, tz=UTC)
+    except ValueError as exc:
+        raise ConnectorFailure(
+            ReasonCode.MALFORMED_PROVIDER_DATA,
+            "Gmail internalDate is malformed",
+        ) from exc
+
+
+def _gmail_date_header(value: str | None) -> datetime | None:
+    """Parse an RFC 2822 ``Date`` header; anything unusable or naive yields ``None``."""
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _addresses_from_header(value: str | None) -> tuple[EmailAddress, ...]:
