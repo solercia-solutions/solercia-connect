@@ -266,7 +266,7 @@ descubrimiento»: el lanzador por proyecto se reemplaza por el CLI global y el s
   - El modo proyecto es transparente.
   - Ante `action_required`, el agente se detiene y pide el `connect`.
   - El agente nunca lee `connect.env`, `secrets/` ni `data/`.
-- [ ] **T7.8** Retirar el lanzador de `pandora_proxy`. Esta tarea depende de que la herramienta
+- [x] **T7.8** Retirar el lanzador de `pandora_proxy`. Esta tarea depende de que la herramienta
   global tenga este código; esa decisión de entrega la toma Camilo.
 
 ### Fase 6 — Cierre
@@ -588,6 +588,25 @@ Detalle de T7.6 (commit `5e1c367`) y T7.7 (commit `80d4103`):
 - El `solercia-connect` del PATH sale de `solercia-connect/.venv`, el checkout principal en
   `feat/http-interactive-login`.
 - La transparencia depende de T7.8 y de la decisión de entrega.
+
+**T7.8 (hecha el 2026-10-25).** Camilo eligió «Instalar desde esta rama».
+
+- **CLI:** `uv tool install --reinstall "solercia-connect[oauth,browser,service] @ file://<worktree>"`.
+  Quedó la versión 0.4.0 en `~/.local/bin`. En un shell de login nuevo, `solercia-connect` resuelve a
+  esa copia. El `.venv` del checkout principal no se tocó.
+- **Skill 2.1:** se copió, no se enlazó, a `~/.claude/skills/solercia-connect` y
+  `~/.agents/skills/solercia-connect`. El arnés lo detecta.
+- **Shell:** se agregó `export SOLERCIA_CONNECT_PROJECT_DISCOVERY=1` al final de `~/.zshrc`.
+- **pandora_proxy:**
+  - Se retiró `solercia-connect.sh`.
+  - `LEEME.md` ahora usa `solercia-connect` directo.
+  - Verificación desde un shell nuevo: `project_home_source: discovered`, `ready: true`,
+    `git_guard: clean` y `gitignore: ignores_all`. git no ve nada.
+- **Reversión:**
+  - `uv tool uninstall solercia-connect`
+  - borrar las dos copias del skill
+  - quitar la línea de `~/.zshrc`
+- **Cuando la rama se integre:** reinstalar desde `main` y volver a copiar el skill.
 
 ### Rebanadas de entrega (`feature-branch-chain`)
 
