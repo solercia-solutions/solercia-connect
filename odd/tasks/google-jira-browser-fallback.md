@@ -357,22 +357,68 @@ Pendientes nuevos:
 Pedido de Camilo, 2026-10-25: «conectar para leer y enviar tambien correos a
 cristian.calderontapia@idartes.gov.co». Decisión D5, «Dentro de solercia-connect».
 
-- [ ] **T9.0** Escribir la ADR del envío de correo en Gmail en dos pasos.
+Decisiones del orquestador durante la Fase 9, derivadas de D5 (2026-10-25):
+
+- `test_inbox_mail_request_for_gmail_is_rejected_before_any_capability_dispatch` codificaba «Gmail no
+  tiene bandeja de entrada». Se adapta a D5 sin perder su intención:
+  - el rechazo antes del despacho se prueba con una capacidad que Gmail no ofrece;
+  - una prueba nueva demuestra que la bandeja de Gmail llega al registro.
+- La verificación de duplicados lee Enviados por la conexión `gmail` de solo lectura, porque
+  `gmail.compose` no autoriza `messages.list`.
+  - Si esa conexión falta, se falla de forma cerrada con `duplicate_check_unavailable`.
+  - `--allow-duplicate` omite la verificación y requiere la aprobación de Camilo.
+- Se agrega `"gmail-compose"` a la lista ordenada de `test_connection_types_are_ordered…`, una
+  línea aditiva.
+- `--to` pasa a ser repetible: exactamente un estado para la transición de Jira y una lista de
+  destinatarios para el borrador de Gmail.
+
+- [x] **T9.0** Escribir la ADR del envío de correo en Gmail en dos pasos (commit `16f4b8c`).
   - El agente crea un borrador, Camilo lo revisa en Gmail y solo con su aprobación se envía.
   - El envío usa una conexión separada, `gmail-compose` con `gmail.compose`, por mínimo privilegio.
     La conexión `gmail` sigue siendo de solo lectura.
   - Actualizar `AGENTS.md`, `SECURITY.md` y el skill.
-- [ ] **T9.1** Lectura `mail.inbox.list` para Gmail, solo por la ruta oficial con `gmail.readonly`.
+- [x] **T9.1** Lectura `mail.inbox.list` para Gmail, solo por la ruta oficial con `gmail.readonly`.
   - Usa el mismo registro normalizado que la bandeja de Outlook.
-- [ ] **T9.2** Escritura `mail.draft.create`.
+- [x] **T9.2** Escritura `mail.draft.create`.
   - Crea un borrador con destinatarios, asunto y cuerpo explícitos.
   - Remitente: solo la cuenta conectada, sin alias. Sin adjuntos.
   - Requiere `--allow-write`, nunca por HTTP y sin reintentos.
-- [ ] **T9.3** Escritura `mail.draft.send --draft-id`.
+- [x] **T9.3** Escritura `mail.draft.send --draft-id`.
   - Requiere `--allow-write`, nunca por HTTP y sin reintentos.
   - Antes de enviar busca en Enviados un correo con el mismo asunto y los mismos destinatarios. Si
     lo encuentra, falla de forma cerrada salvo que se pase `--allow-duplicate`.
   - Deja recibo con el identificador del mensaje enviado.
+
+Detalle de la Fase 9 (commits `16f4b8c`, `20d954c`, `560a5dc` y `89ea037`):
+
+- **T9.1:** bandeja de entrada de Gmail con `in:inbox` y `labelIds=INBOX`, más `messages.get full`.
+  - Usa el mismo registro normalizado que Outlook.
+  - Rojo: 12 fallos, más la prueba nueva que no pasaba con el `config.py` de `HEAD`.
+- **T9.2:** se agregaron el destino `gmail-compose` (alcance `gmail.compose`) y `mail.draft.create`.
+  - Límites: 20 destinatarios, cuerpo de 200 KB y asunto de 255 caracteres.
+  - Las direcciones pasan por un control que no deja romper los encabezados.
+  - Un POST sin confirmar devuelve `write_unverified`.
+  - Rojo: `ImportError: GMAIL_COMPOSE_SCOPE`.
+- **T9.3:** se agregó `mail.draft.send --draft-id`.
+  - La verificación de duplicados usa la conexión `gmail` de lectura y revisa como máximo 100
+    candidatos. Si no puede verificar, falla de forma cerrada.
+  - Códigos nuevos: `duplicate_suspected` y `duplicate_check_unavailable`.
+  - Rojo: 47 fallos.
+- **Pruebas existentes:**
+  - Solo los cambios autorizados.
+  - En `test_application` se adaptó la prueba de la bandeja.
+  - En `test_cli_lifecycle` el conteo pasó a `== len(TARGET_SPECS)`, se reorganizó la importación y
+    se agregaron líneas en el ciclo.
+  - En `test_standalone_foundation` se agregó una línea.
+- **Compuertas:** 1.212 pruebas (verificado por el orquestador), cobertura 88,28 %, `ruff` y `mypy`
+  limpios.
+- **Brechas:**
+  - Todo está `implemented-offline`.
+  - `gmail.compose` es un alcance restringido; puede que haya que declararlo en la pantalla de
+    consentimiento del cliente propio.
+  - No se verificó si Gmail conserva el encabezado Bcc en Enviados.
+  - Un 403 por falta de alcance no se refina a `write_scope_missing`. Lo cubre la revisión del
+    grant guardado antes de cada llamada.
 
 ### Fase 6 — Cierre
 
