@@ -4,7 +4,7 @@ description: "Trigger: Outlook, Teams, Gmail, Google Calendar, Jira, GLPI, conne
 license: MIT
 metadata:
   author: solercia
-  version: "2.0"
+  version: "2.1"
 ---
 
 ## Activation contract
@@ -18,8 +18,12 @@ being the current working directory.
 ## Hard rules
 
 - Invoke the `solercia-connect` command; never recreate HTTP, OAuth, callback, normalization,
-  retry, selector, output, or fallback logic in an agent prompt or ad hoc script.
+  retry, selector, output, or fallback logic in an agent prompt or ad hoc script. Call it by name,
+  never through a per-project launcher or an absolute path to a binary.
 - Validate with `solercia-connect doctor TYPE ACCOUNT` before connection or reads.
+- Never read, print, or copy `connect.env`, `secrets/`, or `data/` of a project folder
+  (`.solercia-connect`). Never attempt a provider login on the user's behalf, and never ask for
+  passwords or tokens in chat.
 - Use official APIs first. Browser fallback requires explicit opt-in: every browser attempt needs
   `--allow-browser-fallback` on that invocation. Configuration availability alone never authorizes
   one. Today it serves Microsoft only; the Google and Jira browser routes are accepted in the
@@ -38,7 +42,7 @@ being the current working directory.
 
 ```bash
 solercia-connect doctor  outlook user@example.com
-solercia-connect connect outlook user@example.com
+solercia-connect connect outlook user@example.com   # the user runs it: it opens the login
 solercia-connect status  outlook user@example.com
 
 solercia-connect run \
@@ -52,6 +56,43 @@ solercia-connect run \
 
 Add `--allow-browser-fallback` to every command when the account is connected over the supervised
 browser session rather than official OAuth.
+
+**Connecting Jira.** `connect jira ACCOUNT` takes:
+
+- `--site`: the Jira site URL, such as `https://your-site.atlassian.net`.
+- `--token-kind classic|scoped|oauth`: `classic` (default) and `scoped` are API tokens; a scoped
+  token outside `atlassian.net` also needs `--cloud-id`. `oauth` authorizes the configured
+  Atlassian app in the browser and takes no token.
+- `--token-env NAME`: reads the API token from variable `NAME` of the process environment,
+  `SOLERCIA_CONNECT_ENV_FILE` or the project `connect.env`. The token is never an argument.
+
+```bash
+solercia-connect connect jira user@example.com \
+  --site https://your-site.atlassian.net --token-kind classic --token-env JIRA_API_TOKEN
+```
+
+## Project mode
+
+Project mode keeps one project's connections, browser sessions, secrets and `connect.env` in its
+own private, git-ignored `.solercia-connect` folder. It is transparent: when the user enabled
+`SOLERCIA_CONNECT_PROJECT_DISCOVERY` (once, in the shell profile) or set `SOLERCIA_CONNECT_HOME`,
+every `solercia-connect …` command run inside the repository uses that folder. The commands do not
+change and never go through a per-project launcher; with discovery on, nothing is exported.
+
+To set up a project:
+
+1. Run `solercia-connect project init` from inside the repository. It creates
+   `<git root>/.solercia-connect` and a `connect.env` holding commented variable names and no
+   values; it never overwrites an existing one. Its JSON `next_steps` say what remains, such as
+   enabling discovery.
+2. Ask the user to fill `connect.env` in their own editor.
+3. Ask the user to run each `connect` command once; the user completes the provider interaction.
+
+`doctor` reports `project_mode` and `project_home_source` (`explicit` or `discovered`). Without
+either variable, Connect stays in its global mode. A `configuration_invalid` error naming
+`SOLERCIA_CONNECT_HOME` or `.solercia-connect`, for example because git tracks a file inside it,
+is a stop: relay its remediation to the user. If `project init` is an unknown command, the
+installed runtime is older than this skill; ask the user to reinstall it.
 
 ## What each route reads
 
@@ -68,6 +109,7 @@ The browser column describes Microsoft. Google (Gmail, Calendar, Meet) and Jira 
 being implemented per the 2026-10-25 ADR; until they ship, those providers are official-only.
 
 Records are identical across routes; `provenance` is the only field naming the route.
+Gmail currently offers `mail.sent.list` only.
 
 **Outlook categories.** Every Outlook mail record carries `categories`, the category names on the
 message (empty list when none). Read a case's state from it; do not infer state from the subject.
@@ -107,13 +149,13 @@ yet; until it ships, Playwright is not offered for Google Meet.
 | Need | Action |
 | --- | --- |
 | Missing readiness | Run `doctor`; report missing variable names and remediation |
-| Interactive OAuth or browser login | Run `connect TYPE ACCOUNT`; the user completes the provider interaction |
+| Interactive OAuth or browser login | Ask the user to run `connect TYPE ACCOUNT`; the user completes the provider interaction |
 | Existing read | Run the narrow capability; preserve record schema, provenance and receipt |
 | Category change | Only on an explicit user request; pass `--allow-write` for that one run |
 | Microsoft admin-consent failure | Use browser only when the user explicitly allowed it |
 | Google `admin_policy_enforced` or Jira API token blocked by the organization | Report the typed error; the browser route for these families is still being implemented |
 | Teams tenant policy or personal account | Stop with typed remediation; never bypass |
-| An `action_required` envelope | Run the exact remediation command in the CLI; never attempt login through the HTTP service |
+| An `action_required` envelope | Stop and ask the user to run the exact `connect` command from its remediation; never attempt the login yourself or through the HTTP service, and never ask for passwords or tokens in chat |
 | Zero records | Report zero. Do not widen the range, and do not improvise scraping |
 | Live proof | Only with explicit opt-in and a dedicated account |
 
@@ -130,7 +172,11 @@ uv tool install solercia-connect        # or: uv tool install <path-to-clone>
 solercia-connect --help
 ```
 
-Configuration lives in an environment file the user points to, never in the repository:
+After the clone is updated, the user reinstalls with `uv tool install --reinstall <path-to-clone>`
+so the CLI gains new commands such as `project init`.
+
+Global configuration lives in an environment file the user points to, never in the repository; in
+project mode it lives in the git-ignored `.solercia-connect/connect.env` instead:
 
 ```bash
 export SOLERCIA_CONNECT_ENV_FILE=~/.solercia/connect.env

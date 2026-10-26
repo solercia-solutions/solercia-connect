@@ -20,6 +20,10 @@ solercia-connect --help
 
 Si no tienes `uv`, sirve `pipx install .`.
 
+Para actualizarlo, ejecuta `git pull` en el clon y luego, desde su carpeta,
+`uv tool install --reinstall .` (con `pipx`, `pipx install --force .`). Sin ese
+paso, la CLI instalada no conoce los comandos nuevos.
+
 ## 2. Configurar
 
 Crea tu propio archivo de entorno, fuera del repositorio:
@@ -126,11 +130,26 @@ agente adivina los comandos.
 
 ```bash
 mkdir -p ~/.claude/skills
-ln -s "$(pwd)/agents/skills/solercia-connect" ~/.claude/skills/solercia-connect
+ln -sfn "$(pwd)/agents/skills/solercia-connect" ~/.claude/skills/solercia-connect
 ```
 
 Queda disponible en cualquier carpeta donde abras Claude Code, y `git pull`
 sobre el clon lo actualiza solo.
+
+Cuando se integre una versión nueva, como la que agrega `project init` y el
+descubrimiento del modo proyecto, vuelve a ejecutar la instalación desde la
+carpeta del clon, después de `git pull`:
+
+```bash
+uv tool install --reinstall .
+mkdir -p ~/.claude/skills
+ln -sfn "$(pwd)/agents/skills/solercia-connect" ~/.claude/skills/solercia-connect
+```
+
+Los tres comandos se pueden repetir sin riesgo: el primero actualiza la CLI y
+el último reemplaza el enlace del skill por uno que apunta a la versión del
+clon. Si antes copiaste la carpeta del skill en lugar de enlazarla, bórrala de
+`~/.claude/skills` y crea el enlace.
 
 ### Opción B — solo en un proyecto
 
