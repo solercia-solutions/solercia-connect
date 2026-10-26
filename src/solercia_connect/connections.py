@@ -35,6 +35,7 @@ from solercia_connect.oauth import (
     GoogleOAuthProvider,
     MicrosoftOAuthProvider,
     OAuthTokenStore,
+    grant_covers,
 )
 from solercia_connect.oauth_session import LoopbackCallbackServer, build_pkce_pair
 from solercia_connect.ports import BrowserProviderAdapter, HTTPTransport
@@ -492,8 +493,7 @@ class ConnectionService:
             tokens = self._tokens.load(_token_key(parsed, normalized))
             if tokens is None:
                 return self._action_required("status", parsed, normalized)
-            required_scopes = set(target_spec(parsed).oauth_scopes)
-            if not required_scopes.issubset(tokens.scopes):
+            if not grant_covers(target_spec(parsed).oauth_scopes, tokens.scopes):
                 return self._failure(
                     "status",
                     parsed,

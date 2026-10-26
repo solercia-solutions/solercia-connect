@@ -33,7 +33,7 @@ from solercia_connect.domain import (
 )
 from solercia_connect.envelope import ErrorDetail, ResultEnvelope, versioned_record
 from solercia_connect.errors import ConnectorFailure
-from solercia_connect.oauth import OAuthTokenStore
+from solercia_connect.oauth import OAuthTokenStore, grant_covers
 from solercia_connect.project_secrets import oauth_token_store_from_settings
 from solercia_connect.runtime import ConnectorRuntime
 
@@ -147,7 +147,7 @@ def run_application(
             tokens = store.load(f"{type_value.value}:{account}")
         except ConnectorFailure as failure:
             return _configuration_failure(type_value, account, failure.safe_message)
-        if tokens is None or not set(target_spec(type_value).oauth_scopes).issubset(tokens.scopes):
+        if tokens is None or not grant_covers(target_spec(type_value).oauth_scopes, tokens.scopes):
             return _interactive_action(type_value, account)
 
     try:

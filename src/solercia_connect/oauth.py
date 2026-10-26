@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import isfinite
@@ -44,6 +44,21 @@ class OAuthTokenSet:
             raise ValueError("Only bearer OAuth tokens are supported")
         if not self.scopes or any(not scope.strip() for scope in self.scopes):
             raise ValueError("OAuth tokens require at least one non-empty scope")
+
+
+# Google answers the OpenID short names with their userinfo URLs, so the stored grant says
+# `https://www.googleapis.com/auth/userinfo.email` where the target asked for `email`.
+_SCOPE_ALIASES = {
+    "https://www.googleapis.com/auth/userinfo.email": "email",
+    "https://www.googleapis.com/auth/userinfo.profile": "profile",
+}
+
+
+def grant_covers(required: Iterable[str], granted: Iterable[str]) -> bool:
+    """Whether a stored grant holds every scope a target requires, reading provider aliases."""
+
+    held = {_SCOPE_ALIASES.get(scope, scope) for scope in granted}
+    return {_SCOPE_ALIASES.get(scope, scope) for scope in required}.issubset(held)
 
 
 class OAuthTokenStore(Protocol):
@@ -542,9 +557,10 @@ class GoogleOAuthProvider(_RefreshCapableOAuthProvider):
             redirect_uri,
             state,
             code_challenge,
+            # No include_granted_scopes: every target's grant holds only its own read scopes, even
+            # when the Desktop client is shared with tools that were granted more.
             extra={
                 "access_type": "offline",
-                "include_granted_scopes": "true",
                 "prompt": "consent",
             },
         )
