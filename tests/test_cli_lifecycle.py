@@ -410,6 +410,9 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
         if capability is Capability.SCM_PULLREQUESTS_LIST:
             # A Bitbucket read runs through run_application only (tests/test_bitbucket_reads.py).
             continue
+        if capability is Capability.SCM_COMMITS_LIST:
+            # A Bitbucket read runs through run_application only (tests/test_bitbucket_reads.py).
+            continue
         query = cli._query_payload(capability, **common)
         assert isinstance(query, _EXPECTED_QUERY_TYPES[capability])
 

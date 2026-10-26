@@ -27,6 +27,8 @@ from solercia_connect.domain import (
     ProviderFamily,
     ReasonCode,
     RouteKind,
+    ScmCommit,
+    ScmCommitQuery,
     ScmPullRequest,
     ScmPullRequestQuery,
     ScmRepository,
@@ -792,3 +794,284 @@ def test_the_cli_passes_the_repository_and_repeated_states(monkeypatch: pytest.M
     assert seen[0]["repo"] == REPO
     assert seen[0]["state"] == ["OPEN", "MERGED"]
     assert seen[0]["type"] == "bitbucket"
+
+
+# --- scm.commits.list (B4) ------------------------------------------------------------------
+
+COMMITS = f"{API}/repositories/{WORKSPACE}/{REPO}/commits/develop"
+REPOSITORY = f"{API}/repositories/{WORKSPACE}/{REPO}"
+COMMIT_WINDOW = DateWindow(datetime(2026, 10, 1, tzinfo=UTC), datetime(2026, 10, 15, tzinfo=UTC))
+
+
+def _commit(
+    sha: str, when: str, *, message: Any = "Fix the proxy\n\nLonger body", **extra: Any
+) -> dict:
+    return {
+        "type": "commit",
+        "hash": sha,
+        "date": when,
+        "message": message,
+        "author": {
+            "raw": "Dev One <dev@example.com>",
+            "user": {"display_name": "Dev One", "account_id": "557058:dev-1"},
+        },
+        "parents": [{"hash": "0" * 40}],
+        **extra,
+    }
+
+
+def _sha(index: int) -> str:
+    return f"{index:040x}"
+
+
+def _commits(query: ScmCommitQuery, *responses: Any) -> tuple[tuple[Any, ...], Any]:
+    adapter, transport = _adapter(*_identity(), *responses)
+    records = adapter.execute(
+        ConnectorRequest.create("bitbucket.cloud", Capability.SCM_COMMITS_LIST, query)
+    )
+    return records, transport
+
+
+def test_the_commit_query_validates_the_branch_as_one_ref_name() -> None:
+    assert ScmCommitQuery(REPO, COMMIT_WINDOW).branch is None
+    for valid in ("develop", "feature/ABC-1_fix", "release/1.2"):
+        assert ScmCommitQuery(REPO, COMMIT_WINDOW, f" {valid} ").branch == valid
+    for invalid in ("", "../x", "a..b", "-x", "/x", "x/", "x.lock", "a b", "a?b", "a~b", "a//b"):
+        with pytest.raises(ValueError, match="branch"):
+            ScmCommitQuery(REPO, COMMIT_WINDOW, invalid)
+    with pytest.raises(ValueError, match="repository"):
+        ScmCommitQuery("a/b", COMMIT_WINDOW)
+
+
+def test_commits_are_filtered_in_the_client_and_stop_after_a_page_older_than_the_margin() -> None:
+    second = f"{COMMITS}?page=2"
+    third = f"{COMMITS}?page=3"
+    records, transport = _commits(
+        ScmCommitQuery(REPO, COMMIT_WINDOW, "develop"),
+        _page(
+            _commit(_sha(9), "2026-10-20T00:00:00+00:00"),
+            _commit(_sha(8), "2026-10-14T23:59:59+00:00"),
+            _commit(_sha(7), "2026-10-15T00:00:00+00:00"),
+            next_url=second,
+        ),
+        _page(
+            # Topological order: an old commit does not end the read while its page is mixed.
+            _commit(_sha(6), "2026-09-01T00:00:00+00:00"),
+            _commit(_sha(5), "2026-10-01T00:00:00+00:00", message="Merge\n"),
+            _commit(_sha(8), "2026-10-14T23:59:59+00:00"),
+            next_url=third,
+        ),
+        _page(
+            _commit(_sha(4), "2026-09-23T00:00:00+00:00"),
+            _commit(_sha(3), "2026-09-30T23:59:59+00:00"),
+            next_url=f"{COMMITS}?page=4",
+        ),
+        _page(
+            _commit(_sha(2), "2026-10-02T00:00:00+00:00"),
+            _commit(_sha(1), "2026-09-01T00:00:00+00:00"),
+            next_url=f"{COMMITS}?page=5",
+        ),
+        _page(
+            _commit(_sha(0), "2026-08-01T00:00:00+00:00"),
+            _commit("a" * 40, "2026-08-02T00:00:00+00:00"),
+            next_url=f"{COMMITS}?page=6",
+        ),
+    )
+
+    assert [request.url for request in transport.requests] == [
+        *IDENTITY,
+        COMMITS,
+        second,
+        third,
+        f"{COMMITS}?page=4",
+        f"{COMMITS}?page=5",
+    ]
+    assert transport.requests[3].params == {"pagelen": 100}
+    assert [record.hash for record in records] == [_sha(8), _sha(2), _sha(5)]
+    first = records[0]
+    assert isinstance(first, ScmCommit)
+    assert first.date == datetime(2026, 10, 14, 23, 59, 59, tzinfo=UTC)
+    assert first.author == "Dev One <dev@example.com>"
+    assert first.author_account_id == "557058:dev-1"
+    assert first.summary == "Fix the proxy"
+    assert first.parent_count == 1
+    assert first.branch == "develop" and first.repository == REPO and first.workspace == WORKSPACE
+    assert first.provenance.source_id == f"{WORKSPACE}/{REPO}@{_sha(8)}"
+    assert (
+        first.provenance.endpoint == "/2.0/repositories/{workspace}/{repo_slug}/commits/{revision}"
+    )
+    assert records[2].summary == "Merge"
+
+
+def test_without_a_branch_the_main_branch_of_the_repository_is_read() -> None:
+    records, transport = _commits(
+        ScmCommitQuery(REPO, COMMIT_WINDOW),
+        json_response(200, {"slug": REPO, "mainbranch": {"name": "develop"}}),
+        _page(
+            _commit(
+                _sha(1), "2026-10-02T00:00:00Z", author={"raw": "bot"}, parents=[], message=None
+            )
+        ),
+    )
+
+    assert [request.url for request in transport.requests] == [*IDENTITY, REPOSITORY, COMMITS]
+    assert records[0].branch == "develop"
+    assert records[0].author == "bot" and records[0].author_account_id is None
+    assert records[0].parent_count == 0 and records[0].summary == ""
+
+
+def test_a_branch_with_a_slash_is_one_encoded_path_segment() -> None:
+    collection = f"{API}/repositories/{WORKSPACE}/{REPO}/commits/feature%2Fx"
+    records, transport = _commits(
+        ScmCommitQuery(REPO, COMMIT_WINDOW, "feature/x"),
+        _page(_commit(_sha(2), "2026-10-02T00:00:00Z"), next_url=f"{collection}?page=2"),
+        _page(_commit(_sha(1), "2026-09-01T00:00:00Z")),
+    )
+
+    assert [request.url for request in transport.requests][3:] == [
+        collection,
+        f"{collection}?page=2",
+    ]
+    assert [record.branch for record in records] == ["feature/x"]
+
+
+def test_the_page_bound_fails_with_result_incomplete_unless_the_last_page_ends_the_read() -> None:
+    recent = [
+        _page(_commit(_sha(index), "2026-10-02T00:00:00Z"), next_url=f"{COMMITS}?page={index + 2}")
+        for index in range(29)
+    ]
+
+    with pytest.raises(ConnectorFailure) as captured:
+        _commits(
+            ScmCommitQuery(REPO, COMMIT_WINDOW, "develop"),
+            *recent,
+            _page(_commit(_sha(99), "2026-10-02T00:00:00Z"), next_url=f"{COMMITS}?page=31"),
+        )
+    assert captured.value.reason is ReasonCode.RESULT_INCOMPLETE
+    assert "30 pages" in captured.value.safe_message
+
+    records, transport = _commits(
+        ScmCommitQuery(REPO, COMMIT_WINDOW, "develop"),
+        *recent,
+        _page(_commit(_sha(99), "2026-08-01T00:00:00Z"), next_url=f"{COMMITS}?page=31"),
+    )
+    assert len(records) == 29 and len(transport.requests) == 3 + 30
+
+
+def test_an_unknown_repository_or_branch_and_a_missing_main_branch_fail_closed() -> None:
+    adapter, _ = _adapter(*_identity(), json_response(404, {}))
+    with pytest.raises(ConnectorFailure) as missing:
+        adapter.execute(
+            ConnectorRequest.create(
+                "bitbucket.cloud",
+                Capability.SCM_COMMITS_LIST,
+                ScmCommitQuery(REPO, COMMIT_WINDOW, "nope"),
+            )
+        )
+    assert missing.value.reason is ReasonCode.REPOSITORY_NOT_FOUND
+    assert "nope" in missing.value.safe_message
+
+    with pytest.raises(ConnectorFailure) as no_main:
+        _commits(ScmCommitQuery(REPO, COMMIT_WINDOW), json_response(200, {"mainbranch": None}))
+    assert no_main.value.reason is ReasonCode.MALFORMED_PROVIDER_DATA
+    assert "--branch" in no_main.value.safe_message
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        _commit("not-a-hash", "2026-10-02T00:00:00Z"),
+        _commit("ABCDEF1", "2026-10-02T00:00:00Z"),
+        _commit(_sha(1), "2026-10-02T00:00:00Z", date=None),
+        _commit(_sha(1), "2026-10-02T00:00:00Z", parents=None),
+        _commit(_sha(1), "2026-10-02T00:00:00Z", message=["x"]),
+    ],
+)
+def test_malformed_commits_fail_closed(item: dict[str, Any]) -> None:
+    with pytest.raises(ConnectorFailure) as captured:
+        _commits(ScmCommitQuery(REPO, COMMIT_WINDOW, "develop"), _page(item))
+
+    assert captured.value.reason is ReasonCode.MALFORMED_PROVIDER_DATA
+
+
+def test_run_lists_the_commits_of_a_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    keyring = _connected(tmp_path)
+    transport = FakeTransport(*_identity(), _page(_commit(_sha(1), "2026-10-02T00:00:00Z")))
+    _route_runs_to(monkeypatch, tmp_path, keyring, transport)
+
+    result = application.run_application(
+        {
+            "type": "bitbucket",
+            "account": ACCOUNT,
+            "capability": "scm.commits.list",
+            "repo": REPO,
+            "branch": "develop",
+            "start": "2026-10-01T00:00:00+00:00",
+            "end": "2026-10-15T00:00:00+00:00",
+        }
+    )
+
+    assert result.ok is True, result.error
+    records = result.to_dict()["data"]["records"]
+    assert [record["hash"] for record in records] == [_sha(1)]
+    assert records[0]["date"] == "2026-10-02T00:00:00+00:00"
+    assert transport.requests[3].url == COMMITS
+
+
+@pytest.mark.parametrize(
+    ("capability", "payload", "message"),
+    [
+        ("scm.commits.list", {"branch": "develop"}, "repo"),
+        ("scm.commits.list", {"repo": REPO}, "start and end"),
+        ("scm.commits.list", {"repo": REPO, "state": ["OPEN"]}, "state"),
+        ("scm.pullrequests.list", {"repo": REPO, "branch": "develop"}, "branch"),
+        ("scm.repositories.list", {"branch": "develop"}, "branch"),
+    ],
+)
+def test_run_refuses_invalid_commit_requests_before_provider_work(
+    monkeypatch: pytest.MonkeyPatch, capability: str, payload: dict[str, Any], message: str
+) -> None:
+    monkeypatch.setattr(application, "registry_from_environment", _no_registry)
+    window = {"start": "2026-10-01T00:00:00+00:00", "end": "2026-10-15T00:00:00+00:00"}
+    request = {**(window if message != "start and end" else {}), **payload}
+
+    result = application.run_application(
+        {"type": "bitbucket", "account": ACCOUNT, "capability": capability, **request}
+    )
+
+    assert result.status == "invalid_input"
+    assert result.error is not None and message in result.error.message
+
+
+def test_the_cli_passes_the_branch(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[dict[str, Any]] = []
+
+    def fake_run(payload: dict[str, Any]) -> Any:
+        seen.append(payload)
+        return ResultEnvelope.success(operation="run", data={"records": []})
+
+    monkeypatch.setattr(cli, "run_application", fake_run)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "--provider",
+            "bitbucket.cloud",
+            "--capability",
+            "scm.commits.list",
+            "--account",
+            ACCOUNT,
+            "--repo",
+            REPO,
+            "--branch",
+            "develop",
+            "--start",
+            "2026-10-01T00:00:00-05:00",
+            "--end",
+            "2026-10-15T00:00:00-05:00",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen[0]["branch"] == "develop" and seen[0]["repo"] == REPO

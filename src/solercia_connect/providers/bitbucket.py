@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 
 from solercia_connect.auth import AuthorizationProvider
 from solercia_connect.domain import (
@@ -28,10 +28,13 @@ from solercia_connect.domain import (
     ProviderFamily,
     ReasonCode,
     RouteKind,
+    ScmCommit,
+    ScmCommitQuery,
     ScmPullRequest,
     ScmPullRequestQuery,
     ScmRepository,
     ScmRepositoryQuery,
+    normalize_bitbucket_branch,
     normalize_bitbucket_workspace,
     utc_now,
 )
@@ -76,6 +79,12 @@ _REPOSITORY_PAGE_LENGTH = 100
 _MAX_PULL_REQUEST_PAGES = 20
 # Pull request listings may cap their page length below the global maximum of 100.
 _PULL_REQUEST_PAGE_LENGTH = 50
+# Commits have no server-side date filter and follow the graph, so the read walks back from the
+# branch head and stops after a page entirely older than the window start minus this margin.
+_MAX_COMMIT_PAGES = 30
+_COMMIT_PAGE_LENGTH = 100
+_COMMIT_ORDER_MARGIN = timedelta(days=7)
+_COMMIT_HASH = re.compile(r"[0-9a-f]{7,64}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +100,13 @@ class BitbucketAdapter:
         "bitbucket.cloud",
         ProviderFamily.BITBUCKET,
         RouteKind.OFFICIAL,
-        frozenset({Capability.SCM_REPOSITORIES_LIST, Capability.SCM_PULLREQUESTS_LIST}),
+        frozenset(
+            {
+                Capability.SCM_REPOSITORIES_LIST,
+                Capability.SCM_PULLREQUESTS_LIST,
+                Capability.SCM_COMMITS_LIST,
+            }
+        ),
     )
 
     def __init__(
@@ -131,6 +146,10 @@ class BitbucketAdapter:
             request.payload, ScmPullRequestQuery
         ):
             return self.list_pull_requests(request.payload)
+        if request.capability is Capability.SCM_COMMITS_LIST and isinstance(
+            request.payload, ScmCommitQuery
+        ):
+            return self.list_commits(request.payload)
         raise ConnectorFailure(
             ReasonCode.CAPABILITY_NOT_IMPLEMENTED,
             "Bitbucket request does not match a source-control capability contract",
@@ -194,6 +213,43 @@ class BitbucketAdapter:
         return tuple(
             sorted(found.values(), key=lambda item: (-item.updated_at.timestamp(), item.id))
         )
+
+    def list_commits(self, query: ScmCommitQuery) -> tuple[ScmCommit, ...]:
+        """List one branch's commits dated in the window, newest first.
+
+        The order follows the commit graph, not the dates, so the window is filtered here and the
+        read stops only after a whole page older than the window start minus seven days. Reaching
+        the page bound first fails with ``result_incomplete``; nothing is truncated.
+        """
+
+        workspace = query.workspace or self._workspace
+        identity = self.verify_identity(workspace)
+        repository = query.repository
+        branch = query.branch or self._main_branch(workspace, repository)
+        oldest_relevant = query.window.start - _COMMIT_ORDER_MARGIN
+        found: dict[str, ScmCommit] = {}
+        for page in self._pages(
+            f"{BITBUCKET_API_BASE_URL}/repositories/{workspace}/{repository}/commits/"
+            + quote(branch, safe=""),
+            {"pagelen": _COMMIT_PAGE_LENGTH},
+            max_pages=_MAX_COMMIT_PAGES,
+            what="commits",
+            not_found=ConnectorFailure(
+                ReasonCode.REPOSITORY_NOT_FOUND,
+                f"Bitbucket repository {workspace}/{repository} or its branch {branch} was not "
+                "found or is not visible to this account",
+            ),
+        ):
+            commits = [
+                self._commit(require_mapping(raw, "bitbucket.commit"), repository, branch, identity)
+                for raw in require_list(page.get("values"), "bitbucket.commits.values")
+            ]
+            for commit in commits:
+                if _inside(commit.date, query.window):
+                    found[commit.hash] = commit
+            if commits and all(commit.date < oldest_relevant for commit in commits):
+                break
+        return tuple(sorted(found.values(), key=lambda item: (-item.date.timestamp(), item.hash)))
 
     def verify_identity(self, workspace: str | None = None) -> BitbucketIdentity:
         """Prove the account in three steps before any data read (decision B-D2)."""
@@ -321,6 +377,63 @@ class BitbucketAdapter:
                 f"{identity.workspace}/{repository}#{number}",
                 identity,
                 "/2.0/repositories/{workspace}/{repo_slug}/pullrequests",
+            ),
+        )
+
+    def _main_branch(self, workspace: str, repository: str) -> str:
+        payload = require_mapping(
+            self._get(
+                f"{BITBUCKET_API_BASE_URL}/repositories/{workspace}/{repository}",
+                not_found=_repository_not_found(workspace, repository),
+            ),
+            "bitbucket.repository",
+        )
+        name = _nested(payload, "mainbranch", "name")
+        if name is None:
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Bitbucket reports no main branch for this repository; pass --branch",
+            )
+        try:
+            return normalize_bitbucket_branch(name)
+        except ValueError:
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Bitbucket reports a main branch name that is not a safe ref; pass --branch",
+            ) from None
+
+    def _commit(
+        self, item: dict[str, Any], repository: str, branch: str, identity: BitbucketIdentity
+    ) -> ScmCommit:
+        sha = require_string(item.get("hash"), "bitbucket.commit.hash")
+        if _COMMIT_HASH.fullmatch(sha) is None:
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Provider field is not a commit hash: bitbucket.commit.hash",
+            )
+        message = item.get("message")
+        if message is None:
+            message = ""
+        if not isinstance(message, str):
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Provider field is not a string: bitbucket.commit.message",
+            )
+        text = message.strip()
+        return ScmCommit(
+            sha,
+            parse_datetime(item.get("date"), "bitbucket.commit.date"),
+            _nested(item, "author", "raw"),
+            _nested(item, "author", "user", "account_id"),
+            text.splitlines()[0].strip() if text else "",
+            len(require_list(item.get("parents"), "bitbucket.commit.parents")),
+            branch,
+            repository,
+            identity.workspace,
+            self._provenance(
+                f"{identity.workspace}/{repository}@{sha}",
+                identity,
+                "/2.0/repositories/{workspace}/{repo_slug}/commits/{revision}",
             ),
         )
 

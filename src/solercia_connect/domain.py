@@ -32,6 +32,7 @@ class Capability(StrEnum):
     # Bitbucket Cloud reads, official route only: docs/decisions/2026-10-26-conector-bitbucket.md.
     SCM_REPOSITORIES_LIST = "scm.repositories.list"
     SCM_PULLREQUESTS_LIST = "scm.pullrequests.list"
+    SCM_COMMITS_LIST = "scm.commits.list"
 
 
 class ProviderFamily(StrEnum):
@@ -314,6 +315,27 @@ def normalize_bitbucket_repository(value: object) -> str:
     return candidate
 
 
+# One git branch name: no space, control or special character, no "..", "//" or leading "-", "/"
+# or ".", and no trailing "/", "." or ".lock". It is percent-encoded into one path segment.
+_BITBUCKET_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}")
+
+
+def normalize_bitbucket_branch(value: object) -> str:
+    """Return the branch name unchanged when it is one safe ref name; refuse anything else."""
+    candidate = value.strip() if isinstance(value, str) else ""
+    if (
+        _BITBUCKET_BRANCH.fullmatch(candidate) is None
+        or ".." in candidate
+        or "//" in candidate
+        or candidate.endswith(("/", ".", ".lock"))
+    ):
+        raise ValueError(
+            "The branch must be one git branch name of letters, digits, '.', '_', '-' or '/', "
+            "such as develop or feature/x"
+        )
+    return candidate
+
+
 @dataclass(frozen=True, slots=True)
 class ScmRepositoryQuery:
     """List the repositories of one Bitbucket workspace the account is a member of.
@@ -359,6 +381,27 @@ class ScmPullRequestQuery:
         object.__setattr__(
             self, "states", tuple(state for state in PULL_REQUEST_STATES if state in requested)
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ScmCommitQuery:
+    """List the commits of one branch dated inside an end-exclusive window.
+
+    Without a branch the adapter reads the repository's main branch.
+    """
+
+    repository: str
+    window: DateWindow
+    branch: str | None = None
+    workspace: str | None = None
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "repository", normalize_bitbucket_repository(self.repository))
+        if self.branch is not None:
+            object.__setattr__(self, "branch", normalize_bitbucket_branch(self.branch))
+        if self.workspace is not None:
+            object.__setattr__(self, "workspace", normalize_bitbucket_workspace(self.workspace))
 
 
 def same_status_name(first: str, second: str) -> bool:
@@ -601,6 +644,7 @@ type QueryPayload = (
     | MailDraftSendRequest
     | ScmRepositoryQuery
     | ScmPullRequestQuery
+    | ScmCommitQuery
 )
 
 
@@ -891,6 +935,22 @@ class ScmPullRequest:
     provenance: Provenance
 
 
+@dataclass(frozen=True, slots=True)
+class ScmCommit:
+    """One commit of a branch: ``summary`` is the first line of its message."""
+
+    hash: str
+    date: datetime
+    author: str | None
+    author_account_id: str | None
+    summary: str
+    parent_count: int
+    branch: str
+    repository: str
+    workspace: str
+    provenance: Provenance
+
+
 type DomainRecord = (
     MailMessage
     | CalendarEvent
@@ -905,6 +965,7 @@ type DomainRecord = (
     | MailSendResult
     | ScmRepository
     | ScmPullRequest
+    | ScmCommit
 )
 
 
@@ -995,6 +1056,7 @@ _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.MAIL_DRAFT_SEND: MailSendResult,
     Capability.SCM_REPOSITORIES_LIST: ScmRepository,
     Capability.SCM_PULLREQUESTS_LIST: ScmPullRequest,
+    Capability.SCM_COMMITS_LIST: ScmCommit,
 }
 
 

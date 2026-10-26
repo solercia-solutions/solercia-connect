@@ -333,6 +333,13 @@ def run_capability(
             "--repo", help="Bitbucket repository slug (scm.pullrequests.list, scm.commits.list)"
         ),
     ] = None,
+    branch: Annotated[
+        str | None,
+        typer.Option(
+            "--branch",
+            help="Bitbucket branch; defaults to the repository's main branch (scm.commits.list)",
+        ),
+    ] = None,
     state: Annotated[
         list[str] | None,
         typer.Option(
@@ -409,6 +416,8 @@ def run_capability(
             payload["workspace"] = workspace
         if repo is not None:
             payload["repo"] = repo
+        if branch is not None:
+            payload["branch"] = branch
         if state is not None:
             payload["state"] = list(state)
         if capability is Capability.MAIL_DRAFT_CREATE:

@@ -37,6 +37,7 @@ from solercia_connect.domain import (
     MailQuery,
     QueryPayload,
     ReasonCode,
+    ScmCommitQuery,
     ScmPullRequestQuery,
     ScmRepositoryQuery,
     TicketQuery,
@@ -290,10 +291,11 @@ _ISSUE_CAPABILITIES = frozenset(
     {Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST, Capability.EXTERNAL_ISSUES_TRANSITION}
 )
 # The Bitbucket reads and the options that apply to them alone.
-_SCM_OPTIONS = ("workspace", "repo", "state")
+_SCM_OPTIONS = ("workspace", "repo", "state", "branch")
 _SCM_OPTIONS_BY_CAPABILITY: dict[Capability, tuple[str, ...]] = {
     Capability.SCM_REPOSITORIES_LIST: ("workspace",),
     Capability.SCM_PULLREQUESTS_LIST: ("workspace", "repo", "state"),
+    Capability.SCM_COMMITS_LIST: ("workspace", "repo", "branch"),
 }
 # `to` is the target status of a Jira transition and the recipients of a Gmail draft.
 _TO_CAPABILITIES = frozenset({Capability.EXTERNAL_ISSUES_TRANSITION, Capability.MAIL_DRAFT_CREATE})
@@ -519,6 +521,14 @@ def _query(
             _required_string(payload, "repo"),
             _required_window(_window(payload.get("start"), payload.get("end"))),
             _pull_request_states(payload.get("state")),
+            _optional_string(payload.get("workspace")),
+            account,
+        )
+    if capability is Capability.SCM_COMMITS_LIST:
+        return ScmCommitQuery(
+            _required_string(payload, "repo"),
+            _required_window(_window(payload.get("start"), payload.get("end"))),
+            _optional_string(payload.get("branch")),
             _optional_string(payload.get("workspace")),
             account,
         )
