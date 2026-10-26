@@ -134,9 +134,11 @@ Microsoft alone, so a Google or Jira run that is allowed by policy ends in
 a Jira API token blocked by organization policy as organizational permission not available,
 eligible like `admin_consent_required`.
 
-The only write, `mail.categories.set`, adds a second per-invocation gate: the runtime refuses it
-with `write_not_authorized` before any adapter runs unless the request carries the CLI's
-`--allow-write`, and it never retries a write. The official Graph adapter does not expose it (its
+The two writes, `mail.categories.set` and `external.issues.transition`, add a second
+per-invocation gate: the runtime refuses them with `write_not_authorized` before any adapter runs
+unless the request carries the CLI's `--allow-write`, and it never retries a write. The category
+write is described next; the Jira transition runs only on the official Jira adapter, which is on
+no browser list (`docs/decisions/2026-10-25-escritura-transiciones-jira.md`). The official Graph adapter does not expose it (its
 `Mail.ReadWrite` scope would invalidate stored Outlook grants), so it reaches the browser adapter
 through `official_capability_unavailable`. There the driver reads the message's categories and
 version, writes nothing when the names already match, and otherwise sends one `If-Match` `PATCH`

@@ -94,10 +94,16 @@ tiene el mensaje (lista vacía si no tiene ninguna). Sirve para conocer el estad
 que el equipo le asignó a un caso. El catálogo de categorías del buzón no está
 disponible.
 
-## 5. Asignar categorías (la única escritura)
+## 5. Las dos escrituras: categorías de Outlook y estado de Jira
+
+Connect solo escribe en dos casos, y los dos exigen `--allow-write` en cada
+invocación: asignar categorías a un correo de Outlook y cambiar el estado de un
+issue de Jira. Nada más se escribe.
+
+### Asignar categorías a un correo
 
 `mail.categories.set` cambia las categorías de un correo. Es la única operación
-que escribe en el buzón y exige `--allow-write` en cada invocación:
+que escribe en el buzón:
 
 ```bash
 solercia-connect run \
@@ -119,6 +125,43 @@ solercia-connect run \
   falla con `write_conflict` y no pisa ese cambio.
 - Hoy solo funciona por la ruta de navegador y nunca por el servicio HTTP.
   Pruébala primero con una categoría que el equipo no use.
+
+### Cambiar el estado de un issue de Jira
+
+`external.issues.transition` lleva un issue a otro estado mediante una sola
+transición de su flujo. Si no sabes el nombre exacto del estado destino, lista
+primero las transiciones disponibles:
+
+```bash
+solercia-connect run \
+  --provider jira.cloud \
+  --capability external.issues.transitions.list \
+  --account tu-correo@entidad.gov.co \
+  --issue CP-1356
+
+solercia-connect run \
+  --provider jira.cloud \
+  --capability external.issues.transition \
+  --account tu-correo@entidad.gov.co \
+  --issue CP-1356 \
+  --to "En curso" \
+  --allow-write
+```
+
+- `--issue` recibe una sola clave exacta, como `CP-1356`. No acepta listas,
+  rangos ni JQL: cada issue va en su propia orden.
+- Si el issue ya está en ese estado no se escribe nada y la respuesta dice
+  `changed: false`.
+- Si ninguna transición lleva a ese estado, la orden falla con
+  `transition_unavailable` y te muestra los estados disponibles. Si hay varias,
+  o si la transición exige campos, también falla sin escribir.
+- Después de escribir vuelve a leer el estado. Si no coincide, falla con
+  `write_unverified`: el cambio pudo aplicarse, así que revisa el issue antes de
+  repetir la orden.
+- Solo funciona por la API oficial y con un API token. Una conexión por OAuth
+  falla con `write_scope_missing`: reconéctala con `--token-env` para escribir.
+- Pídele al agente cada cambio de forma explícita y nombra cada issue. El
+  agente no cambia estados por su cuenta ni recorre listas de issues.
 
 ## 6. Instalar el skill para tu agente
 

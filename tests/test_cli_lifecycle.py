@@ -389,6 +389,9 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
         if capability is Capability.MAIL_CATEGORIES_SET:
             # A write is not a query; the helper refuses it (tests/test_mail_categories_set.py).
             continue
+        if capability is Capability.EXTERNAL_ISSUES_TRANSITION:
+            # Also a write; the helper refuses it (tests/test_jira_transition_write.py).
+            continue
         query = cli._query_payload(capability, **common)
         assert isinstance(query, _EXPECTED_QUERY_TYPES[capability])
 

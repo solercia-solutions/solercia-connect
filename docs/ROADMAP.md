@@ -66,6 +66,10 @@ unchecked until dedicated live evidence exists.
 
 - [x] `/myself` health/account validation and enhanced JQL representative read.
 - [x] Normalized completed/resolved issue records with provenance.
+- [x] Issue transition listing (`external.issues.transitions.list`) and the one-issue status
+  transition write (`external.issues.transition`), offline-proven, official route only, behind
+  per-invocation `--allow-write`.
+- [ ] Live-prove the transition listing and one transition on a test issue of a real Jira site.
 - [ ] Validate classic API-token and OAuth integrations against real Jira Cloud sites.
 - [ ] Add configurable project/type/status policy objects without embedding report rules.
 - [ ] Add bounded paging fixtures for sites with more than one result page.

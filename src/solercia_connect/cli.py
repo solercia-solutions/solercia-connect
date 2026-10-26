@@ -273,9 +273,13 @@ def run_capability(
         str | None,
         typer.Option("--issue", help="One exact Jira issue key, such as CP-1356"),
     ] = None,
+    to_status: Annotated[
+        str | None,
+        typer.Option("--to", help="Target status name (external.issues.transition)"),
+    ] = None,
     allow_write: Annotated[
         bool,
-        typer.Option("--allow-write", help="Authorize the category write for this invocation only"),
+        typer.Option("--allow-write", help="Authorize one write for this invocation only"),
     ] = False,
     browser_fallback: Annotated[
         bool,
@@ -328,6 +332,8 @@ def run_capability(
         # Issue-scoped options travel only when given, so other capabilities keep their payload.
         if issue is not None:
             payload["issue"] = issue
+        if to_status is not None:
+            payload["to"] = to_status
         payload["allow_browser_fallback"] = browser_fallback
         envelope = run_application(payload)
         normalized_account = envelope.account
@@ -916,6 +922,11 @@ def _query_payload(
     if capability is Capability.MAIL_CATEGORIES_SET:
         raise _InputError(
             "mail.categories.set is a write, not a query; run it with --message-id and "
+            "--allow-write"
+        )
+    if capability is Capability.EXTERNAL_ISSUES_TRANSITION:
+        raise _InputError(
+            "external.issues.transition is a write, not a query; run it with --issue, --to and "
             "--allow-write"
         )
     if capability is Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST:

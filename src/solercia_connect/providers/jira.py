@@ -17,11 +17,14 @@ from solercia_connect.domain import (
     HealthState,
     IssueQuery,
     IssueTransitionOption,
+    IssueTransitionRequest,
+    IssueTransitionResult,
     IssueTransitionsQuery,
     Provenance,
     ProviderFamily,
     ReasonCode,
     RouteKind,
+    same_status_name,
     utc_now,
 )
 from solercia_connect.errors import ConnectorFailure
@@ -126,6 +129,8 @@ class _Transition:
 
 
 _TRANSITIONS_ENDPOINT = "/rest/api/3/issue/{issueIdOrKey}/transitions"
+# Bounds the target names quoted back when no transition matches; they are not secret.
+_MAX_LISTED_TARGETS = 20
 
 
 class JiraAdapter:
@@ -133,7 +138,13 @@ class JiraAdapter:
         "jira.cloud",
         ProviderFamily.JIRA,
         RouteKind.OFFICIAL,
-        frozenset({Capability.EXTERNAL_ISSUES_SEARCH, Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST}),
+        frozenset(
+            {
+                Capability.EXTERNAL_ISSUES_SEARCH,
+                Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST,
+                Capability.EXTERNAL_ISSUES_TRANSITION,
+            }
+        ),
     )
 
     def __init__(
@@ -144,6 +155,7 @@ class JiraAdapter:
         base_url: str,
         expected_account_id: str | None = None,
         expected_account: str | None = None,
+        grant_can_write: bool = True,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._transport = transport
@@ -151,6 +163,8 @@ class JiraAdapter:
         self._base_url = ensure_https_base_url(base_url, "Jira base URL")
         self._expected_account_id = expected_account_id
         self._expected_account = expected_account
+        # False for an Atlassian OAuth grant, which never requests write:jira-work.
+        self._grant_can_write = grant_can_write
         self._clock = clock
 
     def health(self) -> HealthReport:
@@ -173,6 +187,10 @@ class JiraAdapter:
             request.payload, IssueTransitionsQuery
         ):
             return self.list_transitions(request.payload)
+        if request.capability is Capability.EXTERNAL_ISSUES_TRANSITION and isinstance(
+            request.payload, IssueTransitionRequest
+        ):
+            return self.transition_issue(request.payload)
         raise ConnectorFailure(
             ReasonCode.CAPABILITY_NOT_IMPLEMENTED,
             "Jira request does not match the external issue capability contract",
@@ -195,6 +213,61 @@ class JiraAdapter:
                 self._provenance(f"{query.issue_key}:{transition.id}", account_id),
             )
             for transition in self._transitions(query.issue_key)
+        )
+
+    def transition_issue(self, request: IssueTransitionRequest) -> tuple[IssueTransitionResult]:
+        """Move one issue to the requested status through exactly one transition.
+
+        Docs/decisions/2026-10-25-escritura-transiciones-jira.md fixes the order: identity, the
+        status before, an idempotent stop, one unambiguous field-free transition, one POST, and
+        the status after. Every refusal happens before the POST.
+        """
+        if not request.write_authorized:
+            raise ConnectorFailure(
+                ReasonCode.WRITE_NOT_AUTHORIZED,
+                "The Jira transition was not explicitly authorized for this invocation",
+            )
+        if not self._grant_can_write:
+            raise ConnectorFailure(
+                ReasonCode.WRITE_SCOPE_MISSING,
+                "The stored Atlassian OAuth grant has no write scope (write:jira-work); "
+                "reconnect this account with an API token to transition issues",
+            )
+        key = request.issue_key
+        account_id = self._identity()
+        before = self._issue_status(key)
+        provenance = self._provenance(key, account_id)
+        if same_status_name(before.name, request.to_status):
+            return (
+                IssueTransitionResult(key, before.name, before.name, None, None, False, provenance),
+            )
+        selected = _select_transition(self._transitions(key), request.to_status)
+        request_json(
+            self._transport,
+            "POST",
+            f"{self._issue_url(key)}/transitions",
+            headers=self._headers(),
+            json_body={"transition": {"id": selected.id}},
+            failure_refiner=_write_failure,
+        )
+        try:
+            after = self._issue_status(key)
+        except ConnectorFailure as failure:
+            raise ConnectorFailure(
+                ReasonCode.WRITE_UNVERIFIED,
+                f"Jira accepted the transition but its status could not be read back "
+                f"({failure.reason.value}); the write may have applied",
+            ) from None
+        if not same_status_name(after.name, request.to_status):
+            raise ConnectorFailure(
+                ReasonCode.WRITE_UNVERIFIED,
+                f"After the transition Jira reports status '{after.name}' instead of "
+                f"'{request.to_status}'; the write may have applied partially",
+            )
+        return (
+            IssueTransitionResult(
+                key, before.name, after.name, selected.id, selected.name, True, provenance
+            ),
         )
 
     def search_issues(self, query: IssueQuery) -> tuple[ExternalIssue, ...]:
@@ -472,6 +545,42 @@ def _issue_not_found(status_code: int, body: bytes) -> ConnectorFailure | None:
             "Jira issue was not found or is not visible to this account",
         )
     return None
+
+
+def _write_failure(status_code: int, body: bytes) -> ConnectorFailure | None:
+    if status_code == 409:
+        return ConnectorFailure(
+            ReasonCode.WRITE_CONFLICT,
+            "Jira refused the transition because of a conflicting update; read the issue again",
+        )
+    return _issue_not_found(status_code, body)
+
+
+def _select_transition(transitions: tuple[_Transition, ...], to_status: str) -> _Transition:
+    """Pick the one field-free transition that reaches ``to_status``, or refuse to choose."""
+    matches = [item for item in transitions if same_status_name(item.to_status, to_status)]
+    if not matches:
+        targets = sorted({item.to_status for item in transitions}, key=str.casefold)
+        available = (
+            "available target statuses: " + ", ".join(targets[:_MAX_LISTED_TARGETS])
+            if targets
+            else "no transition is available to this account now"
+        )
+        raise ConnectorFailure(
+            ReasonCode.TRANSITION_UNAVAILABLE,
+            f"No available transition leads to status '{to_status}'; {available}",
+        )
+    if len(matches) > 1:
+        raise ConnectorFailure(
+            ReasonCode.TRANSITION_AMBIGUOUS,
+            f"{len(matches)} transitions lead to status '{to_status}'; refusing to choose one",
+        )
+    if matches[0].requires_fields:
+        raise ConnectorFailure(
+            ReasonCode.TRANSITION_REQUIRES_FIELDS,
+            f"The transition to '{to_status}' requires fields, and this write never sets fields",
+        )
+    return matches[0]
 
 
 def _transition(item: dict[str, Any]) -> _Transition:

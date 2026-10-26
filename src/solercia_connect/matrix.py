@@ -101,6 +101,13 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "One exact issue key; current status plus transitions with fields; official only; not live",
     ),
     CapabilityRow(
+        "Jira Cloud REST v3",
+        "official",
+        "external.issues.transition",
+        "implemented-offline",
+        "Second write: one field-free transition POST, --allow-write per run, CLI only; not live",
+    ),
+    CapabilityRow(
         "GLPI REST",
         "official",
         "tickets.search",
@@ -133,7 +140,7 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "browser",
         "mail.categories.set",
         "implemented-offline",
-        "Only write: one If-Match PATCH of Categories, --allow-write per run, CLI only; not live",
+        "Write: one If-Match PATCH of Categories, --allow-write per run, CLI only; not live",
     ),
     CapabilityRow(
         "Microsoft 365 Web",

@@ -108,6 +108,8 @@ installed runtime is older than this skill; ask the user to reinstall it.
 | `files.search` / `files.get` | yes | yes |
 | `meeting.transcripts.list` / `meeting.transcript.get` | yes, needs tenant scopes | yes (Microsoft only) |
 | `mail.categories.set` (write) | no, needs a scope decision | yes, with `--allow-write` |
+| `external.issues.transitions.list` (Jira) | yes | no |
+| `external.issues.transition` (Jira write) | yes, with `--allow-write`, API token only | no |
 
 The browser column describes Microsoft. Google (Gmail, Calendar, Meet) and Jira browser routes are
 being implemented per the 2026-10-25 ADR; until they ship, those providers are official-only.
@@ -133,6 +135,24 @@ It reads the current list, writes only when the names change (`changed: false` o
 sends one `PATCH` of the categories conditioned on the version read. `write_conflict` means the team
 changed the message meanwhile: read it again before deciding. `invalid_input` on the id usually
 means the message moved folders; read the folder again for the current id.
+
+**Changing a Jira issue status.** Only when the user explicitly asks, one issue per run. List the
+transitions first when unsure of the exact target status name, then transition with `--issue`,
+`--to`, `--account`, and `--allow-write` (official route only, never `--allow-browser-fallback`):
+
+```bash
+solercia-connect run --provider jira.cloud --capability external.issues.transitions.list \
+  --account user@example.com --issue CP-1356
+solercia-connect run --provider jira.cloud --capability external.issues.transition \
+  --account user@example.com --issue CP-1356 --to "En curso" --allow-write
+```
+
+`--issue` takes one exact key; never pass lists or JQL, and never loop over issues the user did not
+name one by one. `changed: false` means the issue already had that status. `transition_unavailable`
+lists the reachable statuses: report them and ask, do not guess. `transition_ambiguous` and
+`transition_requires_fields` are stops. `write_unverified` means the write may have applied: list
+the transitions again and report before any retry. `write_scope_missing` means the account is
+connected over OAuth: ask the user to reconnect it with an API token (`--token-env`).
 
 **Transcripts.** The official route addresses the online meeting, so it needs `--meeting-id` plus
 tenant-granted scopes. The browser route reads the recording that carries the transcript, which is

@@ -22,6 +22,7 @@ from solercia_connect.domain import (
     DateWindow,
     FileQuery,
     IssueQuery,
+    IssueTransitionRequest,
     IssueTransitionsQuery,
     MailCategoriesUpdate,
     MailQuery,
@@ -67,17 +68,24 @@ def run_application(
                 f"Capability {capability.value} is not available for {type_value.value}"
             )
         writes = capability in WRITE_CAPABILITIES
-        if not writes and (
-            payload.get("allow_write", False) is not False
-            or any(payload.get(name) is not None for name in ("add", "remove", "replace"))
-        ):
+        if not writes and payload.get("allow_write", False) is not False:
             raise ValueError(
-                "allow_write, add, remove and replace apply only to mail.categories.set"
+                "allow_write applies only to the writes mail.categories.set and "
+                "external.issues.transition"
             )
+        if capability is not Capability.MAIL_CATEGORIES_SET and any(
+            payload.get(name) is not None for name in ("add", "remove", "replace")
+        ):
+            raise ValueError("add, remove and replace apply only to mail.categories.set")
         if capability not in _ISSUE_CAPABILITIES and payload.get("issue") is not None:
             raise ValueError("issue applies only to the Jira transition capabilities")
+        if (
+            capability is not Capability.EXTERNAL_ISSUES_TRANSITION
+            and payload.get("to") is not None
+        ):
+            raise ValueError("to applies only to external.issues.transition")
         if writes and account is None:
-            raise ValueError("account is required for mail.categories.set")
+            raise ValueError(f"account is required for {capability.value}")
         query = _query(type_value, capability, account, payload)
         fallback = payload.get("allow_browser_fallback", False)
         if not isinstance(fallback, bool):
@@ -105,12 +113,12 @@ def run_application(
             ),
         )
 
-    if isinstance(query, MailCategoriesUpdate):
+    if isinstance(query, (MailCategoriesUpdate, IssueTransitionRequest)):
         assert account is not None
         if not interactive:
-            return http_write_rejection(type_value, account)
+            return http_write_rejection(type_value, account, capability)
         if not query.write_authorized:
-            return _write_not_authorized(type_value, account)
+            return _write_not_authorized(type_value, account, capability)
 
     if not interactive and fallback and not browser_via_http:
         assert account is not None
@@ -176,14 +184,30 @@ def run_application(
                 receipt=outcome.receipt,
                 via_http=browser_via_http,
             )
-        detail = outcome.receipt.steps[-1].detail if outcome.receipt.steps else "Run failed"
+        final_reason = outcome.receipt.final_reason
+        # The step that produced the final reason explains it; a trailing browser-policy step
+        # (fallback disabled or denied) only records that no browser attempt followed.
+        detail = next(
+            (
+                step.detail
+                for step in reversed(outcome.receipt.steps)
+                if step.reason is final_reason
+            ),
+            outcome.receipt.steps[-1].detail if outcome.receipt.steps else "Run failed",
+        )
         return ResultEnvelope.failure(
             operation="run",
             status="failed",
             provider=type_value.value,
             account=account,
             receipt=outcome.receipt,
-            error=_reason_error(outcome.receipt.final_reason, detail),
+            error=_reason_error(
+                final_reason,
+                detail,
+                remediation=_write_scope_remediation(type_value, account)
+                if final_reason is ReasonCode.WRITE_SCOPE_MISSING
+                else None,
+            ),
         )
     except (TypeError, ValueError) as failure:
         assert provider is not None
@@ -231,7 +255,14 @@ _OAUTH_TYPES = frozenset(
     }
 )
 # Capabilities addressed by one exact Jira issue key instead of a window.
-_ISSUE_CAPABILITIES = frozenset({Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST})
+_ISSUE_CAPABILITIES = frozenset(
+    {Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST, Capability.EXTERNAL_ISSUES_TRANSITION}
+)
+# What each write changes, named in the refusals of a write that cannot run.
+_WRITE_EFFECTS = {
+    Capability.MAIL_CATEGORIES_SET: "changes the mailbox",
+    Capability.EXTERNAL_ISSUES_TRANSITION: "changes the status of a Jira issue",
+}
 _INTERACTIVE_REASONS = frozenset(
     {
         ReasonCode.INVALID_CREDENTIALS,
@@ -279,7 +310,11 @@ def _interactive_action(
     )
 
 
-def http_write_rejection(type_value: ConnectionType, account: str | None) -> ResultEnvelope:
+def http_write_rejection(
+    type_value: ConnectionType,
+    account: str | None,
+    capability: Capability = Capability.MAIL_CATEGORIES_SET,
+) -> ResultEnvelope:
     """Refuse a write for a caller without a terminal; the write exists only in the CLI."""
     return ResultEnvelope.failure(
         operation="run",
@@ -288,15 +323,17 @@ def http_write_rejection(type_value: ConnectionType, account: str | None) -> Res
         account=account,
         error=ErrorDetail(
             "write_not_available_over_http",
-            "mail.categories.set changes the mailbox and runs only in the canonical CLI",
+            f"{capability.value} {_WRITE_EFFECTS[capability]} and runs only in the canonical CLI",
             False,
-            remediation=(_write_command(type_value, account),),
+            remediation=(_write_command(type_value, account, capability),),
             cause_category="policy",
         ),
     )
 
 
-def _write_not_authorized(type_value: ConnectionType, account: str) -> ResultEnvelope:
+def _write_not_authorized(
+    type_value: ConnectionType, account: str, capability: Capability
+) -> ResultEnvelope:
     return ResultEnvelope.failure(
         operation="run",
         status="invalid_input",
@@ -304,21 +341,29 @@ def _write_not_authorized(type_value: ConnectionType, account: str) -> ResultEnv
         account=account,
         error=ErrorDetail(
             "write_not_authorized",
-            "mail.categories.set changes the mailbox and needs --allow-write on this invocation; "
-            "nothing was sent to the provider",
+            f"{capability.value} {_WRITE_EFFECTS[capability]} and needs --allow-write on this "
+            "invocation; nothing was sent to the provider",
             False,
-            remediation=(_write_command(type_value, account),),
+            remediation=(_write_command(type_value, account, capability),),
             cause_category="input",
         ),
     )
 
 
-def _write_command(type_value: ConnectionType, account: str | None) -> str:
-    return (
+def _write_command(type_value: ConnectionType, account: str | None, capability: Capability) -> str:
+    prefix = (
         f"solercia-connect run --provider {target_spec(type_value).provider_id} "
-        f"--capability mail.categories.set --account {account or '<account>'} "
-        "--message-id <id> --add <category> --allow-write --allow-browser-fallback"
+        f"--capability {capability.value} --account {account or '<account>'} "
     )
+    if capability is Capability.EXTERNAL_ISSUES_TRANSITION:
+        return prefix + "--issue <KEY> --to '<status>' --allow-write"
+    return prefix + "--message-id <id> --add <category> --allow-write --allow-browser-fallback"
+
+
+def _write_scope_remediation(type_value: ConnectionType, account: str | None) -> tuple[str, ...]:
+    """Point an OAuth Jira connection at the API-token connect, the one that can write."""
+    command = connect_command(type_value, account or "<account>")
+    return (f"{command} --token-env <VARIABLE>",)
 
 
 def _configuration_failure(
@@ -370,6 +415,8 @@ def _query(
     if capability is Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST:
         # One issue, named by its exact key; a window, a limit or JQL do not apply.
         return IssueTransitionsQuery(_required_string(payload, "issue"), account)
+    if capability is Capability.EXTERNAL_ISSUES_TRANSITION:
+        return _issue_transition(account, payload)
     limit = payload.get("limit", 50)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
         raise ValueError("limit must be an integer between 1 and 1000")
@@ -492,6 +539,19 @@ def _categories_update(account: str | None, payload: dict[str, Any]) -> MailCate
     )
 
 
+def _issue_transition(account: str | None, payload: dict[str, Any]) -> IssueTransitionRequest:
+    """Build the Jira transition; the domain type refuses anything but one exact issue key."""
+    allow_write = payload.get("allow_write", False)
+    if not isinstance(allow_write, bool):
+        raise ValueError("allow_write must be a boolean")
+    return IssueTransitionRequest(
+        _required_string(payload, "issue"),
+        _required_string(payload, "to"),
+        account,
+        allow_write,
+    )
+
+
 def _category_names(value: Any, name: str) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -529,7 +589,9 @@ def _optional_string(value: Any) -> str | None:
     return value.strip() or None
 
 
-def _reason_error(reason: ReasonCode, message: str) -> ErrorDetail:
+def _reason_error(
+    reason: ReasonCode, message: str, *, remediation: tuple[str, ...] | None = None
+) -> ErrorDetail:
     retryable = reason in {
         ReasonCode.NETWORK_TIMEOUT,
         ReasonCode.NETWORK_UNAVAILABLE,
@@ -540,6 +602,6 @@ def _reason_error(reason: ReasonCode, message: str) -> ErrorDetail:
         reason.value,
         message,
         retryable,
-        remediation=("Run solercia-connect doctor for structured remediation.",),
+        remediation=remediation or ("Run solercia-connect doctor for structured remediation.",),
         cause_category=("network" if retryable else "runtime"),
     )

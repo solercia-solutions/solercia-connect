@@ -311,6 +311,8 @@ def _jira_adapter_for_account(
         base_url=jira_api_base_url(profile.site, profile.cloud_id),
         expected_account_id=profile.provider_account_id,
         expected_account=account,
+        # The Atlassian OAuth grant requests read scopes only, so it can never transition.
+        grant_can_write=profile.token_kind is not JiraTokenKind.OAUTH,
     )
 
 

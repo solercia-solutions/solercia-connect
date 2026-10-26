@@ -30,7 +30,7 @@ from solercia_connect.connections import (
     jira_connect_requires_cli,
 )
 from solercia_connect.doctor import DoctorService
-from solercia_connect.domain import WRITE_CAPABILITIES
+from solercia_connect.domain import WRITE_CAPABILITIES, Capability
 from solercia_connect.envelope import ErrorDetail, ResultEnvelope
 from solercia_connect.interactive_sessions import InteractiveSessionRegistry
 from solercia_connect.matrix import CAPABILITY_MATRIX
@@ -560,7 +560,9 @@ def create_app(
     def run(body: RunRequest) -> JSONResponse:
         if body.capability in _WRITE_CAPABILITY_VALUES:
             # Writes exist only in the canonical CLI, whatever switches the service has on.
-            return _response(http_write_rejection(body.type, body.account), 403)
+            return _response(
+                http_write_rejection(body.type, body.account, Capability(body.capability)), 403
+            )
         if body.allow_browser_fallback:
             assert body.account is not None
             if not http_interactive_allowed(settings):

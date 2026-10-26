@@ -98,7 +98,9 @@ The root wrapper is only a convenience alias and contains no provider logic:
 | `files.search` / `files.get` | yes | yes |
 | `meeting.transcripts.*` (Microsoft) | yes | yes — different selector, see below |
 | `meeting.transcripts.*` (`google-meet`) | yes — Calendar + Drive APIs | no (official-only) |
-| `mail.categories.set` (the only write) | no — needs `Mail.ReadWrite` | yes, with `--allow-write` |
+| `mail.categories.set` (write) | no — needs `Mail.ReadWrite` | yes, with `--allow-write` |
+| `external.issues.transitions.list` (Jira) | yes — REST v3 | no (official-only) |
+| `external.issues.transition` (Jira write) | yes, with `--allow-write`; API token only | no (official-only) |
 
 Records are identical across routes; `provenance` is the only field that names the route.
 
@@ -110,9 +112,9 @@ closed with `malformed_provider_data` instead of looking like an uncategorized m
 mailbox's master category list is not offered: it needs the extra `MailboxSettings.Read` scope and
 has no documented Outlook REST endpoint.
 
-### Assign categories: the only write
+### Assign categories: a bounded write
 
-`mail.categories.set` is the single exception to the read-only rule
+`mail.categories.set` is one of the two exceptions to the read-only rule
 ([decision](docs/decisions/2026-10-19-escritura-categorias-outlook.md)). It assigns categories to one
 message and writes nothing else:
 
@@ -137,6 +139,36 @@ solercia-connect run --provider microsoft.graph --capability mail.categories.set
 - Only the browser route serves it today. The official route needs `Mail.ReadWrite`, and adding that
   scope would invalidate every stored Outlook grant, so it waits for a scope decision. The HTTP
   service rejects the capability with 403.
+
+### Change a Jira issue status: the second write
+
+`external.issues.transition` moves one Jira issue to another status through one workflow
+transition, and writes nothing else
+([decision](docs/decisions/2026-10-25-escritura-transiciones-jira.md)). List the transitions first
+when the target name is uncertain:
+
+```bash
+solercia-connect run --provider jira.cloud --capability external.issues.transitions.list \
+  --account user@example.com --issue CP-1356
+solercia-connect run --provider jira.cloud --capability external.issues.transition \
+  --account user@example.com --issue CP-1356 --to "En curso" --allow-write
+```
+
+- `--issue` takes exactly one key (`^[A-Z][A-Z0-9_]+-[1-9][0-9]*$`); lists, ranges, and JQL are
+  refused. `--to` is the target status name, trimmed and compared without case.
+- `--allow-write` is required on every invocation and is off by default; without it the command
+  fails with `write_not_authorized` before any provider call. `--account` is required.
+- The identity and the current status are read first. When the issue already has the status,
+  nothing is written and the record says `changed: false`. Otherwise exactly one available
+  transition must reach the status (`transition_unavailable` lists the available targets;
+  `transition_ambiguous` and `transition_requires_fields` refuse to choose), and one `POST` sends
+  only its id. `409` fails with `write_conflict`; nothing is retried.
+- The status is read back; a mismatch fails with `write_unverified`, because the write may have
+  applied. The record holds `issue_key`, `previous_status`, `status`, `transition_id`,
+  `transition_name`, and `changed`.
+- Official route only, never over HTTP. Classic and scoped API tokens can write; an OAuth
+  connection fails with `write_scope_missing` because its grant lacks `write:jira-work`. See the
+  [Jira runbook](docs/runbooks/jira.md).
 
 The two routes reach the same transcript by different names. The official route addresses the
 online meeting, so it needs a meeting ID. The browser route reads the recording that carries the
@@ -204,7 +236,7 @@ interchangeable: a mail token is never reused for a drive call.
 | Gmail | Desktop OAuth loopback with state + PKCE; read-only sent-mail capability | None | Pending dedicated account proof |
 | Google Calendar | Desktop OAuth loopback with state + PKCE; read-only event capability | None | Pending dedicated account proof |
 | Google Meet | Desktop OAuth loopback with state + PKCE; Calendar attachment discovery and Drive text export (`text/plain`) | None (official-only) | Offline contract verified; third-party transcript export pending |
-| Jira | Existing API-token/JQL compatibility | None | Pending supported-site proof |
+| Jira | API-token or OAuth connection; JQL search, transition listing, and one-issue transition write (API token) | None | Pending supported-site proof |
 | GLPI | Existing app/user-token session compatibility | None | Pending supported-installation proof |
 
 Teams personal Microsoft accounts are unsupported. Tenant policy or admin-disabled transcript

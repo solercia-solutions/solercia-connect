@@ -14,6 +14,7 @@ from solercia_connect.domain import (
     DomainRecord,
     ExecutionOutcome,
     ExecutionReceipt,
+    IssueTransitionRequest,
     MailCategoriesUpdate,
     MailQuery,
     ProviderFamily,
@@ -50,8 +51,9 @@ CONNECT_FALLBACK_REASONS: frozenset[ReasonCode] = RUNTIME_FALLBACK_REASONS - {
     ReasonCode.CONFIGURATION_INVALID
 }
 # What each family's browser route may serve (decision 2026-10-25, D0). A capability is allowed
-# only for the family that lists it, so no family's route can serve another family's surface,
-# and the only write, mail.categories.set, stays on the Microsoft list alone.
+# only for the family that lists it, so no family's route can serve another family's surface.
+# The category write, mail.categories.set, stays on the Microsoft list alone; the Jira transitions
+# are on no list, so they run over the official route only.
 BROWSER_FALLBACK_CAPABILITIES: Mapping[ProviderFamily, frozenset[Capability]] = MappingProxyType(
     {
         ProviderFamily.MICROSOFT: frozenset(
@@ -493,7 +495,10 @@ def _request_account_boundary(request: ConnectorRequest) -> str | None:
 
 def _write_authorized(request: ConnectorRequest) -> bool:
     payload = request.payload
-    return isinstance(payload, MailCategoriesUpdate) and payload.write_authorized is True
+    return (
+        isinstance(payload, (MailCategoriesUpdate, IssueTransitionRequest))
+        and payload.write_authorized is True
+    )
 
 
 def _canonical_account(value: str) -> str:

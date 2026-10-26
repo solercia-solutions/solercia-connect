@@ -12,7 +12,7 @@ from typing import Any
 class Capability(StrEnum):
     MAIL_SENT_LIST = "mail.sent.list"
     MAIL_INBOX_LIST = "mail.inbox.list"
-    # The only write: see docs/decisions/2026-10-19-escritura-categorias-outlook.md.
+    # The Outlook category write: see docs/decisions/2026-10-19-escritura-categorias-outlook.md.
     MAIL_CATEGORIES_SET = "mail.categories.set"
     CALENDAR_EVENTS_LIST = "calendar.events.list"
     MEETING_TRANSCRIPTS_LIST = "meeting.transcripts.list"
@@ -20,8 +20,10 @@ class Capability(StrEnum):
     FILES_SEARCH = "files.search"
     FILES_GET = "files.get"
     EXTERNAL_ISSUES_SEARCH = "external.issues.search"
-    # Official route only: see docs/decisions/2026-10-25-escritura-transiciones-jira.md.
+    # Official route only: see docs/decisions/2026-10-25-escritura-transiciones-jira.md. The
+    # transition is the second write, after the Outlook categories.
     EXTERNAL_ISSUES_TRANSITIONS_LIST = "external.issues.transitions.list"
+    EXTERNAL_ISSUES_TRANSITION = "external.issues.transition"
     TICKETS_SEARCH = "tickets.search"
 
 
@@ -91,11 +93,18 @@ class ReasonCode(StrEnum):
     WRITE_NOT_AUTHORIZED = "write_not_authorized"
     WRITE_CONFLICT = "write_conflict"
     ISSUE_NOT_FOUND = "issue_not_found"
+    TRANSITION_UNAVAILABLE = "transition_unavailable"
+    TRANSITION_AMBIGUOUS = "transition_ambiguous"
+    TRANSITION_REQUIRES_FIELDS = "transition_requires_fields"
+    WRITE_SCOPE_MISSING = "write_scope_missing"
+    WRITE_UNVERIFIED = "write_unverified"
 
 
 # Capabilities that change provider state. Each one needs explicit authorization per invocation,
 # never runs over HTTP, and is never retried automatically.
-WRITE_CAPABILITIES: frozenset[Capability] = frozenset({Capability.MAIL_CATEGORIES_SET})
+WRITE_CAPABILITIES: frozenset[Capability] = frozenset(
+    {Capability.MAIL_CATEGORIES_SET, Capability.EXTERNAL_ISSUES_TRANSITION}
+)
 
 
 class StepOutcome(StrEnum):
@@ -229,6 +238,31 @@ class IssueTransitionsQuery:
 
 
 @dataclass(frozen=True, slots=True)
+class IssueTransitionRequest:
+    """Move one Jira issue, named by its exact key, to the status called ``to_status``.
+
+    The status name is trimmed and compared without case. ``write_authorized`` must be set
+    explicitly per invocation; the runtime refuses the write otherwise.
+    """
+
+    issue_key: str
+    to_status: str
+    account_id: str | None = None
+    write_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        require_jira_issue_key(self.issue_key)
+        if not isinstance(self.to_status, str) or not self.to_status.strip():
+            raise ValueError("A Jira transition needs a target status name")
+        object.__setattr__(self, "to_status", self.to_status.strip())
+
+
+def same_status_name(first: str, second: str) -> bool:
+    """Tell whether two Jira status names are the same, ignoring case and outer whitespace."""
+    return first.strip().casefold() == second.strip().casefold()
+
+
+@dataclass(frozen=True, slots=True)
 class TicketQuery:
     window: DateWindow
     limit: int = 200
@@ -339,6 +373,7 @@ type QueryPayload = (
     | TranscriptQuery
     | IssueQuery
     | IssueTransitionsQuery
+    | IssueTransitionRequest
     | TicketQuery
     | FileQuery
     | MailCategoriesUpdate
@@ -491,6 +526,23 @@ class IssueTransitionOption:
 
 
 @dataclass(frozen=True, slots=True)
+class IssueTransitionResult:
+    """The outcome of one Jira transition: the status read before and after the write.
+
+    When the issue already had the requested status nothing is written, ``changed`` is false and
+    the transition fields stay unset.
+    """
+
+    issue_key: str
+    previous_status: str
+    status: str
+    transition_id: str | None
+    transition_name: str | None
+    changed: bool
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
 class TicketCase:
     id: str
     title: str
@@ -544,6 +596,7 @@ type DomainRecord = (
     | MeetingTranscript
     | ExternalIssue
     | IssueTransitionOption
+    | IssueTransitionResult
     | TicketCase
     | DriveFile
     | MailCategoryAssignment
@@ -631,6 +684,7 @@ _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.FILES_GET: DriveFile,
     Capability.EXTERNAL_ISSUES_SEARCH: ExternalIssue,
     Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST: IssueTransitionOption,
+    Capability.EXTERNAL_ISSUES_TRANSITION: IssueTransitionResult,
     Capability.TICKETS_SEARCH: TicketCase,
 }
 

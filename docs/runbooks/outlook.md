@@ -95,10 +95,11 @@ truncated — narrow the window and read again. The ascending order guarantees t
 are the oldest prefix of the window, so narrowing to a later start resumes deterministically.
 **Empty stays empty:** zero records is reported as zero, never as a reason to widen the window.
 
-## Assign categories (the only write)
+## Assign categories (a bounded write)
 
-`mail.categories.set` assigns Outlook categories to one message. It is the single exception to the
-read-only rule; see [the decision](../decisions/2026-10-19-escritura-categorias-outlook.md).
+`mail.categories.set` assigns Outlook categories to one message. It is one of the two exceptions
+to the read-only rule; see [the decision](../decisions/2026-10-19-escritura-categorias-outlook.md).
+The other is the Jira issue transition in the [Jira runbook](jira.md).
 
 ```bash
 solercia-connect run \
