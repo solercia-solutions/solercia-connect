@@ -375,6 +375,11 @@ CONNECT_ENV_TEMPLATE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     ("Jira API token, read by: connect jira ... --token-env JIRA_API_TOKEN", ("JIRA_API_TOKEN",)),
     (
+        "Bitbucket API token with Bitbucket scopes, read by: connect bitbucket ... "
+        "--token-env BITBUCKET_API_TOKEN",
+        ("BITBUCKET_API_TOKEN",),
+    ),
+    (
         "Jira over Atlassian OAuth: connect jira ... --token-kind oauth",
         ATLASSIAN_OAUTH_CONFIGURATION,
     ),

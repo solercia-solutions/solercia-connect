@@ -129,6 +129,27 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "Second write: one field-free transition POST, --allow-write per run, CLI only; not live",
     ),
     CapabilityRow(
+        "Bitbucket Cloud REST 2.0",
+        "official",
+        "scm.repositories.list",
+        "implemented-offline",
+        "Workspace repositories with role=member, newest update first, 20-page bound; not live",
+    ),
+    CapabilityRow(
+        "Bitbucket Cloud REST 2.0",
+        "official",
+        "scm.pullrequests.list",
+        "implemented-offline",
+        "Repeatable state, updated_on window in q and re-checked, 20-page bound; not live",
+    ),
+    CapabilityRow(
+        "Bitbucket Cloud REST 2.0",
+        "official",
+        "scm.commits.list",
+        "implemented-offline",
+        "Branch or main branch, window filtered locally, 7-day stop margin, 30 pages; not live",
+    ),
+    CapabilityRow(
         "GLPI REST",
         "official",
         "tickets.search",

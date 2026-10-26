@@ -9,4 +9,5 @@ explicit opt-in.
 - [Gmail](gmail.md)
 - [Google Calendar](google-calendar.md)
 - [Jira](jira.md)
+- [Bitbucket](bitbucket.md)
 - [Loopback API](api.md)

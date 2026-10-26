@@ -130,6 +130,9 @@ installed runtime is older than this skill; ask the user to reinstall it.
 | `external.issues.transitions.list` (Jira) | yes | no |
 | `external.issues.transition` (Jira write) | yes, with `--allow-write`, API token only | no |
 | `mail.draft.create` / `mail.draft.send` (Gmail writes) | yes, `gmail-compose`, with `--allow-write` | no |
+| `scm.repositories.list` (Bitbucket) | yes | no |
+| `scm.pullrequests.list` (Bitbucket) | yes | no |
+| `scm.commits.list` (Bitbucket) | yes | no |
 
 The browser column describes Microsoft. Google (Gmail, Calendar, Meet) and Jira browser routes are
 being implemented per the 2026-10-25 ADR; until they ship, those providers are official-only.
@@ -225,7 +228,8 @@ the window; without `--branch` the repository's main branch is read. `result_inc
 read hit its fixed page bound and returned nothing rather than a partial list: report it and
 narrow the window; never widen it. `invalid_credentials` means the token expired or lacks Bitbucket
 scopes, `authorization_denied` names the missing scopes when Bitbucket provides them, and
-`workspace_not_found` or `repository_not_found` means a wrong slug or no access.
+`workspace_not_found` or `repository_not_found` means a wrong slug or no access. The token setup
+and every error are in the runtime's `docs/runbooks/bitbucket.md`.
 
 **Transcripts.** The official route addresses the online meeting, so it needs `--meeting-id` plus
 tenant-granted scopes. The browser route reads the recording that carries the transcript, which is

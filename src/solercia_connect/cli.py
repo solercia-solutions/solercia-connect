@@ -702,7 +702,7 @@ def config_validate(
                 name
                 for name in configured
                 if name.startswith("SOLERCIA_CONNECT_")
-                or name.startswith(("JIRA_", "GLPI_", "MS_GRAPH_", "GOOGLE_"))
+                or name.startswith(("JIRA_", "BITBUCKET_", "GLPI_", "MS_GRAPH_", "GOOGLE_"))
             ),
             "targets": [
                 {
@@ -889,6 +889,8 @@ def _project_next_steps(
         "solercia-connect connect gmail <account>",
         "solercia-connect connect jira <account> --site https://<site>.atlassian.net "
         "--token-env JIRA_API_TOKEN",
+        "solercia-connect connect bitbucket <account> --workspace <workspace> "
+        "--token-env BITBUCKET_API_TOKEN",
         "solercia-connect doctor <type> <account>",
     ]
 

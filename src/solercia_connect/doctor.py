@@ -15,6 +15,7 @@ from solercia_connect.browser_routes import has_browser_route, target_family
 from solercia_connect.config import (
     GOOGLE_TARGETS,
     MICROSOFT_TARGETS,
+    ConnectionProfile,
     ConnectionType,
     ConnectSettings,
     ProfileStore,
@@ -117,6 +118,8 @@ class DoctorService:
         microsoft_target = spec.type in MICROSOFT_TARGETS
         browser_target = has_browser_route(spec.type)
         oauth_target = spec.type in MICROSOFT_TARGETS | GOOGLE_TARGETS
+        # Bitbucket keeps its API token in the same secure store, so it needs it just as much.
+        secret_target = oauth_target or spec.type is ConnectionType.BITBUCKET
         browser_profile_status = "not_applicable"
         browser_profile_detail = "Microsoft browser profiles do not apply to this target"
         browser_route_status = "not_applicable"
@@ -144,9 +147,9 @@ class DoctorService:
 
         official_configuration_ready = not missing
         project = self._project_mode()
-        keyring_ready = not oauth_target
+        keyring_ready = not secret_target
         keyring_checks: list[DoctorCheck] = []
-        if oauth_target and project is not None:
+        if secret_target and project is not None:
             # Project mode keeps secrets in files, so the folder's safety replaces the keyring.
             keyring_ready = project.ready
             keyring_checks.extend(
@@ -165,7 +168,7 @@ class DoctorService:
                     ),
                 )
             )
-        elif oauth_target:
+        elif secret_target:
             if official_configuration_ready:
                 package_available = self._module_available("keyring")
                 keyring_checks.append(
@@ -351,6 +354,9 @@ class DoctorService:
             )
         )
 
+        if spec.type is ConnectionType.BITBUCKET:
+            checks.append(_bitbucket_connection_check(profile))
+
         for module in ("fastapi", "uvicorn", "playwright"):
             available = self._module_available(module)
             checks.append(
@@ -446,6 +452,30 @@ class DoctorService:
             if audit.exists
             else "Dedicated Microsoft browser profile can be created privately when authorized",
         )
+
+
+def _bitbucket_connection_check(profile: ConnectionProfile | None) -> DoctorCheck:
+    """Report the stored binding; doctor never reads or tests the API token itself."""
+
+    if profile is not None and profile.workspace is not None:
+        return DoctorCheck(
+            "bitbucket_connection",
+            "present",
+            f"The connection binds workspace {profile.workspace} and a Bitbucket account ID; "
+            "status proves the stored API token again",
+            False,
+        )
+    return DoctorCheck(
+        "bitbucket_connection",
+        "absent",
+        "No Bitbucket connection exists; it needs an API token with scopes for the Bitbucket app",
+        False,
+        (
+            "solercia-connect connect bitbucket <account> --workspace <workspace> "
+            "--token-env BITBUCKET_API_TOKEN",
+            "Create the token as docs/runbooks/bitbucket.md describes.",
+        ),
+    )
 
 
 def _configured_names(settings: ConnectSettings) -> frozenset[str]:

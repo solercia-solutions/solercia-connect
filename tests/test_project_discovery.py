@@ -31,6 +31,7 @@ TEMPLATE_NAMES = {
     "SOLERCIA_CONNECT_GOOGLE_CLIENT_ID",
     "SOLERCIA_CONNECT_GOOGLE_CLIENT_SECRET",
     "JIRA_API_TOKEN",
+    "BITBUCKET_API_TOKEN",
     "SOLERCIA_CONNECT_ATLASSIAN_CLIENT_ID",
     "SOLERCIA_CONNECT_ATLASSIAN_CLIENT_SECRET",
     "SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID",
@@ -414,6 +415,7 @@ def test_project_init_creates_the_home_at_the_git_root_with_a_value_free_templat
     assert data["next_steps"][0] == f"export {DISCOVERY}=1"
     assert "solercia-connect connect gmail <account>" in data["next_steps"]
     assert any("--token-env JIRA_API_TOKEN" in step for step in data["next_steps"])
+    assert any("--token-env BITBUCKET_API_TOKEN" in step for step in data["next_steps"])
     for folder in (home, home / "config", home / "data", home / "secrets"):
         assert _mode(folder) == 0o700
     assert (home / ".gitignore").read_text(encoding="utf-8") == "*\n"

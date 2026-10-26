@@ -104,6 +104,9 @@ The root wrapper is only a convenience alias and contains no provider logic:
 | `external.issues.transition` (Jira write) | yes, with `--allow-write`; API token only | no (official-only) |
 | `mail.draft.create` (Gmail write, `gmail-compose`) | yes, with `--allow-write` | no (official-only) |
 | `mail.draft.send` (Gmail write, `gmail-compose`) | yes, with `--allow-write` | no (official-only) |
+| `scm.repositories.list` (Bitbucket) | yes — REST 2.0 | no (official-only) |
+| `scm.pullrequests.list` (Bitbucket) | yes — REST 2.0 | no (official-only) |
+| `scm.commits.list` (Bitbucket) | yes — REST 2.0 | no (official-only) |
 
 Records are identical across routes; `provenance` is the only field that names the route.
 
@@ -237,6 +240,26 @@ answers that surface with an empty collection even for items that exist. The wal
 depth and in folders visited, and a folder the account cannot read is skipped rather than failing
 the search.
 
+## Bitbucket Cloud: read-only
+
+Bitbucket Cloud connects one account with an Atlassian API token created with Bitbucket scopes
+(`read:user:bitbucket`, `read:workspace:bitbucket`, `read:repository:bitbucket`,
+`read:pullrequest:bitbucket`) and reads repositories, pull requests, and commits over REST 2.0,
+as accepted in [the Bitbucket ADR](docs/decisions/2026-10-26-conector-bitbucket.md). It writes
+nothing and has no browser route.
+
+```bash
+solercia-connect connect bitbucket user@example.com --workspace idartes-tecnologia \
+  --token-env BITBUCKET_API_TOKEN
+solercia-connect run --provider bitbucket.cloud --capability scm.pullrequests.list \
+  --account user@example.com --repo pandora_proxy \
+  --start '2026-10-01T00:00:00-05:00' --end '2026-11-01T00:00:00-05:00'
+```
+
+Paged reads have a fixed page bound; reaching it fails with `result_incomplete` and
+`"complete": false` instead of returning a partial list. Token creation, each read, and the error
+codes are in the [Bitbucket runbook](docs/runbooks/bitbucket.md).
+
 ## Files on OneDrive and SharePoint
 
 Files are a capability pair on the `onedrive` target, which also answers to `sharepoint`. The
@@ -277,6 +300,7 @@ interchangeable: a mail token is never reused for a drive call.
 | Google Calendar | Desktop OAuth loopback with state + PKCE; read-only event capability | None | Pending dedicated account proof |
 | Google Meet | Desktop OAuth loopback with state + PKCE; Calendar attachment discovery and Drive text export (`text/plain`) | None (official-only) | Offline contract verified; third-party transcript export pending |
 | Jira | API-token or OAuth connection; JQL search, transition listing, and one-issue transition write (API token) | None | Pending supported-site proof |
+| Bitbucket Cloud | API token with Bitbucket scopes; read-only repositories, pull requests, and commits | None (official-only) | Pending first run against the IDARTES workspace |
 | GLPI | Existing app/user-token session compatibility | None | Pending supported-installation proof |
 
 Teams personal Microsoft accounts are unsupported. Tenant policy or admin-disabled transcript
