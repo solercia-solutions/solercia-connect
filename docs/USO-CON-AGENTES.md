@@ -94,11 +94,12 @@ tiene el mensaje (lista vacía si no tiene ninguna). Sirve para conocer el estad
 que el equipo le asignó a un caso. El catálogo de categorías del buzón no está
 disponible.
 
-## 5. Las tres escrituras: categorías de Outlook, estado de Jira y correo de Gmail
+## 5. Las cuatro escrituras: categorías de Outlook, estado de Jira, correo de Gmail y repositorios de Bitbucket
 
-Connect solo escribe en tres casos, y los tres exigen `--allow-write` en cada
-invocación: asignar categorías a un correo de Outlook, cambiar el estado de un
-issue de Jira y enviar un correo de Gmail en dos pasos. Nada más se escribe.
+Connect solo escribe en cuatro casos, y los cuatro exigen `--allow-write` en
+cada invocación: asignar categorías a un correo de Outlook, cambiar el estado de
+un issue de Jira, enviar un correo de Gmail en dos pasos y crear un repositorio
+privado en Bitbucket. Nada más se escribe.
 
 ### Asignar categorías a un correo
 
@@ -215,6 +216,49 @@ El flujo con un agente es siempre el mismo:
 - Si la orden falla con `write_unverified`, el correo pudo haberse enviado:
   revisa Enviados antes de repetir la orden.
 - El agente nunca envía en ciclos ni inventa destinatarios.
+
+### Crear un repositorio en Bitbucket
+
+La creación usa una conexión aparte, `bitbucket-admin`, con su propio API token.
+Ese token lleva cinco alcances: `read:user:bitbucket`,
+`read:workspace:bitbucket`, `read:repository:bitbucket`, `read:project:bitbucket`
+y `admin:repository:bitbucket`. La conexión `bitbucket` sigue siendo de solo
+lectura. Conecta la nueva una vez:
+
+```bash
+solercia-connect connect bitbucket-admin tu-correo@example.com \
+  --workspace idartes-tecnologia --token-env BITBUCKET_ADMIN_API_TOKEN
+```
+
+Después, crea el repositorio con su slug y la clave del proyecto:
+
+```bash
+solercia-connect run \
+  --provider bitbucket.cloud \
+  --capability scm.repositories.create \
+  --account tu-correo@example.com \
+  --repo pandora-front \
+  --project PAN \
+  --allow-write
+```
+
+- El repositorio siempre queda privado, vacío y sin bifurcaciones públicas.
+- El slug va en minúsculas y no se convierte: si trae mayúsculas, espacios o
+  `/`, la orden se rechaza.
+- La clave del proyecto es obligatoria y no tiene valor por defecto.
+- Si el repositorio ya existe, la orden falla con `repository_exists` y no lo
+  toca. Si el proyecto no existe, falla con `project_not_found`.
+- Si la orden falla con `write_unverified`, el repositorio pudo haberse creado:
+  revísalo en Bitbucket antes de repetir la orden.
+- Connect no hace push. Lo hace `git`, con la credencial que ya tiene guardada:
+
+  ```bash
+  git remote add origin https://x-bitbucket-api-token-auth@bitbucket.org/idartes-tecnologia/pandora-front.git
+  git push -u origin main
+  ```
+
+- Pídele al agente cada repositorio de forma explícita, con el workspace, el
+  slug y la clave del proyecto. El agente no elige otro slug por su cuenta.
 
 ## 6. Instalar el skill para tu agente
 

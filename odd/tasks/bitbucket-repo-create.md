@@ -84,7 +84,7 @@ Reglas de la escritura (R-D2):
   las reglas de R-D2.
   - Errores tipados: `repository_exists`, proyecto inexistente y permiso denegado.
   - Se rechaza por HTTP.
-- [ ] **R3** Runbook, matriz, README y skill, con el ejemplo de push por `git`. Después, compuertas
+- [x] **R3** Runbook, matriz, README y skill, con el ejemplo de push por `git`. Después, compuertas
   completas, reinstalación global e instrucciones a `migracion-angular-pandora`.
 
 ## Criterios de aceptación
@@ -107,7 +107,8 @@ Reglas de la escritura (R-D2):
 | Exploración | Hecha | El push ya funciona por git; el alcance se verificó en OpenAPI |
 | R0 | Hecha | `df0d706`: ADR y documentos de política; rojo con 3 fallos en `test_bitbucket_repo_create_policy_docs.py` (ADR inexistente, AGENTS.md sin «four» y skill sin las reglas nuevas) |
 | R1 | Hecha | `026533b`: conexión `bitbucket-admin`; rojo por `ImportError` de `BITBUCKET_TARGETS` en `test_bitbucket_admin_connection.py` y 2 fallos en las líneas agregadas a pruebas existentes |
-| R2 | Hecha | Capacidad `scm.repositories.create`; rojo por `ImportError` de `ScmRepositoryCreateRequest` en `test_bitbucket_repo_create.py`; cobertura de `bitbucket_admin.py` al 100 % |
+| R2 | Hecha | `6897b12`: capacidad `scm.repositories.create`; rojo por `ImportError` de `ScmRepositoryCreateRequest` en `test_bitbucket_repo_create.py`; cobertura de `bitbucket_admin.py` al 100 % |
+| R3 | Hecha (documentos) | Runbook, matriz, README, guía de uso, runbook de Outlook y skill; rojo con 4 fallos en `test_bitbucket_repo_create_wiring.py`. Compuertas finales: 1.520 pruebas, cobertura 90 %, `ruff` y `mypy` limpios |
 
 Detalle:
 
@@ -145,7 +146,14 @@ Detalle:
     descartan los de otro host o esquema, y nunca llevan usuario ni contraseña.
   - `--project` sirve para `external.issues.open.list` y para `scm.repositories.create`. `--sprint`
     sigue siendo solo de Jira.
+- **Documentos (R3):** el runbook y el skill están en inglés, como el resto de esos archivos; la
+  guía `docs/USO-CON-AGENTES.md` está en español. La fila de la matriz usa el proveedor
+  «Bitbucket Cloud REST 2.0 (bitbucket-admin)», así que la prueba existente de las tres lecturas no
+  cambió.
 
 ## Siguiente paso
 
-R3: runbook, matriz, README y ejemplos del skill.
+- Reinstalación global de la CLI y validación en vivo de la creación, a cargo de Camilo o del
+  orquestador con su autorización. Falta confirmar en vivo la forma del 400, la sensibilidad a
+  mayúsculas de la clave de proyecto y el enlace de clonación.
+- Instrucciones a `migracion-angular-pandora`.

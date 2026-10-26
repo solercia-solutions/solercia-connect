@@ -100,6 +100,14 @@ solercia-connect connect bitbucket <account> --workspace <workspace> --token-env
 `--workspace` is the slug in `bitbucket.org/<workspace>/<repo>`, stored as the default for reads.
 Without `--token-env` the CLI asks in a hidden prompt; `--token-stdin` reads one piped line.
 
+Creating repositories needs a second, separate connection, `bitbucket-admin`, with its own token
+holding five scopes: `read:user:bitbucket`, `read:workspace:bitbucket`, `read:repository:bitbucket`,
+`read:project:bitbucket` and `admin:repository:bitbucket`. The user connects it once:
+
+```bash
+solercia-connect connect bitbucket-admin <account> --workspace <workspace> --token-env BITBUCKET_ADMIN_API_TOKEN
+```
+
 ## Project mode
 
 Project mode keeps one project's connections, browser sessions, secrets and `connect.env` in its
@@ -140,6 +148,7 @@ installed runtime is older than this skill; ask the user to reinstall it.
 | `scm.repositories.list` (Bitbucket) | yes | no |
 | `scm.pullrequests.list` (Bitbucket) | yes | no |
 | `scm.commits.list` (Bitbucket) | yes | no |
+| `scm.repositories.create` (Bitbucket write) | yes, `bitbucket-admin`, with `--allow-write` | no |
 
 The browser column describes Microsoft. Google (Gmail, Calendar, Meet) and Jira browser routes are
 being implemented per the 2026-10-25 ADR; until they ship, those providers are official-only.
@@ -253,6 +262,26 @@ scopes, `authorization_denied` names the missing scopes when Bitbucket provides 
 `workspace_not_found` or `repository_not_found` means a wrong slug or no access. The token setup
 and every error are in the runtime's `docs/runbooks/bitbucket.md`.
 
+**Creating a Bitbucket repository.** Only when the user explicitly asks, one repository per run,
+with the slug and the project key the user named. The repository is always private, empty, and
+without public forks; it runs only on `bitbucket-admin` and never over HTTP.
+
+```bash
+solercia-connect run --provider bitbucket.cloud --capability scm.repositories.create \
+  --account user@example.com --repo <slug> --project <KEY> --allow-write
+```
+
+The slug must already be lower case (`[a-z0-9._-]`); never change what the user gave, ask instead.
+`repository_exists` means nothing was changed: report it. `project_not_found` means the key is
+wrong or not visible: ask for the right key. `write_unverified` means the repository may exist or
+does not match: ask the user to review it in Bitbucket and never retry on your own. Then push with
+`git`, which uses its own stored credential; Solercia Connect never pushes:
+
+```bash
+git remote add origin https://x-bitbucket-api-token-auth@bitbucket.org/<workspace>/<slug>.git
+git push -u origin <branch>
+```
+
 **Transcripts.** The official route addresses the online meeting, so it needs `--meeting-id` plus
 tenant-granted scopes. The browser route reads the recording that carries the transcript, which is
 a drive item, so it takes `--drive-id` with `--item-id`, or just a window that reads every
@@ -277,6 +306,7 @@ yet; until it ships, Playwright is not offered for Google Meet.
 | Category change | Only on an explicit user request; pass `--allow-write` for that one run |
 | Jira status change | Only on an explicit user request, one issue key per run with `--allow-write`; list the transitions first when the target name is uncertain |
 | Bitbucket read | Official route only, with `--account`; on `result_incomplete`, narrow the window and report it |
+| Bitbucket repository creation | Only on an explicit user request, one slug and project key per run on `bitbucket-admin` with `--allow-write`; push with `git` afterwards |
 | Sending a Gmail email | Confirm the account, create the draft, show the preview, and send only after the user explicitly approves that draft id |
 | Microsoft admin-consent failure | Use browser only when the user explicitly allowed it |
 | Google `admin_policy_enforced` or Jira API token blocked by the organization | Report the typed error; the browser route for these families is still being implemented |

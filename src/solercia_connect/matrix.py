@@ -157,6 +157,13 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "Branch or main branch, window filtered locally, 7-day stop margin, 30 pages; not live",
     ),
     CapabilityRow(
+        "Bitbucket Cloud REST 2.0 (bitbucket-admin)",
+        "official",
+        "scm.repositories.create",
+        "implemented-offline",
+        "Fourth write: one private repo POST after absence and project checks, --allow-write, CLI",
+    ),
+    CapabilityRow(
         "GLPI REST",
         "official",
         "tickets.search",

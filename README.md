@@ -108,6 +108,7 @@ The root wrapper is only a convenience alias and contains no provider logic:
 | `scm.repositories.list` (Bitbucket) | yes — REST 2.0 | no (official-only) |
 | `scm.pullrequests.list` (Bitbucket) | yes — REST 2.0 | no (official-only) |
 | `scm.commits.list` (Bitbucket) | yes — REST 2.0 | no (official-only) |
+| `scm.repositories.create` (Bitbucket write, `bitbucket-admin`) | yes, with `--allow-write` | no (official-only) |
 
 Records are identical across routes; `provenance` is the only field that names the route.
 
@@ -121,7 +122,7 @@ has no documented Outlook REST endpoint.
 
 ### Assign categories: a bounded write
 
-`mail.categories.set` is one of the three exceptions to the read-only rule
+`mail.categories.set` is one of the four exceptions to the read-only rule
 ([decision](docs/decisions/2026-10-19-escritura-categorias-outlook.md)). It assigns categories to one
 message and writes nothing else:
 
@@ -263,13 +264,13 @@ answers that surface with an empty collection even for items that exist. The wal
 depth and in folders visited, and a folder the account cannot read is skipped rather than failing
 the search.
 
-## Bitbucket Cloud: read-only
+## Bitbucket Cloud: reads and repository creation
 
 Bitbucket Cloud connects one account with an Atlassian API token created with Bitbucket scopes
 (`read:user:bitbucket`, `read:workspace:bitbucket`, `read:repository:bitbucket`,
 `read:pullrequest:bitbucket`) and reads repositories, pull requests, and commits over REST 2.0,
-as accepted in [the Bitbucket ADR](docs/decisions/2026-10-26-conector-bitbucket.md). It writes
-nothing and has no browser route.
+as accepted in [the Bitbucket ADR](docs/decisions/2026-10-26-conector-bitbucket.md). The
+`bitbucket` connection writes nothing, and Bitbucket has no browser route.
 
 ```bash
 solercia-connect connect bitbucket user@example.com --workspace idartes-tecnologia \
@@ -282,6 +283,25 @@ solercia-connect run --provider bitbucket.cloud --capability scm.pullrequests.li
 Paged reads have a fixed page bound; reaching it fails with `result_incomplete` and
 `"complete": false` instead of returning a partial list. Token creation, each read, and the error
 codes are in the [Bitbucket runbook](docs/runbooks/bitbucket.md).
+
+### Create a repository: a bounded write
+
+`scm.repositories.create` is the fourth bounded write
+([decision](docs/decisions/2026-10-25-escritura-creacion-repositorios-bitbucket.md)). It creates
+one private, empty repository in an explicit project, over the separate `bitbucket-admin`
+connection and its own token, which adds `read:project:bitbucket` and `admin:repository:bitbucket`.
+It checks first that the repository does not exist (`repository_exists` otherwise) and that the
+project does (`project_not_found`), sends one `POST` that is never retried, and verifies the
+answer. Pushing stays with `git`.
+
+```bash
+solercia-connect connect bitbucket-admin user@example.com --workspace idartes-tecnologia \
+  --token-env BITBUCKET_ADMIN_API_TOKEN
+solercia-connect run --provider bitbucket.cloud --capability scm.repositories.create \
+  --account user@example.com --repo pandora-front --project PAN --allow-write
+git remote add origin https://x-bitbucket-api-token-auth@bitbucket.org/idartes-tecnologia/pandora-front.git
+git push -u origin main
+```
 
 ## Files on OneDrive and SharePoint
 
@@ -323,7 +343,7 @@ interchangeable: a mail token is never reused for a drive call.
 | Google Calendar | Desktop OAuth loopback with state + PKCE; read-only event capability | None | Pending dedicated account proof |
 | Google Meet | Desktop OAuth loopback with state + PKCE; Calendar attachment discovery and Drive text export (`text/plain`) | None (official-only) | Offline contract verified; third-party transcript export pending |
 | Jira | API-token or OAuth connection; JQL search, transition listing, and one-issue transition write (API token) | None | Pending supported-site proof |
-| Bitbucket Cloud | API token with Bitbucket scopes; read-only repositories, pull requests, and commits | None (official-only) | Pending first run against the IDARTES workspace |
+| Bitbucket Cloud | API token with Bitbucket scopes; read-only repositories, pull requests, and commits; repository creation over the separate `bitbucket-admin` token | None (official-only) | Reads verified against the IDARTES workspace; creation pending its first live run |
 | GLPI | Existing app/user-token session compatibility | None | Pending supported-installation proof |
 
 Teams personal Microsoft accounts are unsupported. Tenant policy or admin-disabled transcript

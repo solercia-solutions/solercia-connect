@@ -1,8 +1,10 @@
 # Bitbucket Cloud runbook
 
 Bitbucket Cloud is read through the official REST API 2.0 only (`https://api.bitbucket.org/2.0`),
-with one connection per account. It is read-only and has no browser route. The decision behind it
-is [the Bitbucket connector ADR](../decisions/2026-10-26-conector-bitbucket.md).
+with one connection per account. The `bitbucket` connection is read-only and has no browser route.
+The decision behind it is [the Bitbucket connector ADR](../decisions/2026-10-26-conector-bitbucket.md).
+Creating repositories is a separate write on its own `bitbucket-admin` connection; see
+[Create a repository](#create-a-repository).
 
 ## Create the API token
 
@@ -124,8 +126,99 @@ read also spends three identity requests outside that group.
 | `rate_limited` | Bitbucket's hourly request limit was reached | Wait and run it again |
 | `malformed_provider_data` | Bitbucket answered with an unexpected shape | Report it; nothing was read |
 
+## Create a repository
+
+`scm.repositories.create` creates one private, empty git repository in an existing project of a
+workspace. It is the fourth bounded write of Solercia Connect, accepted in
+[the repository creation ADR](../decisions/2026-10-25-escritura-creacion-repositorios-bitbucket.md).
+It never deletes, changes, or pushes anything, and it runs only in the CLI, never over HTTP.
+
+### The bitbucket-admin token
+
+The creation runs on its own connection, `bitbucket-admin`, with its own API token; the read
+token of `bitbucket` never gains a write scope. Create the token as in
+[Create the API token](#create-the-api-token), but select exactly these five scopes:
+
+- `read:user:bitbucket` (the account and its email addresses)
+- `read:workspace:bitbucket` (the workspace)
+- `read:repository:bitbucket` (the check that the repository does not exist yet)
+- `read:project:bitbucket` (the check that the project exists)
+- `admin:repository:bitbucket` (the creation itself)
+
+### Connect bitbucket-admin
+
+```bash
+solercia-connect doctor bitbucket-admin user@example.com
+
+solercia-connect connect bitbucket-admin user@example.com --workspace idartes-tecnologia \
+  --token-env BITBUCKET_ADMIN_API_TOKEN
+
+solercia-connect status bitbucket-admin user@example.com
+```
+
+In project mode, put `BITBUCKET_ADMIN_API_TOKEN=<the token>` in `.solercia-connect/connect.env`;
+`solercia-connect project init` already lists it, commented out. The identity is proven exactly as
+for `bitbucket`. The token is stored under `bitbucket-admin:<email>`, apart from the read token
+under `bitbucket:<email>`, and `disconnect` removes only its own:
+
+```bash
+solercia-connect disconnect bitbucket-admin user@example.com
+```
+
+### Create
+
+`--repo` (the slug) and `--project` (the project key) are required, and `--allow-write` is
+required on every invocation. `--workspace` overrides the connected workspace.
+
+```bash
+solercia-connect run --provider bitbucket.cloud --capability scm.repositories.create \
+  --account user@example.com --repo pandora-front --project PAN --allow-write
+```
+
+- The slug is checked as given: lower-case letters, digits, `.`, `_` and `-` only, never `.` or
+  `..`. Upper case, spaces, `/` and braced UUIDs are refused, never converted.
+- The project key is letters, digits and `_`. There is no default project: Bitbucket would
+  otherwise put the repository in the oldest project of the workspace.
+- Before writing, Connect proves the identity, checks that `GET /2.0/repositories/<workspace>/<slug>`
+  answers 404 and that `GET /2.0/workspaces/<workspace>/projects/<key>` answers with the same key.
+- The one `POST` always sends `scm: git`, `is_private: true`, `fork_policy: no_public_forks` and
+  the project key, and is never retried. The answer must carry the same slug, workspace, and
+  project with `is_private: true`.
+- The record carries `workspace`, `slug`, `full_name`, `project_key`, `is_private`, `web_url`,
+  `clone_https` and `created_at`. `clone_https` never holds a user name or password.
+
+### Push with git
+
+Solercia Connect never pushes. Push the existing local repository with `git`, which uses the
+credential it already stores, never the Connect token:
+
+```bash
+git remote add origin https://x-bitbucket-api-token-auth@bitbucket.org/idartes-tecnologia/pandora-front.git
+git push -u origin main
+```
+
+`x-bitbucket-api-token-auth` is the user name Bitbucket expects with an API token. If `git` has
+no stored credential for `bitbucket.org` yet, it asks for one; never paste it into a chat or a
+command argument.
+
+### Creation errors
+
+| Code | Meaning | Next step |
+| --- | --- | --- |
+| `write_not_authorized` | `--allow-write` is missing; nothing was sent | Add it only when the user asked for this creation |
+| `repository_exists` | A repository already uses that slug; nothing was changed | Report it; never pick another slug on your own |
+| `project_not_found` | The project key does not exist in the workspace, or is not visible | Check the key on the workspace's Projects page |
+| `invalid_input` | The slug or the key breaks the rules above, or Bitbucket spells the key otherwise | Use the exact key the message names |
+| `authorization_denied` | A scope is missing, or a private repository the account cannot see uses the slug | Create a token with all five scopes; check the slug |
+| `request_rejected` | Bitbucket refused the creation (invalid input or no permission to create) | Check the slug, the key, and the account's permission |
+| `write_unverified` | No readable confirmation, or an answer that does not match the request | Review the repository in Bitbucket before any new attempt |
+| `invalid_credentials` | The admin token expired or has no Bitbucket scopes | Create a new token with the five scopes and connect again |
+
 ## Live validation
 
 The offline suite proves the contracts with fakes. The first live run against
 `idartes-tecnologia` still has to confirm the shape of `/2.0/user/emails`, the scope names in a
 `403`, and a branch name with `/` in the commits path.
+
+The creation is proven offline as well. Its first live run still has to confirm the shape of a
+`400`, whether Bitbucket treats project keys case-sensitively, and the clone link it returns.
