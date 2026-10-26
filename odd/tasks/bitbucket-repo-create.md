@@ -98,7 +98,10 @@ Reglas de la escritura (R-D2):
 ## Entrega
 
 - Tamaño previsto: entre 700 y 900 líneas, con pruebas y documentos.
-- Un commit por tarea en esta rama, sin PR, igual que en las ramas anteriores.
+- Tamaño real: 2.747 líneas agregadas y 129 quitadas en 32 archivos. La mayor parte corresponde a R2
+  y a sus pruebas de errores.
+- Un commit por tarea en esta rama, sin PR, igual que en las ramas anteriores. Si Camilo decide
+  abrir PR, conviene dividirla en partes encadenadas.
 
 ## Progreso y evidencia
 
@@ -108,7 +111,8 @@ Reglas de la escritura (R-D2):
 | R0 | Hecha | `df0d706`: ADR y documentos de política; rojo con 3 fallos en `test_bitbucket_repo_create_policy_docs.py` (ADR inexistente, AGENTS.md sin «four» y skill sin las reglas nuevas) |
 | R1 | Hecha | `026533b`: conexión `bitbucket-admin`; rojo por `ImportError` de `BITBUCKET_TARGETS` en `test_bitbucket_admin_connection.py` y 2 fallos en las líneas agregadas a pruebas existentes |
 | R2 | Hecha | `6897b12`: capacidad `scm.repositories.create`; rojo por `ImportError` de `ScmRepositoryCreateRequest` en `test_bitbucket_repo_create.py`; cobertura de `bitbucket_admin.py` al 100 % |
-| R3 | Hecha (documentos) | Runbook, matriz, README, guía de uso, runbook de Outlook y skill; rojo con 4 fallos en `test_bitbucket_repo_create_wiring.py`. Compuertas finales: 1.520 pruebas, cobertura 90 %, `ruff` y `mypy` limpios |
+| R3 | Hecha | `d3a6612`: runbook, matriz, README, guía de uso, runbook de Outlook y skill; rojo con 4 fallos en `test_bitbucket_repo_create_wiring.py`. Compuertas finales: 1.520 pruebas, cobertura 90 %, `ruff` y `mypy` limpios |
+| Verificación del orquestador | Hecha | Repitió las compuertas: 1.520 pruebas, cobertura 89,52 %, `ruff` y `mypy` limpios. Las únicas líneas quitadas de pruebas existentes son las seis autorizadas y el renombre. Sin atribución en los commits. Reinstaló la CLI global y el skill. Desde `pandora_proxy`, `bitbucket-admin` queda en `action_required` y las demás conexiones en `connected_official` |
 
 Detalle:
 
@@ -153,7 +157,11 @@ Detalle:
 
 ## Siguiente paso
 
-- Reinstalación global de la CLI y validación en vivo de la creación, a cargo de Camilo o del
-  orquestador con su autorización. Falta confirmar en vivo la forma del 400, la sensibilidad a
-  mayúsculas de la clave de proyecto y el enlace de clonación.
-- Instrucciones a `migracion-angular-pandora`.
+- Camilo crea el token `bitbucket-admin` con los cinco alcances, lo agrega como
+  `BITBUCKET_ADMIN_API_TOKEN` y conecta.
+- `migracion-angular-pandora` ya recibió las instrucciones. Creará `pandora_auth` y
+  `pandora_auth_guard` en el proyecto `PAN` y les hará push con git.
+- Falta confirmar en vivo:
+  - la forma del 400;
+  - si la clave de proyecto distingue mayúsculas;
+  - el enlace de clonación.
