@@ -13,6 +13,7 @@ from solercia_connect.browser_profile import (
 )
 from solercia_connect.browser_routes import has_browser_route, target_family
 from solercia_connect.config import (
+    GOOGLE_TARGETS,
     MICROSOFT_TARGETS,
     ConnectionType,
     ConnectSettings,
@@ -115,14 +116,7 @@ class DoctorService:
         )
         microsoft_target = spec.type in MICROSOFT_TARGETS
         browser_target = has_browser_route(spec.type)
-        oauth_target = spec.type in {
-            ConnectionType.OUTLOOK,
-            ConnectionType.TEAMS,
-            ConnectionType.ONEDRIVE,
-            ConnectionType.GMAIL,
-            ConnectionType.GOOGLE_CALENDAR,
-            ConnectionType.GOOGLE_MEET,
-        }
+        oauth_target = spec.type in MICROSOFT_TARGETS | GOOGLE_TARGETS
         browser_profile_status = "not_applicable"
         browser_profile_detail = "Microsoft browser profiles do not apply to this target"
         browser_route_status = "not_applicable"

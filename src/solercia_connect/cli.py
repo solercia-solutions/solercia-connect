@@ -35,6 +35,7 @@ from solercia_connect.config import (
 from solercia_connect.connections import ConnectionService
 from solercia_connect.doctor import DoctorService
 from solercia_connect.domain import (
+    MAX_DRAFT_BODY_BYTES,
     CalendarQuery,
     Capability,
     DateWindow,
@@ -273,10 +274,34 @@ def run_capability(
         str | None,
         typer.Option("--issue", help="One exact Jira issue key, such as CP-1356"),
     ] = None,
-    to_status: Annotated[
-        str | None,
-        typer.Option("--to", help="Target status name (external.issues.transition)"),
+    to_values: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--to",
+            help="Target status name (external.issues.transition, exactly one) or a recipient "
+            "(mail.draft.create, repeatable)",
+        ),
     ] = None,
+    cc: Annotated[
+        list[str] | None,
+        typer.Option("--cc", help="Copy recipient; repeatable (mail.draft.create)"),
+    ] = None,
+    bcc: Annotated[
+        list[str] | None,
+        typer.Option("--bcc", help="Blind-copy recipient; repeatable (mail.draft.create)"),
+    ] = None,
+    subject: Annotated[
+        str | None,
+        typer.Option("--subject", help="One-line subject (mail.draft.create)"),
+    ] = None,
+    body_file: Annotated[
+        Path | None,
+        typer.Option("--body-file", help="UTF-8 plain-text body, up to 200 KB (mail.draft.create)"),
+    ] = None,
+    body_stdin: Annotated[
+        bool,
+        typer.Option("--body-stdin", help="Read the plain-text body from piped stdin"),
+    ] = False,
     allow_write: Annotated[
         bool,
         typer.Option("--allow-write", help="Authorize one write for this invocation only"),
@@ -332,8 +357,18 @@ def run_capability(
         # Issue-scoped options travel only when given, so other capabilities keep their payload.
         if issue is not None:
             payload["issue"] = issue
-        if to_status is not None:
-            payload["to"] = to_status
+        if to_values is not None:
+            payload["to"] = _to_option(capability, to_values)
+        # Draft options travel only when given, and the body is read only for the draft.
+        for name, value in (("cc", cc), ("bcc", bcc)):
+            if value is not None:
+                payload[name] = list(value)
+        if subject is not None:
+            payload["subject"] = subject
+        if capability is Capability.MAIL_DRAFT_CREATE:
+            payload["body"] = _draft_body(body_file, from_stdin=body_stdin)
+        elif body_file is not None or body_stdin:
+            raise _InputError("--body-file and --body-stdin apply only to mail.draft.create")
         payload["allow_browser_fallback"] = browser_fallback
         envelope = run_application(payload)
         normalized_account = envelope.account
@@ -886,6 +921,49 @@ def _jira_token_from_environment(name: str) -> SecretValue:
     return SecretValue(token)
 
 
+def _to_option(capability: Capability, values: list[str]) -> str | list[str]:
+    """Read --to as one target status for the Jira transition and as recipients otherwise."""
+    if capability is Capability.EXTERNAL_ISSUES_TRANSITION:
+        if len(values) != 1:
+            raise _InputError("--to takes exactly one target status for external.issues.transition")
+        return values[0]
+    return list(values)
+
+
+def _draft_body(path: Path | None, *, from_stdin: bool) -> str:
+    """Read the draft body from one file or from piped stdin, never from an argument."""
+    if path is not None and from_stdin:
+        raise _InputError("--body-file and --body-stdin are mutually exclusive")
+    if path is None and not from_stdin:
+        raise _InputError("mail.draft.create needs --body-file or --body-stdin")
+    if path is not None:
+        try:
+            if not path.is_file():
+                raise OSError("not a regular file")
+            if path.stat().st_size > MAX_DRAFT_BODY_BYTES:
+                raise _InputError(f"--body-file exceeds {MAX_DRAFT_BODY_BYTES // 1024} KB")
+            data = path.read_bytes()
+        except OSError:
+            raise _InputError("--body-file could not be read") from None
+        source = "--body-file"
+    else:
+        if sys.stdin.isatty():
+            raise _InputError("--body-stdin needs piped input")
+        stream = getattr(sys.stdin, "buffer", None)
+        data = (
+            stream.read(MAX_DRAFT_BODY_BYTES + 1)
+            if stream is not None
+            else sys.stdin.read(MAX_DRAFT_BODY_BYTES + 1).encode("utf-8")
+        )
+        source = "--body-stdin"
+    if len(data) > MAX_DRAFT_BODY_BYTES:
+        raise _InputError(f"{source} exceeds {MAX_DRAFT_BODY_BYTES // 1024} KB")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise _InputError(f"{source} must be UTF-8 text") from None
+
+
 def _jira_token(*, from_stdin: bool) -> SecretValue:
     if from_stdin and sys.stdin.isatty():
         # A terminal would echo the token as it is typed; only piped input skips the prompt.
@@ -928,6 +1006,11 @@ def _query_payload(
         raise _InputError(
             "external.issues.transition is a write, not a query; run it with --issue, --to and "
             "--allow-write"
+        )
+    if capability is Capability.MAIL_DRAFT_CREATE:
+        raise _InputError(
+            "mail.draft.create is a write, not a query; run it with --to, --subject, --body-file "
+            "and --allow-write"
         )
     if capability is Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST:
         if issue is None:

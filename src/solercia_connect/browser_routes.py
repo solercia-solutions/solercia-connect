@@ -18,6 +18,9 @@ _BROWSER_ADAPTERS: dict[ProviderFamily, ProviderDescriptor] = {
 }
 
 BROWSER_ROUTE_FAMILIES: frozenset[ProviderFamily] = frozenset(_BROWSER_ADAPTERS)
+# Targets that never take the browser route, whatever their family offers: the Gmail writes run
+# over the official API only (docs/decisions/2026-10-25-envio-correo-gmail-dos-pasos.md).
+OFFICIAL_ONLY_TARGETS: frozenset[ConnectionType] = frozenset({ConnectionType.GMAIL_COMPOSE})
 BROWSER_PROVIDER_IDS: frozenset[str] = frozenset(
     descriptor.provider_id for descriptor in _BROWSER_ADAPTERS.values()
 )
@@ -32,4 +35,4 @@ def target_family(target: ConnectionType) -> ProviderFamily:
 
 
 def has_browser_route(target: ConnectionType) -> bool:
-    return target_family(target) in BROWSER_ROUTE_FAMILIES
+    return target not in OFFICIAL_ONLY_TARGETS and target_family(target) in BROWSER_ROUTE_FAMILIES

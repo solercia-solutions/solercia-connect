@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
+from solercia_connect.domain import EMAIL_ADDRESS_PATTERN
+
 # normalize_jira_site moved next to the Jira adapter, which matches accessible resources with it;
 # it stays importable from here for the CLI, the connection service and existing callers.
 from solercia_connect.providers.jira import (
@@ -36,10 +38,9 @@ ATLASSIAN_OAUTH_CONFIGURATION = (
 PROJECT_DISCOVERY_VARIABLE = "SOLERCIA_CONNECT_PROJECT_DISCOVERY"
 ProjectHomeSource = Literal["explicit", "discovered"]
 
-_ACCOUNT_PATTERN = re.compile(
-    r"(?=.{3,320}\Z)[^\s<>@]+@[^\s<>@.]+(?:\.[^\s<>@.]+)+\Z",
-    re.ASCII,
-)
+_ACCOUNT_PATTERN = EMAIL_ADDRESS_PATTERN
+# The only write scope Connect requests, held by the gmail-compose target alone (decision D5).
+GMAIL_COMPOSE_SCOPE = "https://www.googleapis.com/auth/gmail.compose"
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
 
@@ -49,6 +50,7 @@ class ConnectionType(StrEnum):
     TEAMS = "teams"
     ONEDRIVE = "onedrive"
     GMAIL = "gmail"
+    GMAIL_COMPOSE = "gmail-compose"
     GOOGLE_CALENDAR = "google-calendar"
     GOOGLE_MEET = "google-meet"
     JIRA = "jira"
@@ -93,6 +95,15 @@ MICROSOFT_TARGETS: frozenset[ConnectionType] = frozenset(
         ConnectionType.OUTLOOK,
         ConnectionType.TEAMS,
         ConnectionType.ONEDRIVE,
+    }
+)
+# Every target served by Google OAuth, the writing gmail-compose included.
+GOOGLE_TARGETS: frozenset[ConnectionType] = frozenset(
+    {
+        ConnectionType.GMAIL,
+        ConnectionType.GMAIL_COMPOSE,
+        ConnectionType.GOOGLE_CALENDAR,
+        ConnectionType.GOOGLE_MEET,
     }
 )
 
@@ -141,6 +152,19 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
         ("SOLERCIA_CONNECT_GOOGLE_CLIENT_ID",),
         ("openid", "email", "https://www.googleapis.com/auth/gmail.readonly"),
         ("Google OAuth Desktop app client", "Workspace admin approval when policy requires it"),
+    ),
+    TargetSpec(
+        ConnectionType.GMAIL_COMPOSE,
+        "google.gmail",
+        # Writes only, official route only (decision D5, the Gmail send in two steps). A separate
+        # grant keeps gmail.compose off the read-only gmail target.
+        ("mail.draft.create",),
+        ("SOLERCIA_CONNECT_GOOGLE_CLIENT_ID",),
+        ("openid", "email", GMAIL_COMPOSE_SCOPE),
+        (
+            "Google OAuth Desktop app client with the gmail.compose scope",
+            "Workspace admin approval when policy requires it",
+        ),
     ),
     TargetSpec(
         ConnectionType.GOOGLE_CALENDAR,

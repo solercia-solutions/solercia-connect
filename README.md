@@ -102,6 +102,7 @@ The root wrapper is only a convenience alias and contains no provider logic:
 | `mail.categories.set` (write) | no — needs `Mail.ReadWrite` | yes, with `--allow-write` |
 | `external.issues.transitions.list` (Jira) | yes — REST v3 | no (official-only) |
 | `external.issues.transition` (Jira write) | yes, with `--allow-write`; API token only | no (official-only) |
+| `mail.draft.create` (Gmail write, `gmail-compose`) | yes, with `--allow-write` | no (official-only) |
 
 Records are identical across routes; `provenance` is the only field that names the route.
 

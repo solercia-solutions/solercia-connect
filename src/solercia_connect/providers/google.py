@@ -40,7 +40,7 @@ from solercia_connect.providers._shared import (
 )
 from solercia_connect.transport import request_json
 
-_GMAIL_BASE_URL = "https://gmail.googleapis.com/gmail/v1"
+GMAIL_BASE_URL = "https://gmail.googleapis.com/gmail/v1"
 _GOOGLE_CALENDAR_BASE_URL = "https://www.googleapis.com/calendar/v3"
 # Structured 403 reasons Google documents as a domain administrator block (decision D0.1). The
 # Gmail and Drive error guides both describe `domainPolicy` as the domain policy not allowing the
@@ -99,7 +99,7 @@ class GoogleGmailAdapter:
         auth: AuthorizationProvider,
         *,
         expected_account: str | None = None,
-        base_url: str = _GMAIL_BASE_URL,
+        base_url: str = GMAIL_BASE_URL,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self._transport = transport
@@ -108,7 +108,7 @@ class GoogleGmailAdapter:
         self._base_url = ensure_official_https_base_url(
             base_url,
             "Gmail base URL",
-            _GMAIL_BASE_URL,
+            GMAIL_BASE_URL,
         )
         self._clock = clock
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass, fields, is_dataclass
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
@@ -25,6 +25,9 @@ class Capability(StrEnum):
     EXTERNAL_ISSUES_TRANSITIONS_LIST = "external.issues.transitions.list"
     EXTERNAL_ISSUES_TRANSITION = "external.issues.transition"
     TICKETS_SEARCH = "tickets.search"
+    # The Gmail send in two steps, on the gmail-compose target, official route only: see
+    # docs/decisions/2026-10-25-envio-correo-gmail-dos-pasos.md. It is the third write.
+    MAIL_DRAFT_CREATE = "mail.draft.create"
 
 
 class ProviderFamily(StrEnum):
@@ -103,7 +106,11 @@ class ReasonCode(StrEnum):
 # Capabilities that change provider state. Each one needs explicit authorization per invocation,
 # never runs over HTTP, and is never retried automatically.
 WRITE_CAPABILITIES: frozenset[Capability] = frozenset(
-    {Capability.MAIL_CATEGORIES_SET, Capability.EXTERNAL_ISSUES_TRANSITION}
+    {
+        Capability.MAIL_CATEGORIES_SET,
+        Capability.EXTERNAL_ISSUES_TRANSITION,
+        Capability.MAIL_DRAFT_CREATE,
+    }
 )
 
 
@@ -262,6 +269,98 @@ def same_status_name(first: str, second: str) -> bool:
     return first.strip().casefold() == second.strip().casefold()
 
 
+# One email address: the rule that also validates connection accounts (config.normalize_account).
+EMAIL_ADDRESS_PATTERN = re.compile(
+    r"(?=.{3,320}\Z)[^\s<>@]+@[^\s<>@.]+(?:\.[^\s<>@.]+)+\Z",
+    re.ASCII,
+)
+# A recipient written into a mail header must also be a plain dot-atom address, so no comma,
+# quote, parenthesis or angle bracket can add a second recipient or a comment to the header.
+_HEADER_SAFE_ADDRESS = re.compile(
+    r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+"
+)
+MAX_DRAFT_RECIPIENTS = 20
+MAX_DRAFT_BODY_BYTES = 200 * 1024
+MAX_DRAFT_SUBJECT_CHARS = 255
+DRAFT_PREVIEW_CHARS = 200
+
+
+def normalize_mail_recipient(value: object, label: str) -> str:
+    """Return one recipient address in lower case, or refuse anything else."""
+    if isinstance(value, str):
+        candidate = value.strip().casefold()
+        if EMAIL_ADDRESS_PATTERN.fullmatch(candidate) and _HEADER_SAFE_ADDRESS.fullmatch(candidate):
+            return candidate
+    raise ValueError(f"A --{label} value is not a valid email address")
+
+
+def require_draft_subject(value: object) -> str:
+    """Return the trimmed subject when it is one non-empty, bounded line."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("A Gmail draft needs a non-empty subject")
+    subject = value.strip()
+    if len(subject.splitlines()) != 1 or any(
+        ord(char) < 32 or ord(char) == 127 for char in subject
+    ):
+        raise ValueError("The subject must be one line without control characters")
+    if len(subject) > MAX_DRAFT_SUBJECT_CHARS:
+        raise ValueError(f"The subject is longer than {MAX_DRAFT_SUBJECT_CHARS} characters")
+    return subject
+
+
+@dataclass(frozen=True, slots=True)
+class MailDraftRequest:
+    """One plain-text Gmail draft from the connected account, with explicit recipients.
+
+    Every recipient is validated and appears once across ``to``, ``cc`` and ``bcc``, at most
+    ``MAX_DRAFT_RECIPIENTS`` in total. The body is UTF-8 text of at most ``MAX_DRAFT_BODY_BYTES``
+    and never appears in a representation. ``write_authorized`` must be set explicitly per
+    invocation; the runtime refuses the write otherwise.
+    """
+
+    to: tuple[str, ...]
+    subject: str
+    body: str = field(repr=False)
+    cc: tuple[str, ...] = ()
+    bcc: tuple[str, ...] = ()
+    account_id: str | None = None
+    write_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        to = _draft_recipients(self.to, "to")
+        cc = _draft_recipients(self.cc, "cc")
+        bcc = _draft_recipients(self.bcc, "bcc")
+        if not to:
+            raise ValueError("A Gmail draft needs at least one --to recipient")
+        everyone = [*to, *cc, *bcc]
+        if len(set(everyone)) != len(everyone):
+            raise ValueError("A recipient appears more than once across --to, --cc and --bcc")
+        if len(everyone) > MAX_DRAFT_RECIPIENTS:
+            raise ValueError(
+                f"A Gmail draft takes at most {MAX_DRAFT_RECIPIENTS} recipients across --to, --cc "
+                "and --bcc"
+            )
+        object.__setattr__(self, "to", to)
+        object.__setattr__(self, "cc", cc)
+        object.__setattr__(self, "bcc", bcc)
+        object.__setattr__(self, "subject", require_draft_subject(self.subject))
+        if not isinstance(self.body, str) or not self.body.strip():
+            raise ValueError("A Gmail draft needs a non-empty body")
+        try:
+            size = len(self.body.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise ValueError("The body is not valid UTF-8 text") from None
+        if size > MAX_DRAFT_BODY_BYTES:
+            raise ValueError(f"The body is larger than {MAX_DRAFT_BODY_BYTES // 1024} KB")
+
+
+def _draft_recipients(values: object, label: str) -> tuple[str, ...]:
+    if not isinstance(values, (tuple, list)):
+        raise ValueError(f"{label} must be a list of email addresses")
+    return tuple(normalize_mail_recipient(value, label) for value in values)
+
+
 @dataclass(frozen=True, slots=True)
 class TicketQuery:
     window: DateWindow
@@ -377,6 +476,7 @@ type QueryPayload = (
     | TicketQuery
     | FileQuery
     | MailCategoriesUpdate
+    | MailDraftRequest
 )
 
 
@@ -590,6 +690,26 @@ class MailCategoryAssignment:
     provenance: Provenance
 
 
+@dataclass(frozen=True, slots=True)
+class MailDraft:
+    """A Gmail draft created for human review.
+
+    ``body_preview`` holds only the first ``DRAFT_PREVIEW_CHARS`` characters of the body: it is
+    what an agent shows the user before asking to approve the send, never the whole body.
+    """
+
+    draft_id: str
+    message_id: str
+    thread_id: str | None
+    sender: EmailAddress
+    to: tuple[EmailAddress, ...]
+    cc: tuple[EmailAddress, ...]
+    bcc: tuple[EmailAddress, ...]
+    subject: str
+    body_preview: str
+    provenance: Provenance
+
+
 type DomainRecord = (
     MailMessage
     | CalendarEvent
@@ -600,6 +720,7 @@ type DomainRecord = (
     | TicketCase
     | DriveFile
     | MailCategoryAssignment
+    | MailDraft
 )
 
 
@@ -686,6 +807,7 @@ _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST: IssueTransitionOption,
     Capability.EXTERNAL_ISSUES_TRANSITION: IssueTransitionResult,
     Capability.TICKETS_SEARCH: TicketCase,
+    Capability.MAIL_DRAFT_CREATE: MailDraft,
 }
 
 

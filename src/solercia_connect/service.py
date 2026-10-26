@@ -15,6 +15,8 @@ from solercia_connect.application import http_write_rejection, run_application
 from solercia_connect.bootstrap import registry_from_environment
 from solercia_connect.browser_routes import has_browser_route
 from solercia_connect.config import (
+    GOOGLE_TARGETS,
+    MICROSOFT_TARGETS,
     TARGET_SPECS,
     ConnectionType,
     ConnectSettings,
@@ -150,18 +152,7 @@ class RunRequest(BaseModel):
                 raise ValueError("start and end must be timezone-aware")
             if self.start >= self.end:
                 raise ValueError("start must be before end")
-        if (
-            self.type
-            in {
-                ConnectionType.OUTLOOK,
-                ConnectionType.TEAMS,
-                ConnectionType.ONEDRIVE,
-                ConnectionType.GMAIL,
-                ConnectionType.GOOGLE_CALENDAR,
-                ConnectionType.GOOGLE_MEET,
-            }
-            and self.account is None
-        ):
+        if self.type in MICROSOFT_TARGETS | GOOGLE_TARGETS and self.account is None:
             raise ValueError("account is required for OAuth provider runs")
         if self.allow_browser_fallback and not has_browser_route(self.type):
             raise ValueError("browser fallback is available only for Microsoft targets")

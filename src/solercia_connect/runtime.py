@@ -16,6 +16,7 @@ from solercia_connect.domain import (
     ExecutionReceipt,
     IssueTransitionRequest,
     MailCategoriesUpdate,
+    MailDraftRequest,
     MailQuery,
     ProviderFamily,
     ReasonCode,
@@ -486,7 +487,10 @@ def _validate_records(
 def _request_account_boundary(request: ConnectorRequest) -> str | None:
     payload = request.payload
     if (
-        isinstance(payload, (MailQuery, CalendarQuery, TranscriptQuery, MailCategoriesUpdate))
+        isinstance(
+            payload,
+            (MailQuery, CalendarQuery, TranscriptQuery, MailCategoriesUpdate, MailDraftRequest),
+        )
         and payload.account_id
     ):
         return _canonical_account(payload.account_id)
@@ -496,7 +500,7 @@ def _request_account_boundary(request: ConnectorRequest) -> str | None:
 def _write_authorized(request: ConnectorRequest) -> bool:
     payload = request.payload
     return (
-        isinstance(payload, (MailCategoriesUpdate, IssueTransitionRequest))
+        isinstance(payload, (MailCategoriesUpdate, IssueTransitionRequest, MailDraftRequest))
         and payload.write_authorized is True
     )
 

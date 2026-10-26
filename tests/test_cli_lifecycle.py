@@ -9,7 +9,13 @@ import pytest
 from typer.testing import CliRunner
 
 import solercia_connect.cli as cli
-from solercia_connect.config import ConnectionProfile, ConnectionType, ProfileStore, load_settings
+from solercia_connect.config import (
+    TARGET_SPECS,
+    ConnectionProfile,
+    ConnectionType,
+    ProfileStore,
+    load_settings,
+)
 from solercia_connect.doctor import DoctorCheck, DoctorReport
 from solercia_connect.domain import (
     CalendarQuery,
@@ -361,7 +367,7 @@ def test_doctor_ready_branch_and_config_validation_failure_are_uniform(
     ready = runner.invoke(cli.app, ["doctor"])
 
     assert ready.exit_code == 0
-    assert len(json.loads(ready.stdout)["data"]["reports"]) == 8
+    assert len(json.loads(ready.stdout)["data"]["reports"]) == len(TARGET_SPECS)
 
     monkeypatch.setattr(
         cli,
@@ -391,6 +397,9 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
             continue
         if capability is Capability.EXTERNAL_ISSUES_TRANSITION:
             # Also a write; the helper refuses it (tests/test_jira_transition_write.py).
+            continue
+        if capability is Capability.MAIL_DRAFT_CREATE:
+            # A Gmail write; the helper refuses it (tests/test_gmail_draft_create.py).
             continue
         query = cli._query_payload(capability, **common)
         assert isinstance(query, _EXPECTED_QUERY_TYPES[capability])

@@ -14,6 +14,7 @@ from solercia_connect.browser_profile import (
 )
 from solercia_connect.browser_routes import has_browser_route
 from solercia_connect.config import (
+    GMAIL_COMPOSE_SCOPE,
     MICROSOFT_TARGETS,
     ConnectionType,
     ConnectSettings,
@@ -30,7 +31,7 @@ from solercia_connect.connections import (
 )
 from solercia_connect.domain import Capability, ReasonCode
 from solercia_connect.errors import ConnectorFailure
-from solercia_connect.oauth import OAuthTokenStore
+from solercia_connect.oauth import OAuthTokenStore, grant_covers
 from solercia_connect.ports import HTTPTransport
 from solercia_connect.project_home import prepare_project_home
 from solercia_connect.project_secrets import (
@@ -38,6 +39,7 @@ from solercia_connect.project_secrets import (
     oauth_token_store_from_settings,
 )
 from solercia_connect.providers.glpi import GlpiAdapter
+from solercia_connect.providers.gmail_compose import GmailComposeAdapter
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
 from solercia_connect.providers.jira import JiraAdapter, jira_api_base_url
@@ -125,7 +127,19 @@ def registry_from_environment(
         "SOLERCIA_CONNECT_GOOGLE_ACCESS_TOKEN",
         "GOOGLE_ACCESS_TOKEN",
     )
-    if google_token:
+    if parsed_type is ConnectionType.GMAIL_COMPOSE and normalized_account is not None:
+        # The Gmail writes use this account's own gmail-compose connection, never a token from
+        # the environment, whose scopes nobody verified.
+        registry.register(
+            _gmail_compose_adapter(
+                transport,
+                profiles,
+                settings,
+                secure_store,
+                normalized_account,
+            )
+        )
+    elif google_token:
         auth = BearerTokenProvider(SecretValue(google_token))
         expected = normalized_account or _first_value(
             values,
@@ -254,6 +268,40 @@ def registry_from_environment(
             )
         )
     return registry
+
+
+def _gmail_compose_adapter(
+    transport: HTTPTransport,
+    profiles: ProfileStore,
+    settings: ConnectSettings,
+    token_store: OAuthTokenStore,
+    account: str,
+) -> GmailComposeAdapter:
+    """Build the compose adapter from the account's official gmail-compose connection.
+
+    The stored grant decides whether the adapter may write: without gmail.compose every write
+    fails closed with ``write_scope_missing`` before any provider call.
+    """
+
+    parsed = ConnectionType.GMAIL_COMPOSE
+    profile = profiles.get(parsed, account)
+    if profile is None or profile.route != "official":
+        raise ValueError(
+            "No official Gmail compose connection exists for this account; run "
+            f"{connect_command(parsed, account)}"
+        )
+    tokens = token_store.load(f"{parsed.value}:{account}")
+    if tokens is None:
+        raise ConnectorFailure(
+            ReasonCode.INVALID_CREDENTIALS,
+            "The Gmail compose authorization for this account is not stored; reconnect it",
+        )
+    return GmailComposeAdapter(
+        transport,
+        oauth_provider_from_settings(settings, token_store, parsed, account, transport=transport),
+        expected_account=account,
+        grant_can_write=grant_covers((GMAIL_COMPOSE_SCOPE,), tokens.scopes),
+    )
 
 
 def _jira_adapter_for_account(

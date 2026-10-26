@@ -77,6 +77,13 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "in:inbox query, strict range on internalDate, ascending order, full MIME body; not live",
     ),
     CapabilityRow(
+        "Gmail API",
+        "official",
+        "mail.draft.create",
+        "implemented-offline",
+        "Third write: gmail-compose target, one drafts.create POST, --allow-write, CLI only",
+    ),
+    CapabilityRow(
         "Google Calendar API",
         "official",
         "calendar.events.list",

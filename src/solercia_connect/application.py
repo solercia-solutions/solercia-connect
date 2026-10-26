@@ -6,6 +6,8 @@ from typing import Any
 from solercia_connect.bootstrap import registry_from_environment
 from solercia_connect.browser_routes import has_browser_route
 from solercia_connect.config import (
+    GOOGLE_TARGETS,
+    MICROSOFT_TARGETS,
     ConnectionType,
     ConnectSettings,
     ProfileStore,
@@ -25,6 +27,7 @@ from solercia_connect.domain import (
     IssueTransitionRequest,
     IssueTransitionsQuery,
     MailCategoriesUpdate,
+    MailDraftRequest,
     MailQuery,
     QueryPayload,
     ReasonCode,
@@ -70,8 +73,8 @@ def run_application(
         writes = capability in WRITE_CAPABILITIES
         if not writes and payload.get("allow_write", False) is not False:
             raise ValueError(
-                "allow_write applies only to the writes mail.categories.set and "
-                "external.issues.transition"
+                "allow_write applies only to the writes "
+                + ", ".join(sorted(item.value for item in WRITE_CAPABILITIES))
             )
         if capability is not Capability.MAIL_CATEGORIES_SET and any(
             payload.get(name) is not None for name in ("add", "remove", "replace")
@@ -79,17 +82,23 @@ def run_application(
             raise ValueError("add, remove and replace apply only to mail.categories.set")
         if capability not in _ISSUE_CAPABILITIES and payload.get("issue") is not None:
             raise ValueError("issue applies only to the Jira transition capabilities")
-        if (
-            capability is not Capability.EXTERNAL_ISSUES_TRANSITION
-            and payload.get("to") is not None
+        if capability is not Capability.MAIL_DRAFT_CREATE and any(
+            payload.get(name) is not None for name in ("cc", "bcc", "subject", "body")
         ):
-            raise ValueError("to applies only to external.issues.transition")
+            raise ValueError("cc, bcc, subject and body apply only to mail.draft.create")
+        if capability not in _TO_CAPABILITIES and payload.get("to") is not None:
+            raise ValueError("to applies only to external.issues.transition and mail.draft.create")
         if writes and account is None:
             raise ValueError(f"account is required for {capability.value}")
         query = _query(type_value, capability, account, payload)
         fallback = payload.get("allow_browser_fallback", False)
         if not isinstance(fallback, bool):
             raise ValueError("allow_browser_fallback must be a boolean")
+        if fallback and type_value is ConnectionType.GMAIL_COMPOSE:
+            raise ValueError(
+                "gmail-compose runs only over the official Gmail API; browser fallback does not "
+                "apply"
+            )
         if (
             fallback
             and type_value is ConnectionType.GOOGLE_MEET
@@ -113,7 +122,7 @@ def run_application(
             ),
         )
 
-    if isinstance(query, (MailCategoriesUpdate, IssueTransitionRequest)):
+    if isinstance(query, (MailCategoriesUpdate, IssueTransitionRequest, MailDraftRequest)):
         assert account is not None
         if not interactive:
             return http_write_rejection(type_value, account, capability)
@@ -244,24 +253,18 @@ def run_application(
         )
 
 
-_OAUTH_TYPES = frozenset(
-    {
-        ConnectionType.OUTLOOK,
-        ConnectionType.TEAMS,
-        ConnectionType.ONEDRIVE,
-        ConnectionType.GMAIL,
-        ConnectionType.GOOGLE_CALENDAR,
-        ConnectionType.GOOGLE_MEET,
-    }
-)
+_OAUTH_TYPES = MICROSOFT_TARGETS | GOOGLE_TARGETS
 # Capabilities addressed by one exact Jira issue key instead of a window.
 _ISSUE_CAPABILITIES = frozenset(
     {Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST, Capability.EXTERNAL_ISSUES_TRANSITION}
 )
+# `to` is the target status of a Jira transition and the recipients of a Gmail draft.
+_TO_CAPABILITIES = frozenset({Capability.EXTERNAL_ISSUES_TRANSITION, Capability.MAIL_DRAFT_CREATE})
 # What each write changes, named in the refusals of a write that cannot run.
 _WRITE_EFFECTS = {
     Capability.MAIL_CATEGORIES_SET: "changes the mailbox",
     Capability.EXTERNAL_ISSUES_TRANSITION: "changes the status of a Jira issue",
+    Capability.MAIL_DRAFT_CREATE: "creates a Gmail draft",
 }
 _INTERACTIVE_REASONS = frozenset(
     {
@@ -357,12 +360,20 @@ def _write_command(type_value: ConnectionType, account: str | None, capability: 
     )
     if capability is Capability.EXTERNAL_ISSUES_TRANSITION:
         return prefix + "--issue <KEY> --to '<status>' --allow-write"
+    if capability is Capability.MAIL_DRAFT_CREATE:
+        return prefix + "--to <recipient> --subject '<subject>' --body-file <path> --allow-write"
     return prefix + "--message-id <id> --add <category> --allow-write --allow-browser-fallback"
 
 
 def _write_scope_remediation(type_value: ConnectionType, account: str | None) -> tuple[str, ...]:
-    """Point an OAuth Jira connection at the API-token connect, the one that can write."""
+    """Point a connection without its write scope at the connect that grants it.
+
+    A gmail-compose grant reconnects as itself; an OAuth Jira connection reconnects with an API
+    token, the only Jira credential that can write.
+    """
     command = connect_command(type_value, account or "<account>")
+    if type_value is ConnectionType.GMAIL_COMPOSE:
+        return (command,)
     return (f"{command} --token-env <VARIABLE>",)
 
 
@@ -417,6 +428,8 @@ def _query(
         return IssueTransitionsQuery(_required_string(payload, "issue"), account)
     if capability is Capability.EXTERNAL_ISSUES_TRANSITION:
         return _issue_transition(account, payload)
+    if capability is Capability.MAIL_DRAFT_CREATE:
+        return _draft_request(account, payload)
     limit = payload.get("limit", 50)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
         raise ValueError("limit must be an integer between 1 and 1000")
@@ -550,6 +563,33 @@ def _issue_transition(account: str | None, payload: dict[str, Any]) -> IssueTran
         account,
         allow_write,
     )
+
+
+def _draft_request(account: str | None, payload: dict[str, Any]) -> MailDraftRequest:
+    """Build the Gmail draft; the domain type validates recipients, subject and body."""
+    allow_write = payload.get("allow_write", False)
+    if not isinstance(allow_write, bool):
+        raise ValueError("allow_write must be a boolean")
+    body = payload.get("body")
+    if not isinstance(body, str):
+        raise ValueError("body is required")
+    return MailDraftRequest(
+        _address_list(payload.get("to"), "to"),
+        _required_string(payload, "subject"),
+        body,
+        _address_list(payload.get("cc"), "cc"),
+        _address_list(payload.get("bcc"), "bcc"),
+        account,
+        allow_write,
+    )
+
+
+def _address_list(value: Any, name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{name} must be a list of email addresses")
+    return tuple(value)
 
 
 def _category_names(value: Any, name: str) -> tuple[str, ...]:

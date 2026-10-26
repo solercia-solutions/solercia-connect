@@ -13,6 +13,7 @@ from solercia_connect.auth import BasicAuthProvider
 from solercia_connect.browser_profile import microsoft_browser_profile_path
 from solercia_connect.browser_routes import has_browser_route, target_family
 from solercia_connect.config import (
+    GOOGLE_TARGETS,
     MICROSOFT_TARGETS,
     ConnectionProfile,
     ConnectionType,
@@ -41,6 +42,7 @@ from solercia_connect.oauth_session import LoopbackCallbackServer, build_pkce_pa
 from solercia_connect.ports import BrowserProviderAdapter, HTTPTransport
 from solercia_connect.project_home import GitRunner, prepare_project_home
 from solercia_connect.project_secrets import api_token_store_from_settings
+from solercia_connect.providers.gmail_compose import GmailComposeAdapter
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
 from solercia_connect.providers.jira import (
@@ -61,9 +63,7 @@ from solercia_connect.secret_store import SecretStore
 from solercia_connect.secrets import SecretValue
 from solercia_connect.transport import HttpxTransport
 
-_GOOGLE_TARGETS = frozenset(
-    {ConnectionType.GMAIL, ConnectionType.GOOGLE_CALENDAR, ConnectionType.GOOGLE_MEET}
-)
+_GOOGLE_TARGETS = GOOGLE_TARGETS
 # Google shows admin_policy_enforced or org_internal on its own page and never redirects to the
 # loopback listener, so a blocked connect reaches the CLI only as a callback timeout.
 GOOGLE_POLICY_BLOCK_REMEDIATION = (
@@ -780,6 +780,18 @@ class ConnectionService:
                 .account_id
                 or ""
             )
+        if parsed is ConnectionType.GMAIL_COMPOSE:
+            # gmail.compose may read the profile, so the compose grant proves its own identity.
+            return (
+                GmailComposeAdapter(
+                    self._transport,
+                    oauth,
+                    expected_account=account,
+                )
+                .health()
+                .account_id
+                or ""
+            )
         if parsed is ConnectionType.GOOGLE_CALENDAR:
             return (
                 GoogleCalendarAdapter(
@@ -1390,11 +1402,7 @@ def oauth_provider_from_settings(
             store=token_store,
             store_key=key,
         )
-    if parsed in {
-        ConnectionType.GMAIL,
-        ConnectionType.GOOGLE_CALENDAR,
-        ConnectionType.GOOGLE_MEET,
-    }:
+    if parsed in GOOGLE_TARGETS:
         client_id = settings.google_client_id
         if client_id is None:
             raise ValueError("Google client ID is not configured")
