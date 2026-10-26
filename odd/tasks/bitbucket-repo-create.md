@@ -155,6 +155,20 @@ Detalle:
   «Bitbucket Cloud REST 2.0 (bitbucket-admin)», así que la prueba existente de las tres lecturas no
   cambió.
 
+## Validación en vivo
+
+- **2026-10-26, primer intento** (`pandora_auth`, proyecto `PAN`, recibo `rcpt-b7f5fd26bd1aa6bdc2c1`):
+  - **Conexión:** `bitbucket-admin` quedó `connected_official` con la identidad verificada por
+    `/user/emails`.
+  - **Resultado:** `authorization_denied`, ejecutado una sola vez y sin reintento.
+  - **Paso que falló:** por el mensaje, fue el `POST`, que respondió 403. Las consultas previas
+    pasaron: identidad, slug libre y proyecto `PAN` visible. No se creó nada.
+  - **Causa:** el cuerpo no traía una lista `required` reconocible. La causa más probable es que la
+    cuenta no tenga el permiso de crear repositorios en el proyecto `PAN` o en el workspace. Según
+    la captura de Camilo, el token sí tiene `admin:repository:bitbucket`.
+  - **Brecha:** `required_scopes` solo reconoce nombres `*:*:bitbucket`. Si Bitbucket devolviera
+    nombres heredados (`repository:admin`), se perderían.
+
 ## Siguiente paso
 
 - Camilo crea el token `bitbucket-admin` con los cinco alcances, lo agrega como
