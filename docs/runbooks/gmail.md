@@ -1,7 +1,9 @@
 # Connect Gmail
 
 Gmail uses a Google OAuth **Desktop app** client, a loopback callback on `127.0.0.1`, exact state
-correlation, and PKCE S256. The grant requests only Gmail read-only plus identity scopes.
+correlation, and PKCE S256. The `gmail` grant requests only Gmail read-only plus identity scopes.
+Sending uses a separate `gmail-compose` connection; see
+[Send in two steps](#send-in-two-steps-gmail-compose).
 
 ## Prepare and connect
 
@@ -108,6 +110,74 @@ This is analysis of the sources above, not Google text:
   the browser fallback route in `docs/decisions/2026-10-25-fallback-navegador-google-jira.md`
   (`--allow-browser-fallback` once the Google browser route is available).
 - **Scopes.** None of this changes the scopes Connect requests; existing grants keep theirs.
+
+## Send in two steps (`gmail-compose`)
+
+Sending is the third write of Connect, accepted in
+[the decision](../decisions/2026-10-25-envio-correo-gmail-dos-pasos.md). It uses its own connection,
+`gmail-compose`, with `openid`, `email`, and `gmail.compose`, and its own token key
+`gmail-compose:<account>`. The `gmail` connection keeps `gmail.readonly` and is never widened.
+`gmail.compose` is a restricted scope: add it to the OAuth consent screen of your Google Cloud
+project before connecting.
+
+```bash
+solercia-connect connect gmail-compose user@example.com
+solercia-connect status  gmail-compose user@example.com
+```
+
+The flow has three steps, and only the first and the last are commands:
+
+1. **Draft.** `mail.draft.create` creates one plain-text draft from the connected account:
+
+   ```bash
+   solercia-connect run --provider google.gmail --capability mail.draft.create \
+     --account user@example.com --to recipient@example.com --bcc archive@example.com \
+     --subject 'Weekly report' --body-file ./body.txt --allow-write
+   ```
+
+   `--to` is repeatable and required; `--cc` and `--bcc` are optional; 20 recipients at most. The
+   body comes from `--body-file` or piped `--body-stdin` (UTF-8, up to 200 KB). The record carries
+   `draft_id` and a 200-character `body_preview`.
+2. **Review.** The user opens Gmail > Drafts, reads the draft, and approves its id. Edits made in
+   Gmail are kept; the send reads the draft as it stands.
+3. **Send.** `mail.draft.send` sends that draft, once:
+
+   ```bash
+   solercia-connect run --provider google.gmail --capability mail.draft.send \
+     --account user@example.com --draft-id '<draft id>' --allow-write
+   ```
+
+### Duplicate check
+
+`gmail.compose` cannot list or read messages, so before the send Connect reads Sent through the
+read-only `gmail` connection of the same account. Connect both once:
+
+```bash
+solercia-connect connect gmail user@example.com
+solercia-connect connect gmail-compose user@example.com
+```
+
+The check searches `in:sent subject:"<subject>"` over the last 30 days, reads the headers of up to
+100 candidates, and compares the normalized subject and the set of `To`, `Cc`, and `Bcc`
+addresses. A match fails with `duplicate_suspected` and reports when the earlier message was sent;
+more candidates than the bound also fail closed. Without the `gmail` connection the send fails with
+`duplicate_check_unavailable`. `--allow-duplicate` skips the check entirely; pass it only when the
+user explicitly approves sending again.
+
+### Failures
+
+| Code | Meaning | Next step |
+| --- | --- | --- |
+| `write_not_authorized` | `--allow-write` is missing; nothing was sent | Add it only for an approved write |
+| `write_scope_missing` | The `gmail-compose` grant lacks `gmail.compose` | `solercia-connect connect gmail-compose <account>` |
+| `authorization_boundary_violation` | Another identity, or the draft's `From` is not the account | Use the account's own draft |
+| `draft_not_found` | The draft does not exist, or was already sent or deleted | Read Gmail > Drafts |
+| `duplicate_suspected` | Sent holds the same subject to the same recipients | Ask the user; `--allow-duplicate` only with approval |
+| `duplicate_check_unavailable` | The read-only `gmail` connection is missing or cannot read | `solercia-connect connect gmail <account>` |
+| `write_unverified` | Gmail did not confirm the `POST`; it may have applied | Check Gmail > Sent and Drafts; never resend blindly |
+
+Both writes run only in the canonical CLI and the library, over the official API. HTTP rejects
+them with `write_not_available_over_http`, and `--allow-browser-fallback` is refused.
 
 ## Live proof
 

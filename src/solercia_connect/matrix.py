@@ -84,6 +84,13 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "Third write: gmail-compose target, one drafts.create POST, --allow-write, CLI only",
     ),
     CapabilityRow(
+        "Gmail API",
+        "official",
+        "mail.draft.send",
+        "implemented-offline",
+        "One drafts.send POST after the From and duplicate checks, --allow-write, CLI only",
+    ),
+    CapabilityRow(
         "Google Calendar API",
         "official",
         "calendar.events.list",

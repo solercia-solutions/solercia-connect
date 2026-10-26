@@ -246,17 +246,17 @@ class GoogleGmailAdapter:
     def _normalize_message(self, item: dict[str, Any], account: str) -> MailMessage:
         source_id = require_string(item.get("id"), "gmail.message.id")
         payload = require_mapping(item.get("payload"), "gmail.message.payload")
-        headers = _gmail_headers(payload.get("headers"))
-        sent_at = _gmail_internal_date(item)
+        headers = gmail_headers(payload.get("headers"))
+        sent_at = gmail_internal_date(item)
         body, body_format = _gmail_body(payload)
-        sender_values = _addresses_from_header(headers.get("from"))
+        sender_values = addresses_from_header(headers.get("from"))
         return MailMessage(
             source_id,
             headers.get("subject", ""),
             sent_at,
             sender_values[0] if sender_values else None,
-            _addresses_from_header(headers.get("to")),
-            _addresses_from_header(headers.get("cc")),
+            addresses_from_header(headers.get("to")),
+            addresses_from_header(headers.get("cc")),
             body,
             body_format,
             as_string(item.get("threadId")),
@@ -281,7 +281,7 @@ class GoogleGmailAdapter:
         header is missing, unparseable, or carries no time zone.
         """
         message = self._normalize_message(item, account)
-        headers = _gmail_headers(
+        headers = gmail_headers(
             require_mapping(item.get("payload"), "gmail.message.payload").get("headers")
         )
         received_at = message.sent_at
@@ -507,7 +507,7 @@ def _requested_google_account(value: str | None) -> str | None:
     return identity
 
 
-def _gmail_headers(value: Any) -> dict[str, str]:
+def gmail_headers(value: Any) -> dict[str, str]:
     result: dict[str, str] = {}
     for raw in require_list(value or [], "gmail.message.headers"):
         item = require_mapping(raw, "gmail.message.header")
@@ -518,7 +518,7 @@ def _gmail_headers(value: Any) -> dict[str, str]:
     return result
 
 
-def _gmail_internal_date(item: dict[str, Any]) -> datetime:
+def gmail_internal_date(item: dict[str, Any]) -> datetime:
     internal_date = require_string(item.get("internalDate"), "gmail.message.internalDate")
     try:
         return datetime.fromtimestamp(int(internal_date) / 1000, tz=UTC)
@@ -540,7 +540,7 @@ def _gmail_date_header(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo is not None else None
 
 
-def _addresses_from_header(value: str | None) -> tuple[EmailAddress, ...]:
+def addresses_from_header(value: str | None) -> tuple[EmailAddress, ...]:
     if not value:
         return ()
     return tuple(

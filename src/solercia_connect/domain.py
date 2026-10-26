@@ -28,6 +28,7 @@ class Capability(StrEnum):
     # The Gmail send in two steps, on the gmail-compose target, official route only: see
     # docs/decisions/2026-10-25-envio-correo-gmail-dos-pasos.md. It is the third write.
     MAIL_DRAFT_CREATE = "mail.draft.create"
+    MAIL_DRAFT_SEND = "mail.draft.send"
 
 
 class ProviderFamily(StrEnum):
@@ -101,6 +102,9 @@ class ReasonCode(StrEnum):
     TRANSITION_REQUIRES_FIELDS = "transition_requires_fields"
     WRITE_SCOPE_MISSING = "write_scope_missing"
     WRITE_UNVERIFIED = "write_unverified"
+    DRAFT_NOT_FOUND = "draft_not_found"
+    DUPLICATE_SUSPECTED = "duplicate_suspected"
+    DUPLICATE_CHECK_UNAVAILABLE = "duplicate_check_unavailable"
 
 
 # Capabilities that change provider state. Each one needs explicit authorization per invocation,
@@ -110,6 +114,7 @@ WRITE_CAPABILITIES: frozenset[Capability] = frozenset(
         Capability.MAIL_CATEGORIES_SET,
         Capability.EXTERNAL_ISSUES_TRANSITION,
         Capability.MAIL_DRAFT_CREATE,
+        Capability.MAIL_DRAFT_SEND,
     }
 )
 
@@ -355,6 +360,30 @@ class MailDraftRequest:
             raise ValueError(f"The body is larger than {MAX_DRAFT_BODY_BYTES // 1024} KB")
 
 
+# A Gmail draft id as Gmail issues it; nothing that could reshape the URL path it is joined to.
+_GMAIL_DRAFT_ID = re.compile(r"[A-Za-z0-9_-]{1,256}")
+
+
+@dataclass(frozen=True, slots=True)
+class MailDraftSendRequest:
+    """Send one existing Gmail draft, named by its id, after the user approved that draft.
+
+    Unless ``allow_duplicate`` is set, the send first refuses a draft whose subject and recipients
+    match a message already in Sent. ``write_authorized`` must be set explicitly per invocation.
+    """
+
+    draft_id: str
+    account_id: str | None = None
+    write_authorized: bool = False
+    allow_duplicate: bool = False
+
+    def __post_init__(self) -> None:
+        candidate = self.draft_id.strip() if isinstance(self.draft_id, str) else ""
+        if _GMAIL_DRAFT_ID.fullmatch(candidate) is None:
+            raise ValueError("The draft id must be one Gmail draft identifier, such as r-123")
+        object.__setattr__(self, "draft_id", candidate)
+
+
 def _draft_recipients(values: object, label: str) -> tuple[str, ...]:
     if not isinstance(values, (tuple, list)):
         raise ValueError(f"{label} must be a list of email addresses")
@@ -477,6 +506,7 @@ type QueryPayload = (
     | FileQuery
     | MailCategoriesUpdate
     | MailDraftRequest
+    | MailDraftSendRequest
 )
 
 
@@ -710,6 +740,26 @@ class MailDraft:
     provenance: Provenance
 
 
+@dataclass(frozen=True, slots=True)
+class MailSendResult:
+    """The outcome of one Gmail draft send: the sent message and who it went to.
+
+    ``sent_at`` is Gmail's ``internalDate`` when the send answer carries it, and otherwise the
+    moment Connect received Gmail's confirmation.
+    """
+
+    draft_id: str
+    message_id: str
+    thread_id: str | None
+    sender: EmailAddress
+    to: tuple[EmailAddress, ...]
+    cc: tuple[EmailAddress, ...]
+    bcc: tuple[EmailAddress, ...]
+    subject: str
+    sent_at: datetime
+    provenance: Provenance
+
+
 type DomainRecord = (
     MailMessage
     | CalendarEvent
@@ -721,6 +771,7 @@ type DomainRecord = (
     | DriveFile
     | MailCategoryAssignment
     | MailDraft
+    | MailSendResult
 )
 
 
@@ -808,6 +859,7 @@ _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.EXTERNAL_ISSUES_TRANSITION: IssueTransitionResult,
     Capability.TICKETS_SEARCH: TicketCase,
     Capability.MAIL_DRAFT_CREATE: MailDraft,
+    Capability.MAIL_DRAFT_SEND: MailSendResult,
 }
 
 

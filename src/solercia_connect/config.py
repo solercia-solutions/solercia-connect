@@ -158,7 +158,7 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
         "google.gmail",
         # Writes only, official route only (decision D5, the Gmail send in two steps). A separate
         # grant keeps gmail.compose off the read-only gmail target.
-        ("mail.draft.create",),
+        ("mail.draft.create", "mail.draft.send"),
         ("SOLERCIA_CONNECT_GOOGLE_CLIENT_ID",),
         ("openid", "email", GMAIL_COMPOSE_SCOPE),
         (

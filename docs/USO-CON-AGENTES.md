@@ -94,11 +94,11 @@ tiene el mensaje (lista vacía si no tiene ninguna). Sirve para conocer el estad
 que el equipo le asignó a un caso. El catálogo de categorías del buzón no está
 disponible.
 
-## 5. Las dos escrituras: categorías de Outlook y estado de Jira
+## 5. Las tres escrituras: categorías de Outlook, estado de Jira y correo de Gmail
 
-Connect solo escribe en dos casos, y los dos exigen `--allow-write` en cada
-invocación: asignar categorías a un correo de Outlook y cambiar el estado de un
-issue de Jira. Nada más se escribe.
+Connect solo escribe en tres casos, y los tres exigen `--allow-write` en cada
+invocación: asignar categorías a un correo de Outlook, cambiar el estado de un
+issue de Jira y enviar un correo de Gmail en dos pasos. Nada más se escribe.
 
 ### Asignar categorías a un correo
 
@@ -162,6 +162,59 @@ solercia-connect run \
   falla con `write_scope_missing`: reconéctala con `--token-env` para escribir.
 - Pídele al agente cada cambio de forma explícita y nombra cada issue. El
   agente no cambia estados por su cuenta ni recorre listas de issues.
+
+### Enviar un correo de Gmail en dos pasos
+
+El envío usa una conexión aparte, `gmail-compose`, con el alcance
+`gmail.compose`. La conexión `gmail` sigue siendo de solo lectura y además
+permite revisar Enviados antes de enviar. Conecta las dos una vez:
+
+```bash
+solercia-connect connect gmail tu-correo@example.com
+solercia-connect connect gmail-compose tu-correo@example.com
+```
+
+El flujo con un agente es siempre el mismo:
+
+1. El agente confirma contigo desde qué cuenta sale el correo.
+2. Crea el borrador con `mail.draft.create`. El cuerpo va en un archivo de
+   texto UTF-8 o por la entrada estándar, nunca como argumento:
+
+   ```bash
+   solercia-connect run \
+     --provider google.gmail \
+     --capability mail.draft.create \
+     --account tu-correo@example.com \
+     --to destinatario@example.com \
+     --subject 'Informe semanal' \
+     --body-file ./cuerpo.txt \
+     --allow-write
+   ```
+
+3. Te muestra una vista previa (destinatarios, asunto y el inicio del cuerpo)
+   y te pide revisar el borrador en Gmail, en la carpeta Borradores.
+4. Solo cuando apruebas ese borrador de forma expresa, lo envía:
+
+   ```bash
+   solercia-connect run \
+     --provider google.gmail \
+     --capability mail.draft.send \
+     --account tu-correo@example.com \
+     --draft-id '<id del borrador>' \
+     --allow-write
+   ```
+
+- El remitente es siempre la cuenta conectada. `--to` se repite por cada
+  destinatario; `--cc` y `--bcc` son opcionales; el máximo es 20.
+- Antes de enviar, Connect busca en Enviados de los últimos 30 días un correo
+  con el mismo asunto y los mismos destinatarios. Si lo encuentra, falla con
+  `duplicate_suspected` e indica la fecha del envío anterior. Si falta la
+  conexión `gmail`, falla con `duplicate_check_unavailable`.
+- `--allow-duplicate` omite esa verificación. El agente solo lo usa si tú lo
+  apruebas de forma expresa.
+- Si la orden falla con `write_unverified`, el correo pudo haberse enviado:
+  revisa Enviados antes de repetir la orden.
+- El agente nunca envía en ciclos ni inventa destinatarios.
 
 ## 6. Instalar el skill para tu agente
 

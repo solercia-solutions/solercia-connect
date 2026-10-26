@@ -97,9 +97,11 @@ are the oldest prefix of the window, so narrowing to a later start resumes deter
 
 ## Assign categories (a bounded write)
 
-`mail.categories.set` assigns Outlook categories to one message. It is one of the two exceptions
-to the read-only rule; see [the decision](../decisions/2026-10-19-escritura-categorias-outlook.md).
-The other is the Jira issue transition in the [Jira runbook](jira.md).
+`mail.categories.set` assigns Outlook categories to one message. It is one of the three
+exceptions to the read-only rule; see
+[the decision](../decisions/2026-10-19-escritura-categorias-outlook.md). The others are the Jira
+issue transition in the [Jira runbook](jira.md) and the Gmail send in two steps in the
+[Gmail runbook](gmail.md).
 
 ```bash
 solercia-connect run \

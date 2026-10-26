@@ -23,6 +23,7 @@ from solercia_connect.config import (
     effective_environment,
     load_settings,
     normalize_account,
+    target_spec,
 )
 from solercia_connect.connections import (
     atlassian_oauth_provider_from_settings,
@@ -280,7 +281,8 @@ def _gmail_compose_adapter(
     """Build the compose adapter from the account's official gmail-compose connection.
 
     The stored grant decides whether the adapter may write: without gmail.compose every write
-    fails closed with ``write_scope_missing`` before any provider call.
+    fails closed with ``write_scope_missing`` before any provider call. The account's read-only
+    gmail connection, when it exists, reads Sent for the duplicate check of a send.
     """
 
     parsed = ConnectionType.GMAIL_COMPOSE
@@ -301,7 +303,30 @@ def _gmail_compose_adapter(
         oauth_provider_from_settings(settings, token_store, parsed, account, transport=transport),
         expected_account=account,
         grant_can_write=grant_covers((GMAIL_COMPOSE_SCOPE,), tokens.scopes),
+        sent_reader=_gmail_sent_reader(transport, profiles, settings, token_store, account),
     )
+
+
+def _gmail_sent_reader(
+    transport: HTTPTransport,
+    profiles: ProfileStore,
+    settings: ConnectSettings,
+    token_store: OAuthTokenStore,
+    account: str,
+) -> AuthorizationProvider | None:
+    """Return the account's read-only gmail authorization, or ``None`` when it cannot read Sent."""
+
+    parsed = ConnectionType.GMAIL
+    profile = profiles.get(parsed, account)
+    tokens = token_store.load(f"{parsed.value}:{account}")
+    if (
+        profile is None
+        or profile.route != "official"
+        or tokens is None
+        or not grant_covers(target_spec(parsed).oauth_scopes, tokens.scopes)
+    ):
+        return None
+    return oauth_provider_from_settings(settings, token_store, parsed, account, transport=transport)
 
 
 def _jira_adapter_for_account(

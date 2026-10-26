@@ -103,6 +103,7 @@ The root wrapper is only a convenience alias and contains no provider logic:
 | `external.issues.transitions.list` (Jira) | yes — REST v3 | no (official-only) |
 | `external.issues.transition` (Jira write) | yes, with `--allow-write`; API token only | no (official-only) |
 | `mail.draft.create` (Gmail write, `gmail-compose`) | yes, with `--allow-write` | no (official-only) |
+| `mail.draft.send` (Gmail write, `gmail-compose`) | yes, with `--allow-write` | no (official-only) |
 
 Records are identical across routes; `provenance` is the only field that names the route.
 
@@ -116,7 +117,7 @@ has no documented Outlook REST endpoint.
 
 ### Assign categories: a bounded write
 
-`mail.categories.set` is one of the two exceptions to the read-only rule
+`mail.categories.set` is one of the three exceptions to the read-only rule
 ([decision](docs/decisions/2026-10-19-escritura-categorias-outlook.md)). It assigns categories to one
 message and writes nothing else:
 
@@ -171,6 +172,43 @@ solercia-connect run --provider jira.cloud --capability external.issues.transiti
 - Official route only, never over HTTP. Classic and scoped API tokens can write; an OAuth
   connection fails with `write_scope_missing` because its grant lacks `write:jira-work`. See the
   [Jira runbook](docs/runbooks/jira.md).
+
+### Send Gmail in two steps: the third write
+
+`mail.draft.create` and `mail.draft.send` send one Gmail message in two steps, with a human review
+between them ([decision](docs/decisions/2026-10-25-envio-correo-gmail-dos-pasos.md)). Both run on
+the separate `gmail-compose` connection, whose grant holds `gmail.compose`; the `gmail` connection
+stays read-only.
+
+```bash
+solercia-connect connect gmail-compose user@example.com
+solercia-connect run --provider google.gmail --capability mail.draft.create \
+  --account user@example.com --to recipient@example.com --cc copy@example.com \
+  --subject 'Weekly report' --body-file ./body.txt --allow-write
+# The user reviews the draft in Gmail > Drafts and approves its id.
+solercia-connect run --provider google.gmail --capability mail.draft.send \
+  --account user@example.com --draft-id '<draft id>' --allow-write
+```
+
+- The draft is plain UTF-8 text from the connected account; `From` takes no alias. Recipients come
+  only from `--to` (at least one, repeatable), `--cc`, and `--bcc`, 20 at most, validated and
+  without repeats. The subject is one line of up to 255 characters. The body comes from
+  `--body-file` or piped `--body-stdin`, up to 200 KB, never from an argument.
+- The draft record holds `draft_id`, `message_id`, `thread_id`, the sender, the recipients, the
+  subject, and `body_preview`, the first 200 characters of the body.
+- The send reads the draft's headers: its `From` must be the connected account, it needs a subject
+  and 1 to 20 recipients, and a missing draft fails with `draft_not_found`.
+- Before sending, it searches Sent of the last 30 days through the account's read-only `gmail`
+  connection (`gmail.compose` cannot read messages). A message with the same normalized subject and
+  recipient set fails with `duplicate_suspected` and reports its sent date. A missing read
+  connection fails with `duplicate_check_unavailable`. `--allow-duplicate` skips the check, and
+  only the user may approve it.
+- `--allow-write` is required on every invocation and `--account` is required. Each command sends
+  one `POST` and never retries it: a `5xx`, a timeout, or an unreadable answer fails with
+  `write_unverified`, because the draft may exist or the message may have been sent.
+- A `gmail-compose` grant without `gmail.compose` fails with `write_scope_missing`; reconnect with
+  `solercia-connect connect gmail-compose <account>`. Official route only, never over HTTP. See the
+  [Gmail runbook](docs/runbooks/gmail.md).
 
 The two routes reach the same transcript by different names. The official route addresses the
 online meeting, so it needs a meeting ID. The browser route reads the recording that carries the

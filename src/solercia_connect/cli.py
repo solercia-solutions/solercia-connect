@@ -302,6 +302,19 @@ def run_capability(
         bool,
         typer.Option("--body-stdin", help="Read the plain-text body from piped stdin"),
     ] = False,
+    draft_id: Annotated[
+        str | None,
+        typer.Option(
+            "--draft-id", help="The draft to send, from mail.draft.create (mail.draft.send)"
+        ),
+    ] = None,
+    allow_duplicate: Annotated[
+        bool,
+        typer.Option(
+            "--allow-duplicate",
+            help="Skip the duplicate check of mail.draft.send; only with the user's approval",
+        ),
+    ] = False,
     allow_write: Annotated[
         bool,
         typer.Option("--allow-write", help="Authorize one write for this invocation only"),
@@ -365,6 +378,10 @@ def run_capability(
                 payload[name] = list(value)
         if subject is not None:
             payload["subject"] = subject
+        if draft_id is not None:
+            payload["draft_id"] = draft_id
+        if allow_duplicate:
+            payload["allow_duplicate"] = True
         if capability is Capability.MAIL_DRAFT_CREATE:
             payload["body"] = _draft_body(body_file, from_stdin=body_stdin)
         elif body_file is not None or body_stdin:
@@ -1011,6 +1028,10 @@ def _query_payload(
         raise _InputError(
             "mail.draft.create is a write, not a query; run it with --to, --subject, --body-file "
             "and --allow-write"
+        )
+    if capability is Capability.MAIL_DRAFT_SEND:
+        raise _InputError(
+            "mail.draft.send is a write, not a query; run it with --draft-id and --allow-write"
         )
     if capability is Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST:
         if issue is None:

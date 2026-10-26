@@ -28,6 +28,7 @@ from solercia_connect.domain import (
     IssueTransitionsQuery,
     MailCategoriesUpdate,
     MailDraftRequest,
+    MailDraftSendRequest,
     MailQuery,
     QueryPayload,
     ReasonCode,
@@ -86,6 +87,11 @@ def run_application(
             payload.get(name) is not None for name in ("cc", "bcc", "subject", "body")
         ):
             raise ValueError("cc, bcc, subject and body apply only to mail.draft.create")
+        if capability is not Capability.MAIL_DRAFT_SEND and (
+            payload.get("draft_id") is not None
+            or payload.get("allow_duplicate", False) is not False
+        ):
+            raise ValueError("draft_id and allow_duplicate apply only to mail.draft.send")
         if capability not in _TO_CAPABILITIES and payload.get("to") is not None:
             raise ValueError("to applies only to external.issues.transition and mail.draft.create")
         if writes and account is None:
@@ -122,7 +128,10 @@ def run_application(
             ),
         )
 
-    if isinstance(query, (MailCategoriesUpdate, IssueTransitionRequest, MailDraftRequest)):
+    if isinstance(
+        query,
+        (MailCategoriesUpdate, IssueTransitionRequest, MailDraftRequest, MailDraftSendRequest),
+    ):
         assert account is not None
         if not interactive:
             return http_write_rejection(type_value, account, capability)
@@ -213,9 +222,7 @@ def run_application(
             error=_reason_error(
                 final_reason,
                 detail,
-                remediation=_write_scope_remediation(type_value, account)
-                if final_reason is ReasonCode.WRITE_SCOPE_MISSING
-                else None,
+                remediation=_failure_remediation(final_reason, type_value, account),
             ),
         )
     except (TypeError, ValueError) as failure:
@@ -265,6 +272,7 @@ _WRITE_EFFECTS = {
     Capability.MAIL_CATEGORIES_SET: "changes the mailbox",
     Capability.EXTERNAL_ISSUES_TRANSITION: "changes the status of a Jira issue",
     Capability.MAIL_DRAFT_CREATE: "creates a Gmail draft",
+    Capability.MAIL_DRAFT_SEND: "sends a Gmail draft",
 }
 _INTERACTIVE_REASONS = frozenset(
     {
@@ -362,7 +370,34 @@ def _write_command(type_value: ConnectionType, account: str | None, capability: 
         return prefix + "--issue <KEY> --to '<status>' --allow-write"
     if capability is Capability.MAIL_DRAFT_CREATE:
         return prefix + "--to <recipient> --subject '<subject>' --body-file <path> --allow-write"
+    if capability is Capability.MAIL_DRAFT_SEND:
+        return prefix + "--draft-id <id> --allow-write"
     return prefix + "--message-id <id> --add <category> --allow-write --allow-browser-fallback"
+
+
+def _failure_remediation(
+    reason: ReasonCode, type_value: ConnectionType, account: str | None
+) -> tuple[str, ...] | None:
+    """Name the next step of a failed write; ``None`` keeps the generic doctor remediation."""
+    if reason is ReasonCode.WRITE_SCOPE_MISSING:
+        return _write_scope_remediation(type_value, account)
+    if reason is ReasonCode.DUPLICATE_CHECK_UNAVAILABLE:
+        return (
+            connect_command(ConnectionType.GMAIL, account or "<account>"),
+            "Or pass --allow-duplicate only after the user explicitly approves sending without "
+            "the duplicate check.",
+        )
+    if reason is ReasonCode.DUPLICATE_SUSPECTED:
+        return (
+            "Review Gmail > Sent with the user; rerun with --allow-duplicate only after the user "
+            "explicitly approves sending it again.",
+        )
+    if reason is ReasonCode.WRITE_UNVERIFIED and type_value is ConnectionType.GMAIL_COMPOSE:
+        return (
+            "Check Gmail > Sent and Gmail > Drafts with the user before any new attempt; never "
+            "resend on your own.",
+        )
+    return None
 
 
 def _write_scope_remediation(type_value: ConnectionType, account: str | None) -> tuple[str, ...]:
@@ -430,6 +465,8 @@ def _query(
         return _issue_transition(account, payload)
     if capability is Capability.MAIL_DRAFT_CREATE:
         return _draft_request(account, payload)
+    if capability is Capability.MAIL_DRAFT_SEND:
+        return _draft_send(account, payload)
     limit = payload.get("limit", 50)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
         raise ValueError("limit must be an integer between 1 and 1000")
@@ -581,6 +618,19 @@ def _draft_request(account: str | None, payload: dict[str, Any]) -> MailDraftReq
         _address_list(payload.get("bcc"), "bcc"),
         account,
         allow_write,
+    )
+
+
+def _draft_send(account: str | None, payload: dict[str, Any]) -> MailDraftSendRequest:
+    """Build the send of one named draft; the domain type refuses anything but one draft id."""
+    allow_write = payload.get("allow_write", False)
+    if not isinstance(allow_write, bool):
+        raise ValueError("allow_write must be a boolean")
+    allow_duplicate = payload.get("allow_duplicate", False)
+    if not isinstance(allow_duplicate, bool):
+        raise ValueError("allow_duplicate must be a boolean")
+    return MailDraftSendRequest(
+        _required_string(payload, "draft_id"), account, allow_write, allow_duplicate
     )
 
 
