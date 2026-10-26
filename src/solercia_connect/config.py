@@ -173,7 +173,7 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
     TargetSpec(
         ConnectionType.JIRA,
         "jira.cloud",
-        ("external.issues.search",),
+        ("external.issues.search", "external.issues.transitions.list"),
         ("JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN"),
     ),
     TargetSpec(

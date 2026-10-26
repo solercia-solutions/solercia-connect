@@ -11,10 +11,13 @@ from solercia_connect.auth import AuthorizationProvider
 from solercia_connect.domain import (
     Capability,
     ConnectorRequest,
+    DomainRecord,
     ExternalIssue,
     HealthReport,
     HealthState,
     IssueQuery,
+    IssueTransitionOption,
+    IssueTransitionsQuery,
     Provenance,
     ProviderFamily,
     ReasonCode,
@@ -107,12 +110,30 @@ class JiraIdentity:
     email_visible: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _IssueStatus:
+    name: str
+    category: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Transition:
+    id: str
+    name: str
+    to_status: str
+    to_category: str | None
+    requires_fields: bool
+
+
+_TRANSITIONS_ENDPOINT = "/rest/api/3/issue/{issueIdOrKey}/transitions"
+
+
 class JiraAdapter:
     descriptor = ProviderDescriptor(
         "jira.cloud",
         ProviderFamily.JIRA,
         RouteKind.OFFICIAL,
-        frozenset({Capability.EXTERNAL_ISSUES_SEARCH}),
+        frozenset({Capability.EXTERNAL_ISSUES_SEARCH, Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST}),
     )
 
     def __init__(
@@ -143,14 +164,37 @@ class JiraAdapter:
             "Jira identity and enhanced JQL search are reachable",
         )
 
-    def execute(self, request: ConnectorRequest) -> tuple[ExternalIssue, ...]:
+    def execute(self, request: ConnectorRequest) -> tuple[DomainRecord, ...]:
         if request.capability is Capability.EXTERNAL_ISSUES_SEARCH and isinstance(
             request.payload, IssueQuery
         ):
             return self.search_issues(request.payload)
+        if request.capability is Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST and isinstance(
+            request.payload, IssueTransitionsQuery
+        ):
+            return self.list_transitions(request.payload)
         raise ConnectorFailure(
             ReasonCode.CAPABILITY_NOT_IMPLEMENTED,
             "Jira request does not match the external issue capability contract",
+        )
+
+    def list_transitions(self, query: IssueTransitionsQuery) -> tuple[IssueTransitionOption, ...]:
+        """List the transitions one issue can take now, after proving the account identity."""
+        account_id = self._identity()
+        current = self._issue_status(query.issue_key)
+        return tuple(
+            IssueTransitionOption(
+                query.issue_key,
+                transition.id,
+                transition.name,
+                transition.to_status,
+                transition.to_category,
+                transition.requires_fields,
+                current.name,
+                current.category,
+                self._provenance(f"{query.issue_key}:{transition.id}", account_id),
+            )
+            for transition in self._transitions(query.issue_key)
         )
 
     def search_issues(self, query: IssueQuery) -> tuple[ExternalIssue, ...]:
@@ -238,6 +282,58 @@ class JiraAdapter:
 
     def _identity(self) -> str:
         return self.verify_identity().account_id
+
+    def _issue_url(self, issue_key: str) -> str:
+        # The key already matched the exact Jira key pattern, so it cannot reshape this path.
+        return f"{self._base_url}/rest/api/3/issue/{issue_key}"
+
+    def _issue_status(self, issue_key: str) -> _IssueStatus:
+        payload = request_json(
+            self._transport,
+            "GET",
+            f"{self._issue_url(issue_key)}?fields=status",
+            headers=self._headers(),
+            failure_refiner=_issue_not_found,
+        )
+        data = require_mapping(payload, "jira.issue")
+        if require_string(data.get("key"), "jira.issue.key") != issue_key:
+            # Jira answers a moved or differently cased key with the issue it found instead.
+            raise ConnectorFailure(
+                ReasonCode.ISSUE_NOT_FOUND,
+                "Jira answered with another issue key; the issue may have moved, so read it "
+                "again with its current key",
+            )
+        fields = require_mapping(data.get("fields"), "jira.issue.fields")
+        status = require_mapping(fields.get("status"), "jira.issue.fields.status")
+        return _IssueStatus(
+            require_string(status.get("name"), "jira.issue.fields.status.name"),
+            _nested(status, "statusCategory", "key"),
+        )
+
+    def _transitions(self, issue_key: str) -> tuple[_Transition, ...]:
+        payload = request_json(
+            self._transport,
+            "GET",
+            f"{self._issue_url(issue_key)}/transitions?expand=transitions.fields",
+            headers=self._headers(),
+            failure_refiner=_issue_not_found,
+        )
+        data = require_mapping(payload, "jira.transitions")
+        return tuple(
+            _transition(require_mapping(raw, "jira.transition"))
+            for raw in require_list(data.get("transitions"), "jira.transitions.transitions")
+        )
+
+    def _provenance(self, source_id: str, account_id: str) -> Provenance:
+        return Provenance(
+            self.descriptor.provider_id,
+            self.descriptor.family,
+            self.descriptor.route,
+            source_id,
+            self._clock(),
+            account_id,
+            _TRANSITIONS_ENDPOINT,
+        )
 
     def _normalize_issue(self, item: dict[str, Any], account_id: str) -> ExternalIssue:
         source_id = require_string(item.get("id"), "jira.issue.id")
@@ -365,6 +461,38 @@ def _bearer_headers(auth: AuthorizationProvider) -> dict[str, str]:
 
 def _boundary(message: str) -> ConnectorFailure:
     return ConnectorFailure(ReasonCode.AUTHORIZATION_BOUNDARY_VIOLATION, message)
+
+
+def _issue_not_found(status_code: int, body: bytes) -> ConnectorFailure | None:
+    """Jira answers 404 both for a missing issue and for one the account may not browse."""
+    del body
+    if status_code == 404:
+        return ConnectorFailure(
+            ReasonCode.ISSUE_NOT_FOUND,
+            "Jira issue was not found or is not visible to this account",
+        )
+    return None
+
+
+def _transition(item: dict[str, Any]) -> _Transition:
+    target = require_mapping(item.get("to"), "jira.transition.to")
+    fields = require_mapping(item.get("fields", {}), "jira.transition.fields")
+    required: list[bool] = []
+    for raw in fields.values():
+        flag = require_mapping(raw, "jira.transition.field").get("required")
+        if not isinstance(flag, bool):
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Provider field is not a boolean: jira.transition.field.required",
+            )
+        required.append(flag)
+    return _Transition(
+        require_string(item.get("id"), "jira.transition.id"),
+        require_string(item.get("name"), "jira.transition.name"),
+        require_string(target.get("name"), "jira.transition.to.name"),
+        _nested(target, "statusCategory", "key"),
+        any(required),
+    )
 
 
 def _default_jql(query: IssueQuery) -> str:

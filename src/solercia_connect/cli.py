@@ -40,6 +40,7 @@ from solercia_connect.domain import (
     DateWindow,
     FileQuery,
     IssueQuery,
+    IssueTransitionsQuery,
     MailQuery,
     QueryPayload,
     ReasonCode,
@@ -268,6 +269,10 @@ def run_capability(
             "--replace", help="Set the whole category list; repeatable, excludes the rest"
         ),
     ] = None,
+    issue: Annotated[
+        str | None,
+        typer.Option("--issue", help="One exact Jira issue key, such as CP-1356"),
+    ] = None,
     allow_write: Annotated[
         bool,
         typer.Option("--allow-write", help="Authorize the category write for this invocation only"),
@@ -320,6 +325,9 @@ def run_capability(
         }
         if with_content is not None:
             payload["include_content"] = with_content
+        # Issue-scoped options travel only when given, so other capabilities keep their payload.
+        if issue is not None:
+            payload["issue"] = issue
         payload["allow_browser_fallback"] = browser_fallback
         envelope = run_application(payload)
         normalized_account = envelope.account
@@ -902,6 +910,7 @@ def _query_payload(
     meeting_id: str | None,
     drive_id: str | None = None,
     item_id: str | None = None,
+    issue: str | None = None,
     limit: int,
 ) -> QueryPayload:
     if capability is Capability.MAIL_CATEGORIES_SET:
@@ -909,6 +918,10 @@ def _query_payload(
             "mail.categories.set is a write, not a query; run it with --message-id and "
             "--allow-write"
         )
+    if capability is Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST:
+        if issue is None:
+            raise _InputError("external.issues.transitions.list needs --issue with one Jira key")
+        return IssueTransitionsQuery(issue, account)
     transcripts = {Capability.MEETING_TRANSCRIPTS_LIST, Capability.MEETING_TRANSCRIPT_GET}
     if capability in transcripts:
         # A transcript is selected by meeting, by recording, or by period, so a window is one

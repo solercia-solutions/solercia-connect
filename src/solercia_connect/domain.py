@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
@@ -19,6 +20,8 @@ class Capability(StrEnum):
     FILES_SEARCH = "files.search"
     FILES_GET = "files.get"
     EXTERNAL_ISSUES_SEARCH = "external.issues.search"
+    # Official route only: see docs/decisions/2026-10-25-escritura-transiciones-jira.md.
+    EXTERNAL_ISSUES_TRANSITIONS_LIST = "external.issues.transitions.list"
     TICKETS_SEARCH = "tickets.search"
 
 
@@ -87,6 +90,7 @@ class ReasonCode(StrEnum):
     API_AUTHENTICATION_REQUIRED = "api_authentication_required"
     WRITE_NOT_AUTHORIZED = "write_not_authorized"
     WRITE_CONFLICT = "write_conflict"
+    ISSUE_NOT_FOUND = "issue_not_found"
 
 
 # Capabilities that change provider state. Each one needs explicit authorization per invocation,
@@ -196,6 +200,32 @@ class IssueQuery:
     def __post_init__(self) -> None:
         if not 1 <= self.limit <= 100:
             raise ValueError("IssueQuery limit must be between 1 and 100")
+
+
+# One Jira issue key, exactly: a project key, a hyphen and a positive number without leading zeros.
+# Lists, ranges and JQL never match, so an issue-scoped capability reaches one issue at most.
+_JIRA_ISSUE_KEY = re.compile(r"[A-Z][A-Z0-9_]+-[1-9][0-9]*")
+
+
+def require_jira_issue_key(value: object) -> str:
+    """Return the key unchanged when it is one exact Jira issue key; refuse anything else."""
+    if not isinstance(value, str) or _JIRA_ISSUE_KEY.fullmatch(value) is None:
+        raise ValueError(
+            "issue must be one exact Jira issue key such as CP-1356; lists, ranges and JQL are "
+            "not accepted"
+        )
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class IssueTransitionsQuery:
+    """List the workflow transitions available to one Jira issue, named by its exact key."""
+
+    issue_key: str
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        require_jira_issue_key(self.issue_key)
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +338,7 @@ type QueryPayload = (
     | CalendarQuery
     | TranscriptQuery
     | IssueQuery
+    | IssueTransitionsQuery
     | TicketQuery
     | FileQuery
     | MailCategoriesUpdate
@@ -440,6 +471,26 @@ class ExternalIssue:
 
 
 @dataclass(frozen=True, slots=True)
+class IssueTransitionOption:
+    """One workflow transition a Jira issue can take now, with the status it would reach.
+
+    ``requires_fields`` is true when the transition screen declares a required field; the write
+    refuses such a transition because it never sets fields. ``current_status`` repeats on every
+    option so a caller sees where the issue stands without a second read.
+    """
+
+    issue_key: str
+    transition_id: str
+    transition_name: str
+    to_status: str
+    to_status_category: str | None
+    requires_fields: bool
+    current_status: str
+    current_status_category: str | None
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
 class TicketCase:
     id: str
     title: str
@@ -492,6 +543,7 @@ type DomainRecord = (
     | CalendarEvent
     | MeetingTranscript
     | ExternalIssue
+    | IssueTransitionOption
     | TicketCase
     | DriveFile
     | MailCategoryAssignment
@@ -578,6 +630,7 @@ _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.FILES_SEARCH: DriveFile,
     Capability.FILES_GET: DriveFile,
     Capability.EXTERNAL_ISSUES_SEARCH: ExternalIssue,
+    Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST: IssueTransitionOption,
     Capability.TICKETS_SEARCH: TicketCase,
 }
 

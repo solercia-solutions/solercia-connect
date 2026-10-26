@@ -18,6 +18,7 @@ from solercia_connect.domain import (
     HealthReport,
     HealthState,
     IssueQuery,
+    IssueTransitionsQuery,
     MailQuery,
     ProviderFamily,
     QueryPayload,
@@ -39,6 +40,7 @@ _EXPECTED_QUERY_TYPES: dict[Capability, type[QueryPayload]] = {
     Capability.FILES_SEARCH: FileQuery,
     Capability.FILES_GET: FileQuery,
     Capability.EXTERNAL_ISSUES_SEARCH: IssueQuery,
+    Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST: IssueTransitionsQuery,
     Capability.TICKETS_SEARCH: TicketQuery,
 }
 
@@ -381,6 +383,7 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
         "jql": "status = Done",
         "meeting_id": "meeting-1",
         "limit": 500,
+        "issue": "CP-1356",
     }
     for capability in Capability:
         if capability is Capability.MAIL_CATEGORIES_SET:

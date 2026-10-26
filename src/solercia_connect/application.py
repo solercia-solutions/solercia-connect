@@ -22,6 +22,7 @@ from solercia_connect.domain import (
     DateWindow,
     FileQuery,
     IssueQuery,
+    IssueTransitionsQuery,
     MailCategoriesUpdate,
     MailQuery,
     QueryPayload,
@@ -73,6 +74,8 @@ def run_application(
             raise ValueError(
                 "allow_write, add, remove and replace apply only to mail.categories.set"
             )
+        if capability not in _ISSUE_CAPABILITIES and payload.get("issue") is not None:
+            raise ValueError("issue applies only to the Jira transition capabilities")
         if writes and account is None:
             raise ValueError("account is required for mail.categories.set")
         query = _query(type_value, capability, account, payload)
@@ -227,6 +230,8 @@ _OAUTH_TYPES = frozenset(
         ConnectionType.GOOGLE_MEET,
     }
 )
+# Capabilities addressed by one exact Jira issue key instead of a window.
+_ISSUE_CAPABILITIES = frozenset({Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST})
 _INTERACTIVE_REASONS = frozenset(
     {
         ReasonCode.INVALID_CREDENTIALS,
@@ -362,6 +367,9 @@ def _query(
 ) -> QueryPayload:
     if capability is Capability.MAIL_CATEGORIES_SET:
         return _categories_update(account, payload)
+    if capability is Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST:
+        # One issue, named by its exact key; a window, a limit or JQL do not apply.
+        return IssueTransitionsQuery(_required_string(payload, "issue"), account)
     limit = payload.get("limit", 50)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
         raise ValueError("limit must be an integer between 1 and 1000")

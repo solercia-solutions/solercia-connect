@@ -94,6 +94,13 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "Enhanced JQL endpoint, done/resolved representative query",
     ),
     CapabilityRow(
+        "Jira Cloud REST v3",
+        "official",
+        "external.issues.transitions.list",
+        "implemented-offline",
+        "One exact issue key; current status plus transitions with fields; official only; not live",
+    ),
+    CapabilityRow(
         "GLPI REST",
         "official",
         "tickets.search",
