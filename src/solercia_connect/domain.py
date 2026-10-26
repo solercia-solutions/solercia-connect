@@ -20,6 +20,8 @@ class Capability(StrEnum):
     FILES_SEARCH = "files.search"
     FILES_GET = "files.get"
     EXTERNAL_ISSUES_SEARCH = "external.issues.search"
+    # Read-only and official route only: the issues of the connected account not yet done.
+    EXTERNAL_ISSUES_OPEN_LIST = "external.issues.open.list"
     # Official route only: see docs/decisions/2026-10-25-escritura-transiciones-jira.md. The
     # transition is the second write, after the Outlook categories.
     EXTERNAL_ISSUES_TRANSITIONS_LIST = "external.issues.transitions.list"
@@ -221,6 +223,42 @@ class IssueQuery:
     def __post_init__(self) -> None:
         if not 1 <= self.limit <= 100:
             raise ValueError("IssueQuery limit must be between 1 and 100")
+
+
+# One Jira project key, exactly: the prefix of an issue key. Quotes, spaces, operators and lists
+# never match, so a project filter cannot reshape the JQL it is joined to.
+_JIRA_PROJECT_KEY = re.compile(r"[A-Z][A-Z0-9_]+")
+
+
+@dataclass(frozen=True, slots=True)
+class OpenIssueQuery:
+    """List the Jira issues of the connected account whose status category is not Done.
+
+    ``project`` and ``current_sprint`` narrow the default filter. ``jql`` replaces that filter
+    whole, so it cannot be combined with them. There is no date window.
+    """
+
+    project: str | None = None
+    current_sprint: bool = False
+    jql: str | None = None
+    account_id: str | None = None
+    limit: int = 100
+
+    def __post_init__(self) -> None:
+        if self.project is not None and (
+            not isinstance(self.project, str) or _JIRA_PROJECT_KEY.fullmatch(self.project) is None
+        ):
+            raise ValueError("project must be one Jira project key such as CP")
+        if self.jql is not None:
+            if not isinstance(self.jql, str) or not self.jql.strip():
+                raise ValueError("jql cannot be blank")
+            if self.project is not None or self.current_sprint:
+                raise ValueError(
+                    "jql replaces the default filter; do not combine it with project or sprint"
+                )
+            object.__setattr__(self, "jql", self.jql.strip())
+        if not 1 <= self.limit <= 100:
+            raise ValueError("OpenIssueQuery limit must be between 1 and 100")
 
 
 # One Jira issue key, exactly: a project key, a hyphen and a positive number without leading zeros.
@@ -500,6 +538,7 @@ type QueryPayload = (
     | CalendarQuery
     | TranscriptQuery
     | IssueQuery
+    | OpenIssueQuery
     | IssueTransitionsQuery
     | IssueTransitionRequest
     | TicketQuery
@@ -636,6 +675,25 @@ class ExternalIssue:
 
 
 @dataclass(frozen=True, slots=True)
+class OpenIssue:
+    """One Jira issue still open for the connected account.
+
+    ``status_category`` is the stable category key (``new``, ``indeterminate``), not its
+    translated name, and ``assignee_account_id`` is the opaque Atlassian account ID.
+    """
+
+    key: str
+    summary: str
+    status: str | None
+    status_category: str | None
+    issue_type: str | None
+    priority: str | None
+    updated_at: datetime | None
+    assignee_account_id: str | None
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
 class IssueTransitionOption:
     """One workflow transition a Jira issue can take now, with the status it would reach.
 
@@ -765,6 +823,7 @@ type DomainRecord = (
     | CalendarEvent
     | MeetingTranscript
     | ExternalIssue
+    | OpenIssue
     | IssueTransitionOption
     | IssueTransitionResult
     | TicketCase
@@ -855,6 +914,7 @@ _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.FILES_SEARCH: DriveFile,
     Capability.FILES_GET: DriveFile,
     Capability.EXTERNAL_ISSUES_SEARCH: ExternalIssue,
+    Capability.EXTERNAL_ISSUES_OPEN_LIST: OpenIssue,
     Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST: IssueTransitionOption,
     Capability.EXTERNAL_ISSUES_TRANSITION: IssueTransitionResult,
     Capability.TICKETS_SEARCH: TicketCase,

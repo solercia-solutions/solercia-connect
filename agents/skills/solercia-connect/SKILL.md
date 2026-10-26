@@ -113,6 +113,7 @@ installed runtime is older than this skill; ask the user to reinstall it.
 | `files.search` / `files.get` | yes | yes |
 | `meeting.transcripts.list` / `meeting.transcript.get` | yes, needs tenant scopes | yes (Microsoft only) |
 | `mail.categories.set` (write) | no, needs a scope decision | yes, with `--allow-write` |
+| `external.issues.open.list` (Jira) | yes | no |
 | `external.issues.transitions.list` (Jira) | yes | no |
 | `external.issues.transition` (Jira write) | yes, with `--allow-write`, API token only | no |
 | `mail.draft.create` / `mail.draft.send` (Gmail writes) | yes, `gmail-compose`, with `--allow-write` | no |
@@ -143,6 +144,21 @@ It reads the current list, writes only when the names change (`changed: false` o
 sends one `PATCH` of the categories conditioned on the version read. `write_conflict` means the team
 changed the message meanwhile: read it again before deciding. `invalid_input` on the id usually
 means the message moved folders; read the folder again for the current id.
+
+**Open Jira issues.** To learn what the connected account still has to finish, read
+`external.issues.open.list` (official route only, no date window, read-only):
+
+```bash
+solercia-connect run --provider jira.cloud --capability external.issues.open.list \
+  --account user@example.com --project CP --sprint current
+```
+
+Without `--jql` it reads `assignee = currentUser() AND statusCategory != Done`, narrowed by
+`--project <KEY>` and `--sprint current` (open sprints), ordered by `updated DESC`. `--jql` replaces
+that whole filter and cannot be combined with `--project` or `--sprint`; prefer the flags. Records
+carry `key`, `summary`, `status`, `status_category` (`new`, `indeterminate`), `issue_type`,
+`priority`, `updated_at`, and `assignee_account_id`. `--limit` stops at 100; zero records means
+nothing is open, so report zero.
 
 **Changing a Jira issue status.** Only when the user explicitly asks, one issue per run. List the
 transitions first when unsure of the exact target status name, then transition with `--issue`,

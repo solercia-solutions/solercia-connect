@@ -51,6 +51,31 @@ Without `--jql` it lists the account's issues resolved in the end-exclusive wind
 changes whose issues that default query reads. `--jql` replaces the query, but the records are
 still limited to issues resolved inside the window.
 
+## List open issues
+
+```bash
+solercia-connect run --provider jira.cloud --capability external.issues.open.list \
+  --account user@example.com --project CP --sprint current --limit 50
+```
+
+- It reads, with no date window, the issues assigned to the connected account whose status
+  category is not Done. The default JQL is deterministic:
+  `assignee = currentUser() AND statusCategory != Done`, then `project = "<KEY>"` when `--project`
+  is given, then `sprint in openSprints()` when `--sprint current` is given, and always
+  `ORDER BY updated DESC`.
+- `--project` takes one project key matching `^[A-Z][A-Z0-9_]+$`; anything else is refused with
+  `invalid_input`. `--sprint` accepts only `current`. `--assignee`, `--start`, and `--end` do not
+  apply and are refused.
+- `--jql` replaces the whole default filter, including the assignee and the open-only condition.
+  It cannot be blank and cannot be combined with `--project` or `--sprint`.
+- It uses the same `POST /rest/api/3/search/jql`, the same 20-page bound, and the same `/myself`
+  identity proof as the search. `--limit` is capped at 100.
+- It requests only `summary`, `status`, `issuetype`, `priority`, `updated`, and `assignee`. Each
+  record carries `key`, `summary`, `status`, `status_category` (the stable key, such as `new` or
+  `indeterminate`), `issue_type`, `priority`, `updated_at`, `assignee_account_id`, and
+  `provenance`.
+- Official route only: `--allow-browser-fallback` never opens a browser route for it.
+
 ## List the transitions of one issue
 
 ```bash
