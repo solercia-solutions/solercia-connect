@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 # normalize_jira_site moved next to the Jira adapter, which matches accessible resources with it;
@@ -32,6 +32,9 @@ ATLASSIAN_OAUTH_CONFIGURATION = (
     "SOLERCIA_CONNECT_ATLASSIAN_CLIENT_ID",
     "SOLERCIA_CONNECT_ATLASSIAN_CLIENT_SECRET",
 )
+# Opt-in switch (D3.1): find <git root>/.solercia-connect when SOLERCIA_CONNECT_HOME is unset.
+PROJECT_DISCOVERY_VARIABLE = "SOLERCIA_CONNECT_PROJECT_DISCOVERY"
+ProjectHomeSource = Literal["explicit", "discovered"]
 
 _ACCOUNT_PATTERN = re.compile(
     r"(?=.{3,320}\Z)[^\s<>@]+@[^\s<>@.]+(?:\.[^\s<>@.]+)+\Z",
@@ -254,12 +257,14 @@ class ConnectSettings:
     atlassian_redirect_uri: str = DEFAULT_ATLASSIAN_REDIRECT_URI
     google_profile_dir: Path | None = None
     jira_profile_dir: Path | None = None
-    # Project mode: set only by SOLERCIA_CONNECT_HOME. None keeps the XDG and keyring defaults.
+    # Project mode: set by SOLERCIA_CONNECT_HOME or, when SOLERCIA_CONNECT_PROJECT_DISCOVERY is on,
+    # found at the git root. None keeps the XDG and keyring defaults.
     project_home: Path | None = None
+    project_home_source: ProjectHomeSource | None = None
 
 
 class ProjectHomeError(ValueError):
-    """Project mode (``SOLERCIA_CONNECT_HOME``) is misconfigured or unsafe.
+    """Project mode (``SOLERCIA_CONNECT_HOME`` or the discovered folder) is misconfigured or unsafe.
 
     It is a ``ValueError``, so every existing configuration handler reports it; its message names
     paths and remediation, never a secret value.
@@ -321,8 +326,13 @@ def load_settings(
     *,
     environ: Mapping[str, str] | None = None,
     env_file: Path | None = None,
+    cwd: Path | None = None,
 ) -> ConnectSettings:
-    values, explicit, project_home = _layered_environment(environ, env_file)
+    """Resolve the settings; ``cwd`` matters only to discovery and defaults to the process cwd."""
+
+    values, explicit, project_home, project_home_source = _layered_environment(
+        environ, env_file, cwd
+    )
     if project_home is not None:
         # Project mode keeps every path below the one home; XDG no longer applies to Connect.
         layout = ProjectLayout(project_home)
@@ -380,6 +390,7 @@ def load_settings(
         google_profile_dir=_optional_path(values, "SOLERCIA_CONNECT_GOOGLE_PROFILE_DIR"),
         jira_profile_dir=_optional_path(values, "SOLERCIA_CONNECT_JIRA_PROFILE_DIR"),
         project_home=project_home,
+        project_home_source=project_home_source,
     )
 
 
@@ -440,23 +451,35 @@ def effective_environment(
     *,
     environ: Mapping[str, str] | None = None,
     env_file: Path | None = None,
+    cwd: Path | None = None,
 ) -> dict[str, str]:
-    return _layered_environment(environ, env_file)[0]
+    return _layered_environment(environ, env_file, cwd)[0]
 
 
-# connect.env lives inside the home and is read only after both are resolved, so it never names
-# either of them.
-_PROJECT_ENV_FORBIDDEN = ("SOLERCIA_CONNECT_HOME", "SOLERCIA_CONNECT_ENV_FILE")
+def project_selection(
+    *,
+    environ: Mapping[str, str] | None = None,
+    env_file: Path | None = None,
+) -> tuple[bool, Path | None]:
+    """Return whether discovery is on and the explicit home, without reading any connect.env."""
+
+    values, _ = _base_environment(environ, env_file)
+    return _discovery_enabled(values), _project_home(_value(values, "SOLERCIA_CONNECT_HOME"))
 
 
-def _layered_environment(
+# connect.env lives inside the home and is read only after the home is resolved, so it never names
+# the home, the env file, or the switch that finds the home.
+_PROJECT_ENV_FORBIDDEN = (
+    "SOLERCIA_CONNECT_HOME",
+    "SOLERCIA_CONNECT_ENV_FILE",
+    PROJECT_DISCOVERY_VARIABLE,
+)
+
+
+def _base_environment(
     environ: Mapping[str, str] | None, env_file: Path | None
-) -> tuple[dict[str, str], Path | None, Path | None]:
-    """Merge the process environment over SOLERCIA_CONNECT_ENV_FILE over ``<home>/connect.env``.
-
-    An empty process value never hides a file value. ``connect.env`` exists only in project mode
-    and is the lowest layer. Returns the values, the explicit env file and the project home.
-    """
+) -> tuple[dict[str, str], Path | None]:
+    """Merge the process environment over SOLERCIA_CONNECT_ENV_FILE; empty values hide nothing."""
 
     source = dict(os.environ if environ is None else environ)
     raw_explicit = (
@@ -464,11 +487,60 @@ def _layered_environment(
     )
     explicit = Path(raw_explicit).expanduser() if raw_explicit and raw_explicit.strip() else None
     file_values = _read_env_file(explicit) if explicit is not None else {}
-    values = {**file_values, **{key: value for key, value in source.items() if value != ""}}
-    project_home = _project_home(_value(values, "SOLERCIA_CONNECT_HOME"))
+    return {**file_values, **{key: value for key, value in source.items() if value != ""}}, explicit
+
+
+def _layered_environment(
+    environ: Mapping[str, str] | None, env_file: Path | None, cwd: Path | None
+) -> tuple[dict[str, str], Path | None, Path | None, ProjectHomeSource | None]:
+    """Merge the process environment over SOLERCIA_CONNECT_ENV_FILE over ``<home>/connect.env``.
+
+    ``connect.env`` exists only in project mode and is the lowest layer. Returns the values, the
+    explicit env file, the project home and how that home was resolved.
+    """
+
+    values, explicit = _base_environment(environ, env_file)
+    project_home, source = _resolve_project_home(values, cwd)
     if project_home is not None:
         values = {**_read_project_env_file(ProjectLayout(project_home).env_file), **values}
-    return values, explicit, project_home
+    return values, explicit, project_home, source
+
+
+def _discovery_enabled(values: Mapping[str, str]) -> bool:
+    return _bool_value(values.get(PROJECT_DISCOVERY_VARIABLE, ""), PROJECT_DISCOVERY_VARIABLE)
+
+
+def _resolve_project_home(
+    values: Mapping[str, str], cwd: Path | None
+) -> tuple[Path | None, ProjectHomeSource | None]:
+    """An explicit SOLERCIA_CONNECT_HOME wins; otherwise the opt-in switch searches the git root.
+
+    The switch comes only from the process or the explicit env file, never from connect.env, and
+    is validated even when the explicit home makes it moot.
+    """
+
+    discovery = _discovery_enabled(values)
+    explicit_home = _project_home(_value(values, "SOLERCIA_CONNECT_HOME"))
+    if explicit_home is not None:
+        return explicit_home, "explicit"
+    if not discovery:
+        return None, None
+    # project_home imports this module for its shared guards, so it is imported where used.
+    from solercia_connect.project_home import discover_project_home
+
+    discovered = discover_project_home(_discovery_start(cwd))
+    return (discovered, "discovered") if discovered is not None else (None, None)
+
+
+def _discovery_start(cwd: Path | None) -> Path:
+    if cwd is not None:
+        return cwd
+    try:
+        return Path.cwd()
+    except OSError:
+        raise ProjectHomeError(
+            f"{PROJECT_DISCOVERY_VARIABLE} is on, but the current directory cannot be read"
+        ) from None
 
 
 def _read_project_env_file(path: Path) -> dict[str, str]:

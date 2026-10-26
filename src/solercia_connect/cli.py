@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import sys
 from collections.abc import Callable
@@ -19,6 +20,7 @@ from solercia_connect.bootstrap import (
 )
 from solercia_connect.browser_routes import BROWSER_PROVIDER_IDS
 from solercia_connect.config import (
+    PROJECT_DISCOVERY_VARIABLE,
     TARGET_SPECS,
     ConnectionType,
     JiraTokenKind,
@@ -28,6 +30,7 @@ from solercia_connect.config import (
     normalize_account,
     normalize_jira_site,
     normalize_jira_token_binding,
+    project_selection,
 )
 from solercia_connect.connections import ConnectionService
 from solercia_connect.doctor import DoctorService
@@ -47,6 +50,7 @@ from solercia_connect.envelope import ErrorDetail, ResultEnvelope
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.matrix import CAPABILITY_MATRIX
 from solercia_connect.output import SecureOutputError, write_secure_json
+from solercia_connect.project_home import find_git_root, init_project_home
 from solercia_connect.project_secrets import (
     api_token_store_from_settings,
     oauth_token_store_from_settings,
@@ -83,9 +87,15 @@ profile_app = typer.Typer(
     rich_markup_mode=None,
     help="Non-secret local connection profiles.",
 )
+project_app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode=None,
+    help="Project mode: one private .solercia-connect folder per project.",
+)
 app.add_typer(m365_app, name="m365")
 app.add_typer(config_app, name="config")
 app.add_typer(profile_app, name="profile")
+app.add_typer(project_app, name="project")
 
 
 @app.command()
@@ -658,6 +668,90 @@ def profile_delete(type_value: str, account: str) -> None:
     except Exception:
         envelope = _unknown_envelope("profile.delete", provider=type_value, account=account)
     _finish(envelope)
+
+
+@project_app.command("init")
+def project_init(
+    path: Annotated[
+        Path | None,
+        typer.Option(
+            "--path",
+            help="Absolute project folder; defaults to the git root of the current directory",
+        ),
+    ] = None,
+) -> None:
+    """Create the private .solercia-connect folder and a connect.env template without values.
+
+    It never overwrites connect.env and works whether or not project discovery is on.
+    """
+
+    try:
+        discovery, explicit_home = project_selection()
+        root = _project_root(path)
+        result = init_project_home(root)
+        discoverable = find_git_root(root) == root
+        envelope = ResultEnvelope.success(
+            operation="project.init",
+            status="initialized" if result.created else "ready",
+            data={
+                "home": str(result.home),
+                "created": list(result.created),
+                "discoverable": discoverable,
+                "discovery_enabled": discovery,
+                "next_steps": _project_next_steps(
+                    result.home,
+                    discoverable=discoverable,
+                    discovery=discovery,
+                    explicit_home=explicit_home,
+                ),
+            },
+        )
+    except _InputError as failure:
+        envelope = _input_envelope("project.init", str(failure))
+    except ValueError as failure:
+        envelope = _exception_envelope("project.init", failure)
+    except Exception:
+        envelope = _unknown_envelope("project.init")
+    _finish(envelope)
+
+
+def _project_root(path: Path | None) -> Path:
+    if path is None:
+        root = find_git_root(Path.cwd())
+        if root is None:
+            raise _InputError(
+                "The current directory is not inside a git repository; "
+                "pass --path with the absolute project folder"
+            )
+        return root
+    if not path.is_absolute() or not path.is_dir():
+        raise _InputError("--path must be the absolute path of an existing directory")
+    return Path(os.path.abspath(path))
+
+
+def _project_next_steps(
+    home: Path, *, discoverable: bool, discovery: bool, explicit_home: Path | None
+) -> list[str]:
+    """Activation first, only when still needed, then the setup commands as templates."""
+
+    steps: list[str] = []
+    if explicit_home == home:
+        pass
+    elif not discoverable:
+        steps.append(f'export SOLERCIA_CONNECT_HOME="{home}"')
+    else:
+        if explicit_home is not None:
+            steps.append("unset SOLERCIA_CONNECT_HOME")
+        if not discovery:
+            steps.append(f"export {PROJECT_DISCOVERY_VARIABLE}=1")
+    return [
+        *steps,
+        f"Fill in {home / 'connect.env'}: uncomment only the variables you use",
+        "solercia-connect connect gmail <account>",
+        "solercia-connect connect jira <account> --site https://<site>.atlassian.net "
+        "--token-env JIRA_API_TOKEN",
+        "solercia-connect doctor <type> <account>",
+    ]
 
 
 @m365_app.command("login")

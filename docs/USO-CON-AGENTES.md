@@ -171,15 +171,32 @@ configuración, los perfiles, las sesiones de navegador, los secretos y
 > de copias, respaldos ni carpetas sincronizadas. No uses el modo proyecto en
 > una carpeta compartida o sincronizada con la nube.
 
-### Activar
+### Flujo recomendado
 
-```bash
-cd /ruta/a/tu-proyecto
-export SOLERCIA_CONNECT_HOME="$PWD/.solercia-connect"
-```
+1. Instala el runtime de forma global (sección 1) y el skill para todos tus
+   proyectos (sección 6, opción A).
+2. Activa el descubrimiento **una sola vez**, en tu perfil de shell (por
+   ejemplo, `~/.zshrc`):
 
-La ruta debe ser absoluta y sin enlaces simbólicos. Sin esta variable, Connect
-sigue usando las carpetas XDG y el llavero del sistema, como siempre.
+   ```bash
+   export SOLERCIA_CONNECT_PROJECT_DISCOVERY=1
+   ```
+
+3. En cada proyecto, desde cualquier carpeta del repositorio:
+
+   ```bash
+   solercia-connect project init
+   ```
+
+   Crea `.solercia-connect` en la raíz git con permisos `0700`, su `.gitignore`
+   y un `connect.env` con permisos `600` que solo trae los nombres de las
+   variables, comentados y sin valores. Si `connect.env` ya existe, no lo toca.
+   La respuesta JSON indica la carpeta, lo que creó y los pasos siguientes.
+4. Llena `connect.env` (ver más abajo).
+5. Conecta una vez cada cuenta.
+6. Desde ese momento, los agentes solo llaman `solercia-connect …` dentro del
+   repositorio. No hace falta exportar nada más ni usar lanzadores por
+   proyecto.
 
 | Ruta dentro de la carpeta | Contenido |
 |---|---|
@@ -189,43 +206,73 @@ sigue usando las carpetas XDG y el llavero del sistema, como siempre.
 | `connect.env` | Tus variables de entorno para este proyecto |
 | `.gitignore` | Contiene `*`: git ignora toda la carpeta |
 
-La primera vez que conectas, Connect crea las carpetas con permisos `0700` y el
-`.gitignore`. No hace falta tocar el `.gitignore` del repositorio. Si git ya
-rastrea algún archivo dentro de la carpeta, Connect se detiene y te indica qué
-ruta sacar del índice.
+No hace falta tocar el `.gitignore` del repositorio. Si git ya rastrea algún
+archivo dentro de la carpeta, Connect se detiene y te indica qué ruta sacar del
+índice.
+
+### Cómo encuentra Connect la carpeta
+
+- Si `SOLERCIA_CONNECT_HOME` está definida, siempre gana.
+- Si no, y el descubrimiento está activo, Connect sube desde el directorio de
+  trabajo hasta el primer directorio que contiene `.git` (carpeta o archivo, así
+  que los worktrees cuentan) y usa `.solercia-connect` de esa raíz.
+- Si esa carpeta no existe o no hay raíz git, Connect trabaja en modo global,
+  como siempre. Nunca usa una carpeta `.solercia-connect` que esté por debajo de
+  la raíz git.
+- Si la carpeta es un enlace simbólico, no es un directorio, no es privada o git
+  rastrea algo dentro de ella, Connect se detiene con un error tipado antes de
+  leer cualquier variable. Así, una carpeta `.solercia-connect` que venga dentro
+  de un repositorio clonado nunca se usa.
+- `SOLERCIA_CONNECT_PROJECT_DISCOVERY` solo se lee del entorno del proceso o de
+  `SOLERCIA_CONNECT_ENV_FILE`, nunca de `connect.env`. Sin ella, Connect no
+  busca ninguna carpeta.
+
+`doctor` indica cómo se resolvió la carpeta en `project_home_source`:
+`explicit` o `discovered`.
+
+### Alternativa: `SOLERCIA_CONNECT_HOME` explícita
+
+Si prefieres no activar el descubrimiento, nombra la carpeta tú mismo en cada
+sesión:
+
+```bash
+cd /ruta/a/tu-proyecto
+export SOLERCIA_CONNECT_HOME="$PWD/.solercia-connect"
+```
+
+La ruta debe ser absoluta y sin enlaces simbólicos. `solercia-connect project
+init` también sirve para crearla. Sin esta variable y sin el descubrimiento,
+Connect sigue usando las carpetas XDG y el llavero del sistema, como siempre.
 
 ### Llenar `connect.env`
 
-Crea el archivo vacío con permisos `600` y ábrelo con tu editor:
-
-```bash
-mkdir -m 700 -p "$SOLERCIA_CONNECT_HOME"
-install -m 600 /dev/null "$SOLERCIA_CONNECT_HOME/connect.env"
-```
-
-Agrega solo las variables que vayas a usar, una por línea con la forma
-`NOMBRE=valor`:
+`project init` deja el archivo creado, con permisos `600`. Ábrelo con tu editor,
+quita el `#` de las variables que vayas a usar y escribe su valor, una por línea
+con la forma `NOMBRE=valor`:
 
 | Variable | Para qué |
 |---|---|
 | `SOLERCIA_CONNECT_GOOGLE_CLIENT_ID` | Cliente OAuth de escritorio de Google, para Gmail |
 | `SOLERCIA_CONNECT_GOOGLE_CLIENT_SECRET` | Solo si tu cliente de Google lo exige |
-| `PANDORA_JIRA_TOKEN` (o el nombre que elijas) | API token de Jira, que lee `--token-env` |
+| `JIRA_API_TOKEN` (o el nombre que elijas) | API token de Jira, que lee `--token-env` |
 | `SOLERCIA_CONNECT_ATLASSIAN_CLIENT_ID` y `SOLERCIA_CONNECT_ATLASSIAN_CLIENT_SECRET` | Solo para Jira por OAuth |
+| `SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID` y `SOLERCIA_CONNECT_MICROSOFT_TENANT` | Solo para la ruta oficial de Microsoft 365 |
 
 - Si el archivo no tiene permisos `600`, Connect se detiene y te indica el
   `chmod 600` que falta. Nunca muestra los valores.
 - Una variable del entorno del proceso gana sobre `SOLERCIA_CONNECT_ENV_FILE`, y
   esta gana sobre `connect.env`.
-- `connect.env` no puede definir `SOLERCIA_CONNECT_HOME` ni
-  `SOLERCIA_CONNECT_ENV_FILE`.
+- `connect.env` no puede definir `SOLERCIA_CONNECT_HOME`,
+  `SOLERCIA_CONNECT_ENV_FILE` ni `SOLERCIA_CONNECT_PROJECT_DISCOVERY`.
+- Nunca pegues estos valores en la conversación con el agente: los escribes tú,
+  en el archivo.
 
 ### Conectar una vez
 
 ```bash
 solercia-connect connect gmail tu-correo@entidad.gov.co
 solercia-connect connect jira tu-correo@entidad.gov.co \
-  --site https://tu-sitio.atlassian.net --token-env PANDORA_JIRA_TOKEN
+  --site https://tu-sitio.atlassian.net --token-env JIRA_API_TOKEN
 ```
 
 Gmail abre el navegador para que autorices el acceso. Para Jira, `--token-env`
@@ -240,7 +287,8 @@ solercia-connect connect jira tu-correo@entidad.gov.co \
 
 Revisa el estado con `doctor`. Su informe trae `project_mode`: la carpeta, si
 cada parte existe y es privada, el `.gitignore` y el resultado de la revisión de
-git. Nunca incluye valores secretos.
+git; y `project_home_source`, que dice si la carpeta se nombró de forma
+explícita o se descubrió. Nunca incluye valores secretos.
 
 ```bash
 solercia-connect doctor jira tu-correo@entidad.gov.co
@@ -248,10 +296,11 @@ solercia-connect doctor jira tu-correo@entidad.gov.co
 
 ### Usar desde un agente
 
-El agente solo necesita la misma variable en su sesión. Los comandos no cambian:
+Con el descubrimiento activo en tu perfil de shell y el skill instalado, el
+agente no necesita nada más: invoca `solercia-connect …` desde cualquier carpeta
+del repositorio y Connect usa la carpeta del proyecto. Los comandos no cambian:
 
 ```bash
-export SOLERCIA_CONNECT_HOME="$PWD/.solercia-connect"
 solercia-connect run \
   --provider jira.cloud \
   --capability external.issues.search \
@@ -261,7 +310,9 @@ solercia-connect run \
   --output incidencias.json
 ```
 
-Para que el agente no lo olvide, agrega esto al `CLAUDE.md` del proyecto:
+Si usas la alternativa explícita en lugar del descubrimiento, el agente necesita
+la misma variable en su sesión. Para que no lo olvide, agrega esto al
+`CLAUDE.md` del proyecto:
 
 ```markdown
 ## Solercia Connect en modo proyecto
@@ -297,28 +348,31 @@ print(resultado.ok, resultado.status)
 ```
 
 El resultado es el mismo sobre `solercia.connect/v1` de la CLI; `to_dict()` lo
-convierte en un diccionario.
+convierte en un diccionario. Con el descubrimiento activo en lugar de la
+variable explícita, la carpeta se busca desde el directorio de trabajo del
+proceso de Python.
 
 ### Ejemplo: un repositorio como `pandora_proxy`
 
 ```bash
+# Una sola vez, en ~/.zshrc:
+export SOLERCIA_CONNECT_PROJECT_DISCOVERY=1
+
 cd /ruta/a/pandora_proxy
-export SOLERCIA_CONNECT_HOME="$PWD/.solercia-connect"
-mkdir -m 700 -p "$SOLERCIA_CONNECT_HOME"
-install -m 600 /dev/null "$SOLERCIA_CONNECT_HOME/connect.env"
-# Con tu editor, agrega a connect.env SOLERCIA_CONNECT_GOOGLE_CLIENT_ID
-# y PANDORA_JIRA_TOKEN.
+solercia-connect project init
+# Con tu editor, completa en .solercia-connect/connect.env
+# SOLERCIA_CONNECT_GOOGLE_CLIENT_ID y JIRA_API_TOKEN.
 solercia-connect connect gmail usuario@entidad.example
 solercia-connect connect jira usuario@entidad.example \
-  --site https://sitio.atlassian.net --token-env PANDORA_JIRA_TOKEN
+  --site https://sitio.atlassian.net --token-env JIRA_API_TOKEN
 solercia-connect doctor jira usuario@entidad.example
 ```
 
-Desde ese momento, cualquier agente que trabaje en ese repositorio con la
-variable exportada lee Gmail y Jira sin volver a pedir credenciales. Para
-dejar de usar el modo proyecto, quita la variable; si ya no vas a volver a
-usarlo, borra la carpeta `.solercia-connect` y revoca los tokens en el
-proveedor.
+Desde ese momento, cualquier agente que trabaje en ese repositorio lee Gmail y
+Jira sin volver a pedir credenciales. Para dejar de usar el modo proyecto, quita
+`SOLERCIA_CONNECT_PROJECT_DISCOVERY` (o `SOLERCIA_CONNECT_HOME`) de tu entorno;
+si ya no vas a volver a usarlo, borra la carpeta `.solercia-connect` y revoca
+los tokens en el proveedor.
 
 ## Dos costumbres que ahorran problemas
 
@@ -348,7 +402,8 @@ proveedor.
 | `action_required` | Hay que completar la autorización en la CLI, no por el servicio HTTP |
 | Cero registros | El rango está vacío. No lo amplíes: revisa las fechas |
 | `configuration_invalid` | Falta el archivo de entorno o la variable que nombra el error |
-| `configuration_invalid` que menciona `SOLERCIA_CONNECT_HOME` | Permisos, `.gitignore` o archivos rastreados por git: sigue la indicación del error |
+| `configuration_invalid` que menciona `SOLERCIA_CONNECT_HOME` o `.solercia-connect` | Permisos, `.gitignore` o archivos rastreados por git: sigue la indicación del error |
+| `doctor` no trae `project_mode` con el descubrimiento activo | No hay `.solercia-connect` en la raíz git: ejecuta `solercia-connect project init` |
 
 Diagnóstico estructurado:
 

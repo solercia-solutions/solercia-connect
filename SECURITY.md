@@ -27,8 +27,8 @@ as sensitive.
 `docs/decisions/2026-10-25-modo-proyecto-secretos-en-archivo.md`, keeps the configuration,
 connection profiles, browser profiles, secrets, and `connect.env` of one project in one folder.
 Only in this mode does a file backend replace the OS keyring, behind the same `KeyringBackend`
-protocol. Without the variable, nothing changes: XDG paths, the OS keyring, and the same env-file
-rules apply.
+protocol. Without the variable or the discovery switch below, nothing changes: XDG paths, the OS
+keyring, and the same env-file rules apply.
 
 - The value must be an absolute path after `~` expansion, without symlink components; a relative
   path is rejected, so the folder never depends on the current directory.
@@ -43,6 +43,12 @@ rules apply.
 - `<home>/connect.env` is the lowest environment layer: the process environment first, then
   `SOLERCIA_CONNECT_ENV_FILE`, then `connect.env`. It must be a private (`0600`) regular file owned
   by the user, never a symlink.
+- Discovery is opt-in: only with `SOLERCIA_CONNECT_PROJECT_DISCOVERY` on and no
+  `SOLERCIA_CONNECT_HOME` does Connect use `<git root>/.solercia-connect`, and only when it is a real
+  directory. The switch comes from the process or `SOLERCIA_CONNECT_ENV_FILE`, never from
+  `connect.env`. Before anything inside is read, git must track nothing in the folder and the
+  folder must be private, so a folder shipped in a cloned repository fails closed before any of its
+  settings load. No git root or no folder means global mode, never the bare current directory.
 - Accepted risk: tokens are plaintext on disk, readable by any agent or process with read access to
   that folder, which includes every process running as the same user. The guards keep them out of
   git, not out of backups, archives, or synced folders, so the project must not live in shared or

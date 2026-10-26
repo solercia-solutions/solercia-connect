@@ -58,6 +58,8 @@ class DoctorReport:
     api_key_configured: bool
     # Present only in project mode, so the report is unchanged without SOLERCIA_CONNECT_HOME.
     project_mode: ProjectHomeInspection | None = None
+    # "explicit" (SOLERCIA_CONNECT_HOME) or "discovered" (SOLERCIA_CONNECT_PROJECT_DISCOVERY).
+    project_home_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
@@ -77,6 +79,7 @@ class DoctorReport:
         }
         if self.project_mode is not None:
             payload["project_mode"] = self.project_mode.to_dict()
+            payload["project_home_source"] = self.project_home_source
         return payload
 
 
@@ -244,14 +247,19 @@ class DoctorService:
         ]
         checks.extend(keyring_checks)
         if project is not None:
+            subject = (
+                "The project home discovered at the git root"
+                if self._settings.project_home_source == "discovered"
+                else "SOLERCIA_CONNECT_HOME"
+            )
             checks.append(
                 DoctorCheck(
                     "project_mode",
                     "ready" if project.ready else "unsafe",
                     (
-                        "SOLERCIA_CONNECT_HOME is private and git tracks nothing inside it"
+                        f"{subject} is private and git tracks nothing inside it"
                         if project.ready
-                        else "SOLERCIA_CONNECT_HOME is not safe for project mode"
+                        else f"{subject} is not safe for project mode"
                     ),
                     True,
                     project.problems,
@@ -412,6 +420,7 @@ class DoctorService:
             self._settings.api_port,
             self._settings.api_key is not None,
             project,
+            self._settings.project_home_source,
         )
 
     def _project_mode(self) -> ProjectHomeInspection | None:

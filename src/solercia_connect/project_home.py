@@ -3,7 +3,8 @@
 The folder and its subfolders are ``0700`` and owned by the user, a ``.gitignore`` holding ``*``
 keeps git away from it, and git must not track anything inside it. Every check fails closed and
 never repairs what it finds; see docs/decisions/2026-10-25-modo-proyecto-secretos-en-archivo.md.
-Nothing here runs unless the variable is set.
+Nothing here runs unless the variable is set, ``SOLERCIA_CONNECT_PROJECT_DISCOVERY`` is on, or
+``project init`` is called.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 from solercia_connect.config import (
+    ATLASSIAN_OAUTH_CONFIGURATION,
+    PROJECT_DISCOVERY_VARIABLE,
     ProjectHomeError,
     ProjectLayout,
     _lexists,
@@ -29,6 +32,7 @@ from solercia_connect.config import (
 )
 
 HOME_VARIABLE = "SOLERCIA_CONNECT_HOME"
+PROJECT_FOLDER = ".solercia-connect"
 GITIGNORE_CONTENT = "*\n"
 GIT_TIMEOUT_SECONDS = 10.0
 _LISTED_TRACKED_PATHS = 10
@@ -212,16 +216,58 @@ def _inside_git(home: Path) -> bool:
     return any(_holds_git_marker(ancestor) for ancestor in home.parents)
 
 
-def _holds_git_marker(directory: Path) -> bool:
+def _holds_git_marker(directory: Path, *, label: str = HOME_VARIABLE) -> bool:
     try:
         (directory / ".git").lstat()
     except (FileNotFoundError, NotADirectoryError):
         return False
     except OSError:
         raise ProjectHomeError(
-            f"{HOME_VARIABLE} sits below a folder that cannot be inspected for git"
+            f"{label} sits below a folder that cannot be inspected for git"
         ) from None
     return True
+
+
+def find_git_root(start: Path) -> Path | None:
+    """Return the first of ``start`` and its ancestors holding a ``.git`` folder or file.
+
+    A ``.git`` file marks a linked worktree, so it counts. Only the file system is read.
+    """
+
+    current = Path(os.path.abspath(start))
+    for directory in (current, *current.parents):
+        if _holds_git_marker(directory, label="The project folder"):
+            return directory
+    return None
+
+
+def discover_project_home(cwd: Path, *, runner: GitRunner | None = None) -> Path | None:
+    """Return ``<git root>/.solercia-connect`` once it is proven safe to read, else ``None``.
+
+    No git root, or no folder there, means global mode; the bare ``cwd`` is never used. A link or
+    a non-directory fails closed. Git tracking is checked before anything inside is read, so a
+    folder shipped in a cloned repository is refused before its ``connect.env`` can load.
+    """
+
+    root = find_git_root(cwd)
+    if root is None:
+        return None
+    home = root / PROJECT_FOLDER
+    label = f"The {PROJECT_FOLDER} folder found by {PROJECT_DISCOVERY_VARIABLE} at the git root"
+    try:
+        metadata = home.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        raise ProjectHomeError(f"{label} could not be inspected safely") from None
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ProjectHomeError(f"{label} is a symbolic link")
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ProjectHomeError(f"{label} is not a directory")
+    _reject_symlink_components(home, label, error=ProjectHomeError)
+    guard_git_tracking(home, runner=runner)
+    check_private_directory(ProjectLayout(home), home)
+    return home
 
 
 def _label(layout: ProjectLayout, path: Path) -> str:
@@ -319,3 +365,75 @@ def _check_env_file(layout: ProjectLayout) -> None:
     except OSError:
         raise ProjectHomeError(f"{label} could not be inspected safely") from None
     _validate_project_env_metadata(metadata, label)
+
+
+# The connect.env template names each known setting, commented out and without a value.
+CONNECT_ENV_TEMPLATE_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Google (Gmail, Calendar, Meet): OAuth Desktop app client",
+        ("SOLERCIA_CONNECT_GOOGLE_CLIENT_ID", "SOLERCIA_CONNECT_GOOGLE_CLIENT_SECRET"),
+    ),
+    ("Jira API token, read by: connect jira ... --token-env JIRA_API_TOKEN", ("JIRA_API_TOKEN",)),
+    (
+        "Jira over Atlassian OAuth: connect jira ... --token-kind oauth",
+        ATLASSIAN_OAUTH_CONFIGURATION,
+    ),
+    (
+        "Microsoft 365 official route (Outlook, Teams, OneDrive)",
+        ("SOLERCIA_CONNECT_MICROSOFT_CLIENT_ID", "SOLERCIA_CONNECT_MICROSOFT_TENANT"),
+    ),
+)
+
+
+def connect_env_template() -> str:
+    forbidden = f"{HOME_VARIABLE}, SOLERCIA_CONNECT_ENV_FILE or {PROJECT_DISCOVERY_VARIABLE}"
+    lines = [
+        "# Solercia Connect settings for this project: uncomment only what you use, NAME=value.",
+        "# Keep this file private (chmod 600); git ignores the whole folder. Never share it.",
+        f"# It cannot set {forbidden}.",
+    ]
+    for title, names in CONNECT_ENV_TEMPLATE_GROUPS:
+        lines.extend(("", f"# {title}", *(f"# {name}=" for name in names)))
+    return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectInitResult:
+    home: Path
+    created: tuple[str, ...]
+
+
+def init_project_home(root: Path, *, runner: GitRunner | None = None) -> ProjectInitResult:
+    """Create ``<root>/.solercia-connect`` with the same guards as connect, plus a template.
+
+    An existing folder is git-checked before anything is added to it. ``connect.env`` is written
+    ``0600`` only when absent and is never overwritten; an existing one must already be private.
+    """
+
+    layout = ProjectLayout(root / PROJECT_FOLDER)
+    _reject_symlink_components(layout.home, HOME_VARIABLE, error=ProjectHomeError)
+    entries = (
+        ("home", layout.home),
+        ("config", layout.config_dir),
+        ("data", layout.data_dir),
+        ("secrets", layout.secrets_dir),
+        (".gitignore", layout.gitignore),
+        ("connect.env", layout.env_file),
+    )
+    existing = {name for name, path in entries if _lexists(path)}
+    if "home" in existing:
+        guard_git_tracking(layout.home, runner=runner)
+    prepare_project_home(layout.home, runner=runner)
+    template = connect_env_template().encode()
+    if "connect.env" not in existing:
+        try:
+            if not write_private_file(layout.env_file, template, replace=False):
+                existing.add("connect.env")
+        except OSError:
+            raise ProjectHomeError(
+                f"{_label(layout, layout.env_file)} could not be written safely"
+            ) from None
+    _check_env_file(layout)
+    return ProjectInitResult(
+        layout.home, tuple(name for name, _ in entries if name not in existing)
+    )

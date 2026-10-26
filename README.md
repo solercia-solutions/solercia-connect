@@ -214,7 +214,11 @@ See the [provider runbooks](docs/runbooks/) before live validation.
 ## Configuration contract
 
 Solercia Connect reads process environment variables and, only when explicitly selected,
-`SOLERCIA_CONNECT_ENV_FILE`. It never silently loads a `.env` from the current directory.
+`SOLERCIA_CONNECT_ENV_FILE`. It never silently loads a `.env` from the current directory. The one
+opt-in exception: with `SOLERCIA_CONNECT_PROJECT_DISCOVERY` enabled and no
+`SOLERCIA_CONNECT_HOME`, it reads only the private `.solercia-connect/connect.env` at the git root
+of the current directory, and only after git confirms that nothing inside that folder is tracked.
+It never reads a `.env`, a folder below the git root, or a folder that git tracks.
 
 | Variable | Purpose |
 | --- | --- |
@@ -228,6 +232,7 @@ Solercia Connect reads process environment variables and, only when explicitly s
 | `SOLERCIA_CONNECT_GOOGLE_PROFILE_DIR` | Explicit root for dedicated Google browser profiles |
 | `SOLERCIA_CONNECT_JIRA_PROFILE_DIR` | Explicit root for dedicated Jira browser profiles |
 | `SOLERCIA_CONNECT_HOME` | Project mode: one absolute, private, git-ignored folder for config, browser profiles, plaintext file secrets and `connect.env`; see `docs/USO-CON-AGENTES.md` |
+| `SOLERCIA_CONNECT_PROJECT_DISCOVERY` | Opt-in boolean, off by default: without `SOLERCIA_CONNECT_HOME`, use `<git root>/.solercia-connect` when it exists, under the same guards. Read from the process or `SOLERCIA_CONNECT_ENV_FILE`, never from `connect.env`; `solercia-connect project init` creates the folder |
 | `SOLERCIA_CONNECT_API_HOST` / `PORT` | Loopback service bind; host defaults to `127.0.0.1` |
 | `SOLERCIA_CONNECT_API_KEY` | Required local key for POST connection-test/run endpoints |
 | `SOLERCIA_CONNECT_OUTPUT_DIR` | Optional default output location for callers |
@@ -242,6 +247,7 @@ development bootstrap only.
 solercia-connect config validate
 solercia-connect doctor teams user@example.com
 solercia-connect profile list
+solercia-connect project init   # project mode: <git root>/.solercia-connect plus a value-free connect.env
 ```
 
 ## Versioned JSON and secure files
