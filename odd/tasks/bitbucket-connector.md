@@ -62,25 +62,25 @@ propia ADR.
 
 ## Tareas
 
-- [ ] **B0** Escribir la ADR `docs/decisions/2026-10-26-conector-bitbucket.md`.
+- [x] **B0** Escribir la ADR `docs/decisions/2026-10-26-conector-bitbucket.md`.
   - Registra la familia nueva `BITBUCKET`, de solo lectura, oficial y sin navegador.
   - Actualizar el registro de plataforma (§1 y la lista de productos), `AGENTS.md`, `SECURITY.md` y
     el skill.
-- [ ] **B1** Conexión por cuenta: `connect bitbucket <cuenta> --workspace <ws>`, con
+- [x] **B1** Conexión por cuenta: `connect bitbucket <cuenta> --workspace <ws>`, con
   `--token-env`, prompt oculto o `--token-stdin`.
   - El token se guarda en el almacén de secretos con la clave `bitbucket:<email>`. El perfil guarda
     el workspace y el `account_id`.
   - La identidad se prueba según B-D2.
   - `status` y `disconnect` también funcionan.
   - El modo proyecto funciona sin cambios.
-- [ ] **B2** `scm.repositories.list`: los repositorios del workspace con `role=member`, paginados con
+- [x] **B2** `scm.repositories.list`: los repositorios del workspace con `role=member`, paginados con
   tope.
-- [ ] **B3** `scm.pullrequests.list --repo <slug>`: estados repetibles y ventana por `updated_on` con
+- [x] **B3** `scm.pullrequests.list --repo <slug>`: estados repetibles y ventana por `updated_on` con
   `q`, verificada también en el cliente.
-- [ ] **B4** `scm.commits.list --repo <slug> [--branch]`.
+- [x] **B4** `scm.commits.list --repo <slug> [--branch]`.
   - La ventana se filtra en el cliente, con un margen de 7 días y un tope de páginas.
   - Si se alcanza el tope, devuelve `complete=false`.
-- [ ] **B5** Documentación y cierre:
+- [x] **B5** Documentación y cierre:
   - `docs/runbooks/bitbucket.md`, matriz, README y skill;
   - doctor;
   - plantilla de `project init` con `BITBUCKET_API_TOKEN`.
@@ -100,10 +100,34 @@ propia ADR.
 | Tarea | Estado | Evidencia |
 | --- | --- | --- |
 | Investigación | Hecha | Fuentes oficiales, 2026-10-26 |
+| B0 | Hecha | `7f289ca`: ADR; rojo con 3 fallos |
+| B1 | Hecha | `5d493dc`: conexión por cuenta; rojo por `ImportError`; se probó desactivando la protección del enlace `next` |
+| B2 | Hecha | `767d18a`: repositorios; tope de 20 páginas probado desactivándolo |
+| B3 | Hecha | `b7d95d7`: PR; se probó desactivando la verificación de la ventana en el cliente |
+| B4 | Hecha | `f48be93`: commits; se probó relajando la regla de corte |
+| B5 | Hecha | `fcb1aa0`: runbook, doctor, matriz y plantilla; rojo con 8 fallos |
+| Integración | Hecha | Merge `beab5e8` de `feat/google-jira-fallback` (T8.3 y documentos), sin conflictos. El orquestador verificó 1.405 pruebas, cobertura 89,28 %, `ruff` y `mypy` limpios |
+
+Detalle:
+
+- **Pruebas existentes:** solo se agregaron líneas, en `test_standalone_foundation`,
+  `test_browser_families`, el ciclo de `test_cli_lifecycle` y `test_project_discovery`. No se quitó
+  ninguna línea respecto de la base.
+- **Resultado incompleto:** se maneja con el error tipado `result_incomplete`, con
+  `data.complete=false` y sin devolver una lista parcial.
+  - Topes de páginas: 20 para repositorios, 20 para PR y 30 para commits.
+- **Códigos nuevos:** `workspace_not_found`, `repository_not_found` y `result_incomplete`.
+- **Brechas de validación en vivo:**
+  - La forma de `/user/emails` y la lista `required` del 403 no están documentadas.
+  - No se probaron ramas con `/` en el nombre.
+  - Cada lectura hace 3 llamadas de identidad.
+  - El modelo HTTP solo admite `scm.repositories.list`.
 
 ## Siguiente paso
 
-B0 a B5, a cargo de un redactor.
+Camilo:
 
-Mientras tanto, Camilo crea el token en id.atlassian.com con la opción «Create API token with
-scopes», eligiendo la app Bitbucket y los cuatro alcances de lectura.
+1. Crea el token en id.atlassian.com con «Create API token with scopes», eligiendo la app Bitbucket
+   y los cuatro alcances de lectura.
+2. Lo agrega a `connect.env` como `BITBUCKET_API_TOKEN`.
+3. Ejecuta `connect bitbucket … --workspace idartes-tecnologia --token-env BITBUCKET_API_TOKEN`.
