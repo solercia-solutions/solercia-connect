@@ -23,6 +23,7 @@ from solercia_connect.domain import (
     ReasonCode,
     ReceiptStatus,
     RouteKind,
+    ScmRepositoryCreateRequest,
     StepOutcome,
     TraceStep,
     TranscriptQuery,
@@ -510,7 +511,13 @@ def _write_authorized(request: ConnectorRequest) -> bool:
     return (
         isinstance(
             payload,
-            (MailCategoriesUpdate, IssueTransitionRequest, MailDraftRequest, MailDraftSendRequest),
+            (
+                MailCategoriesUpdate,
+                IssueTransitionRequest,
+                MailDraftRequest,
+                MailDraftSendRequest,
+                ScmRepositoryCreateRequest,
+            ),
         )
         and payload.write_authorized is True
     )

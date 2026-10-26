@@ -35,6 +35,9 @@ class Capability(StrEnum):
     SCM_REPOSITORIES_LIST = "scm.repositories.list"
     SCM_PULLREQUESTS_LIST = "scm.pullrequests.list"
     SCM_COMMITS_LIST = "scm.commits.list"
+    # The fourth write, on the separate bitbucket-admin target, official route only:
+    # docs/decisions/2026-10-25-escritura-creacion-repositorios-bitbucket.md.
+    SCM_REPOSITORIES_CREATE = "scm.repositories.create"
 
 
 class ProviderFamily(StrEnum):
@@ -118,6 +121,9 @@ class ReasonCode(StrEnum):
     # A paged read reached its fixed page bound: nothing is returned rather than a partial list.
     RESULT_INCOMPLETE = "result_incomplete"
     REPOSITORY_NOT_FOUND = "repository_not_found"
+    # The repository to create already exists; it is never touched.
+    REPOSITORY_EXISTS = "repository_exists"
+    PROJECT_NOT_FOUND = "project_not_found"
 
 
 # Capabilities that change provider state. Each one needs explicit authorization per invocation,
@@ -128,6 +134,7 @@ WRITE_CAPABILITIES: frozenset[Capability] = frozenset(
         Capability.EXTERNAL_ISSUES_TRANSITION,
         Capability.MAIL_DRAFT_CREATE,
         Capability.MAIL_DRAFT_SEND,
+        Capability.SCM_REPOSITORIES_CREATE,
     }
 )
 
@@ -370,6 +377,36 @@ def normalize_bitbucket_branch(value: object) -> str:
         raise ValueError(
             "The branch must be one git branch name of letters, digits, '.', '_', '-' or '/', "
             "such as develop or feature/x"
+        )
+    return candidate
+
+
+# The slug of a repository to create, validated as given: never lowered or trimmed, so what is
+# checked is exactly what is created. Bitbucket declares no pattern or maximum length, so none is
+# invented; "." and ".." are refused because they would reshape the URL path.
+_NEW_BITBUCKET_REPOSITORY = re.compile(r"[a-z0-9._-]+")
+# A Bitbucket project key; a braced project UUID, which the API also accepts, is refused.
+_BITBUCKET_PROJECT_KEY = re.compile(r"[A-Za-z0-9_]+")
+
+
+def require_new_bitbucket_repository(value: object) -> str:
+    """Return the slug of a repository to create unchanged, or refuse it."""
+    candidate = value if isinstance(value, str) else ""
+    if _NEW_BITBUCKET_REPOSITORY.fullmatch(candidate) is None or candidate in {".", ".."}:
+        raise ValueError(
+            "The new repository slug must use only lower-case letters, digits, '.', '-' or '_', "
+            "such as pandora-front; upper case, spaces, '/', braces, '.' and '..' are refused"
+        )
+    return candidate
+
+
+def require_bitbucket_project_key(value: object) -> str:
+    """Return one Bitbucket project key unchanged, or refuse anything else."""
+    candidate = value if isinstance(value, str) else ""
+    if _BITBUCKET_PROJECT_KEY.fullmatch(candidate) is None:
+        raise ValueError(
+            "The Bitbucket project key must be one key of letters, digits or '_', such as PAN; "
+            "a project UUID is refused"
         )
     return candidate
 
@@ -668,6 +705,28 @@ def _category_names(values: tuple[str, ...], label: str) -> tuple[str, ...]:
     return tuple(names)
 
 
+@dataclass(frozen=True, slots=True)
+class ScmRepositoryCreateRequest:
+    """Create one private, empty git repository in an explicit project of a workspace.
+
+    Without a workspace the adapter uses the one stored with the bitbucket-admin connection.
+    ``write_authorized`` must be set explicitly per invocation; the runtime refuses the write
+    otherwise.
+    """
+
+    repository: str
+    project_key: str
+    workspace: str | None = None
+    account_id: str | None = None
+    write_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        require_new_bitbucket_repository(self.repository)
+        require_bitbucket_project_key(self.project_key)
+        if self.workspace is not None:
+            object.__setattr__(self, "workspace", normalize_bitbucket_workspace(self.workspace))
+
+
 type QueryPayload = (
     MailQuery
     | CalendarQuery
@@ -684,6 +743,7 @@ type QueryPayload = (
     | ScmRepositoryQuery
     | ScmPullRequestQuery
     | ScmCommitQuery
+    | ScmRepositoryCreateRequest
 )
 
 
@@ -1009,6 +1069,24 @@ class ScmCommit:
     provenance: Provenance
 
 
+@dataclass(frozen=True, slots=True)
+class ScmRepositoryCreation:
+    """The repository one creation produced, as Bitbucket confirmed it.
+
+    ``clone_https`` never carries a user name or password, even when Bitbucket's link does.
+    """
+
+    workspace: str
+    slug: str
+    full_name: str
+    project_key: str
+    is_private: bool
+    web_url: str | None
+    clone_https: str | None
+    created_at: datetime
+    provenance: Provenance
+
+
 type DomainRecord = (
     MailMessage
     | CalendarEvent
@@ -1025,6 +1103,7 @@ type DomainRecord = (
     | ScmRepository
     | ScmPullRequest
     | ScmCommit
+    | ScmRepositoryCreation
 )
 
 
@@ -1117,6 +1196,7 @@ _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.SCM_REPOSITORIES_LIST: ScmRepository,
     Capability.SCM_PULLREQUESTS_LIST: ScmPullRequest,
     Capability.SCM_COMMITS_LIST: ScmCommit,
+    Capability.SCM_REPOSITORIES_CREATE: ScmRepositoryCreation,
 }
 
 

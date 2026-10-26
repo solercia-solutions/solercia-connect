@@ -245,7 +245,7 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
         "bitbucket.cloud",
         # Writes only, official route only, with its own API token
         # (docs/decisions/2026-10-25-escritura-creacion-repositorios-bitbucket.md, R-D1).
-        (),
+        ("scm.repositories.create",),
         (),
         (),
         (

@@ -280,7 +280,9 @@ def run_capability(
     project: Annotated[
         str | None,
         typer.Option(
-            "--project", help="One Jira project key, such as CP (external.issues.open.list)"
+            "--project",
+            help="One Jira project key, such as CP (external.issues.open.list), or the key of the "
+            "Bitbucket project that holds a new repository, such as PAN (scm.repositories.create)",
         ),
     ] = None,
     sprint: Annotated[
@@ -345,7 +347,9 @@ def run_capability(
     repo: Annotated[
         str | None,
         typer.Option(
-            "--repo", help="Bitbucket repository slug (scm.pullrequests.list, scm.commits.list)"
+            "--repo",
+            help="Bitbucket repository slug (scm.pullrequests.list, scm.commits.list, "
+            "scm.repositories.create)",
         ),
     ] = None,
     branch: Annotated[
@@ -1166,6 +1170,11 @@ def _query_payload(
     if capability is Capability.MAIL_DRAFT_SEND:
         raise _InputError(
             "mail.draft.send is a write, not a query; run it with --draft-id and --allow-write"
+        )
+    if capability is Capability.SCM_REPOSITORIES_CREATE:
+        raise _InputError(
+            "scm.repositories.create is a write, not a query; run it with --repo, --project and "
+            "--allow-write"
         )
     if capability is Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST:
         if issue is None:

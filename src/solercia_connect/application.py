@@ -6,6 +6,7 @@ from typing import Any
 from solercia_connect.bootstrap import registry_from_environment
 from solercia_connect.browser_routes import has_browser_route
 from solercia_connect.config import (
+    BITBUCKET_TARGETS,
     GOOGLE_TARGETS,
     MICROSOFT_TARGETS,
     ConnectionType,
@@ -40,6 +41,7 @@ from solercia_connect.domain import (
     ReasonCode,
     ScmCommitQuery,
     ScmPullRequestQuery,
+    ScmRepositoryCreateRequest,
     ScmRepositoryQuery,
     TicketQuery,
     TranscriptQuery,
@@ -92,10 +94,14 @@ def run_application(
             raise ValueError("add, remove and replace apply only to mail.categories.set")
         if capability not in _ISSUE_CAPABILITIES and payload.get("issue") is not None:
             raise ValueError("issue applies only to the Jira transition capabilities")
-        if capability is not Capability.EXTERNAL_ISSUES_OPEN_LIST and any(
-            payload.get(name) is not None for name in ("project", "sprint")
-        ):
-            raise ValueError("project and sprint apply only to external.issues.open.list")
+        if (
+            capability is not Capability.EXTERNAL_ISSUES_OPEN_LIST
+            and payload.get("sprint") is not None
+        ) or (capability not in _PROJECT_CAPABILITIES and payload.get("project") is not None):
+            raise ValueError(
+                "project and sprint apply only to external.issues.open.list; project also "
+                "applies to scm.repositories.create"
+            )
         if capability is not Capability.MAIL_DRAFT_CREATE and any(
             payload.get(name) is not None for name in ("cc", "bcc", "subject", "body")
         ):
@@ -112,10 +118,10 @@ def run_application(
                 capability, ()
             ):
                 raise ValueError(f"{name} does not apply to {capability.value}")
-        if type_value is ConnectionType.BITBUCKET and account is None:
+        if type_value in BITBUCKET_TARGETS and account is None:
             raise ValueError(
-                "account is required for bitbucket runs; connect it first with "
-                + connect_command(ConnectionType.BITBUCKET, "<account>")
+                f"account is required for {type_value.value} runs; connect it first with "
+                + connect_command(type_value, "<account>")
             )
         if writes and account is None:
             raise ValueError(f"account is required for {capability.value}")
@@ -128,10 +134,10 @@ def run_application(
                 "gmail-compose runs only over the official Gmail API; browser fallback does not "
                 "apply"
             )
-        if fallback and type_value is ConnectionType.BITBUCKET:
+        if fallback and type_value in BITBUCKET_TARGETS:
             raise ValueError(
-                "bitbucket runs only over the official Bitbucket Cloud API; browser fallback does "
-                "not apply"
+                f"{type_value.value} runs only over the official Bitbucket Cloud API; browser "
+                "fallback does not apply"
             )
         if (
             fallback
@@ -158,7 +164,13 @@ def run_application(
 
     if isinstance(
         query,
-        (MailCategoriesUpdate, IssueTransitionRequest, MailDraftRequest, MailDraftSendRequest),
+        (
+            MailCategoriesUpdate,
+            IssueTransitionRequest,
+            MailDraftRequest,
+            MailDraftSendRequest,
+            ScmRepositoryCreateRequest,
+        ),
     ):
         assert account is not None
         if not interactive:
@@ -301,7 +313,12 @@ _SCM_OPTIONS_BY_CAPABILITY: dict[Capability, tuple[str, ...]] = {
     Capability.SCM_REPOSITORIES_LIST: ("workspace",),
     Capability.SCM_PULLREQUESTS_LIST: ("workspace", "repo", "state"),
     Capability.SCM_COMMITS_LIST: ("workspace", "repo", "branch"),
+    Capability.SCM_REPOSITORIES_CREATE: ("workspace", "repo"),
 }
+# `project` is the Jira project of the open-issue listing and the Bitbucket project of a creation.
+_PROJECT_CAPABILITIES = frozenset(
+    {Capability.EXTERNAL_ISSUES_OPEN_LIST, Capability.SCM_REPOSITORIES_CREATE}
+)
 # `to` is the target status of a Jira transition and the recipients of a Gmail draft.
 _TO_CAPABILITIES = frozenset({Capability.EXTERNAL_ISSUES_TRANSITION, Capability.MAIL_DRAFT_CREATE})
 # What each write changes, named in the refusals of a write that cannot run.
@@ -310,6 +327,7 @@ _WRITE_EFFECTS = {
     Capability.EXTERNAL_ISSUES_TRANSITION: "changes the status of a Jira issue",
     Capability.MAIL_DRAFT_CREATE: "creates a Gmail draft",
     Capability.MAIL_DRAFT_SEND: "sends a Gmail draft",
+    Capability.SCM_REPOSITORIES_CREATE: "creates a Bitbucket repository",
 }
 _INTERACTIVE_REASONS = frozenset(
     {
@@ -409,6 +427,8 @@ def _write_command(type_value: ConnectionType, account: str | None, capability: 
         return prefix + "--to <recipient> --subject '<subject>' --body-file <path> --allow-write"
     if capability is Capability.MAIL_DRAFT_SEND:
         return prefix + "--draft-id <id> --allow-write"
+    if capability is Capability.SCM_REPOSITORIES_CREATE:
+        return prefix + "--repo <slug> --project <KEY> --allow-write"
     return prefix + "--message-id <id> --add <category> --allow-write --allow-browser-fallback"
 
 
@@ -426,8 +446,12 @@ def _failure_remediation(
             "Check the repository slug; list the slugs this account reaches with "
             "--capability scm.repositories.list.",
         )
-    if type_value is ConnectionType.BITBUCKET:
-        return bitbucket_failure_remediation(reason, account or "<account>")
+    if type_value is ConnectionType.BITBUCKET_ADMIN and reason in _CREATION_REMEDIATION:
+        return (_CREATION_REMEDIATION[reason],)
+    if type_value in BITBUCKET_TARGETS:
+        return bitbucket_failure_remediation(
+            reason, account or "<account>", connection_type=type_value
+        )
     if reason is ReasonCode.WRITE_SCOPE_MISSING:
         return _write_scope_remediation(type_value, account)
     if reason is ReasonCode.DUPLICATE_CHECK_UNAVAILABLE:
@@ -447,6 +471,27 @@ def _failure_remediation(
             "resend on your own.",
         )
     return None
+
+
+# The next step of each repository creation failure that is not about the connection itself.
+_CREATION_REMEDIATION = {
+    ReasonCode.REPOSITORY_EXISTS: (
+        "The repository already exists and nothing was changed; report it to the user and never "
+        "pick another slug on your own."
+    ),
+    ReasonCode.PROJECT_NOT_FOUND: (
+        "Check the project key in the workspace's Projects page with the user; the project must "
+        "exist before the repository."
+    ),
+    ReasonCode.WRITE_UNVERIFIED: (
+        "Review the repository in Bitbucket with the user before any new attempt; never retry "
+        "the creation on your own."
+    ),
+    ReasonCode.REQUEST_REJECTED: (
+        "Check the slug, the project key and that this account may create repositories in the "
+        "workspace; nothing was created."
+    ),
+}
 
 
 def _write_scope_remediation(type_value: ConnectionType, account: str | None) -> tuple[str, ...]:
@@ -537,6 +582,8 @@ def _query(
             _optional_string(payload.get("workspace")),
             account,
         )
+    if capability is Capability.SCM_REPOSITORIES_CREATE:
+        return _repository_create(account, payload)
     limit = payload.get("limit", 50)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
         raise ValueError("limit must be an integer between 1 and 1000")
@@ -689,6 +736,22 @@ def _issue_transition(account: str | None, payload: dict[str, Any]) -> IssueTran
     return IssueTransitionRequest(
         _required_string(payload, "issue"),
         _required_string(payload, "to"),
+        account,
+        allow_write,
+    )
+
+
+def _repository_create(account: str | None, payload: dict[str, Any]) -> ScmRepositoryCreateRequest:
+    """Build the creation; the domain type refuses any slug or key it would have to change."""
+    if payload.get("start") is not None or payload.get("end") is not None:
+        raise ValueError("scm.repositories.create takes no --start/--end window")
+    allow_write = payload.get("allow_write", False)
+    if not isinstance(allow_write, bool):
+        raise ValueError("allow_write must be a boolean")
+    return ScmRepositoryCreateRequest(
+        _required_string(payload, "repo"),
+        _required_string(payload, "project"),
+        _optional_string(payload.get("workspace")),
         account,
         allow_write,
     )

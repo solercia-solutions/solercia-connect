@@ -14,6 +14,7 @@ from solercia_connect.browser_profile import (
 )
 from solercia_connect.browser_routes import has_browser_route
 from solercia_connect.config import (
+    BITBUCKET_TARGETS,
     GMAIL_COMPOSE_SCOPE,
     MICROSOFT_TARGETS,
     ConnectionType,
@@ -40,6 +41,7 @@ from solercia_connect.project_secrets import (
     oauth_token_store_from_settings,
 )
 from solercia_connect.providers.bitbucket import BitbucketAdapter
+from solercia_connect.providers.bitbucket_admin import BitbucketAdminAdapter
 from solercia_connect.providers.glpi import GlpiAdapter
 from solercia_connect.providers.gmail_compose import GmailComposeAdapter
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
@@ -222,12 +224,13 @@ def registry_from_environment(
             )
         )
 
-    if parsed_type is ConnectionType.BITBUCKET:
-        # Bitbucket has no environment credentials: a run reads one account's own connection.
+    if parsed_type in BITBUCKET_TARGETS:
+        # Bitbucket has no environment credentials: a run reads one account's own connection, and
+        # the repository creation reads only the separate bitbucket-admin one.
         if normalized_account is None:
             raise ValueError(
                 "An account is required for Bitbucket runs; connect it with "
-                f"{connect_command(ConnectionType.BITBUCKET, '<account>')}"
+                f"{connect_command(parsed_type, '<account>')}"
             )
         registry.register(
             _bitbucket_adapter_for_account(
@@ -235,6 +238,7 @@ def registry_from_environment(
                 profiles,
                 secret_store or api_token_store_from_settings(settings),
                 normalized_account,
+                parsed_type,
             )
         )
 
@@ -411,14 +415,15 @@ def _bitbucket_adapter_for_account(
     profiles: ProfileStore,
     secrets: SecretStore,
     account: str,
+    parsed: ConnectionType = ConnectionType.BITBUCKET,
 ) -> BitbucketAdapter:
     """Build Bitbucket from this account's profile and stored API token.
 
-    The base URL is fixed in the adapter, the profile's account ID is the one every read must
-    prove again, and its workspace is the default for reads that name none.
+    The base URL is fixed in the adapter, the profile's account ID is the one every call must
+    prove again, and its workspace is the default for calls that name none. A bitbucket-admin
+    connection builds the creation adapter with its own token; a bitbucket one, the reads.
     """
 
-    parsed = ConnectionType.BITBUCKET
     profile = profiles.get(parsed, account)
     if (
         profile is None
@@ -434,7 +439,10 @@ def _bitbucket_adapter_for_account(
             ReasonCode.INVALID_CREDENTIALS,
             "The Bitbucket API token for this account is not stored; reconnect it in the CLI",
         )
-    return BitbucketAdapter(
+    adapter = (
+        BitbucketAdminAdapter if parsed is ConnectionType.BITBUCKET_ADMIN else BitbucketAdapter
+    )
+    return adapter(
         transport,
         BasicAuthProvider(account, token),
         account=account,

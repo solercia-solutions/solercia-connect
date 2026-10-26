@@ -80,7 +80,7 @@ Reglas de la escritura (R-D2):
   - El token se guarda con la clave `bitbucket-admin:<email>`.
   - La identidad se prueba igual que en B-D2.
   - La plantilla de `project init` incluye `BITBUCKET_ADMIN_API_TOKEN`.
-- [ ] **R2** Capacidad `scm.repositories.create --repo <slug> --project <clave> --allow-write`, con
+- [x] **R2** Capacidad `scm.repositories.create --repo <slug> --project <clave> --allow-write`, con
   las reglas de R-D2.
   - Errores tipados: `repository_exists`, proyecto inexistente y permiso denegado.
   - Se rechaza por HTTP.
@@ -106,7 +106,8 @@ Reglas de la escritura (R-D2):
 | --- | --- | --- |
 | Exploración | Hecha | El push ya funciona por git; el alcance se verificó en OpenAPI |
 | R0 | Hecha | `df0d706`: ADR y documentos de política; rojo con 3 fallos en `test_bitbucket_repo_create_policy_docs.py` (ADR inexistente, AGENTS.md sin «four» y skill sin las reglas nuevas) |
-| R1 | Hecha | Conexión `bitbucket-admin`; rojo por `ImportError` de `BITBUCKET_TARGETS` en `test_bitbucket_admin_connection.py` y 2 fallos en las líneas agregadas a pruebas existentes |
+| R1 | Hecha | `026533b`: conexión `bitbucket-admin`; rojo por `ImportError` de `BITBUCKET_TARGETS` en `test_bitbucket_admin_connection.py` y 2 fallos en las líneas agregadas a pruebas existentes |
+| R2 | Hecha | Capacidad `scm.repositories.create`; rojo por `ImportError` de `ScmRepositoryCreateRequest` en `test_bitbucket_repo_create.py`; cobertura de `bitbucket_admin.py` al 100 % |
 
 Detalle:
 
@@ -126,7 +127,25 @@ Detalle:
 - **Conexión `bitbucket-admin` (R1):** reutiliza `connect_bitbucket` con el parámetro
   `connection_type`. Los mensajes del target `bitbucket` no cambiaron. El target nuevo no declara
   capacidades hasta R2.
+- **Pruebas existentes en R2:** solo se agregaron 3 líneas en el ciclo de
+  `test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping`
+  (`test_cli_lifecycle`), que salta la escritura nueva como salta las demás.
+- **Capacidad (R2):**
+  - El adaptador `BitbucketAdminAdapter` (`providers/bitbucket_admin.py`) hereda la prueba de
+    identidad y solo ofrece la creación. El de lectura no la declara.
+  - Una creación hace seis solicitudes: tres de identidad, `GET` del repositorio, `GET` del
+    proyecto y un `POST`.
+  - Un 403 en la consulta del repositorio es `authorization_denied` y advierte que puede existir un
+    repositorio privado que la cuenta no ve. Una clave de proyecto que Bitbucket escribe distinto
+    falla con `invalid_input` antes de escribir.
+  - Después del `POST`, 5xx, tiempo de espera, red o respuesta ilegible dan `write_unverified`
+    («may have been created»). Una respuesta que no coincide también da `write_unverified`, pero
+    con «was created … review it in Bitbucket».
+  - Los enlaces `web_url` y `clone_https` se reconstruyen como `https://bitbucket.org/<ruta>`; se
+    descartan los de otro host o esquema, y nunca llevan usuario ni contraseña.
+  - `--project` sirve para `external.issues.open.list` y para `scm.repositories.create`. `--sprint`
+    sigue siendo solo de Jira.
 
 ## Siguiente paso
 
-R2, la capacidad `scm.repositories.create`.
+R3: runbook, matriz, README y ejemplos del skill.

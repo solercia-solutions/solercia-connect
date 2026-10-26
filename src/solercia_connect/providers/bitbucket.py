@@ -181,7 +181,7 @@ class BitbucketAdapter:
             {"role": "member", "sort": "-updated_on", "pagelen": _REPOSITORY_PAGE_LENGTH},
             max_pages=_MAX_REPOSITORY_PAGES,
             what="repositories",
-            not_found=_workspace_not_found(workspace),
+            not_found=workspace_not_found(workspace),
         ):
             for raw in require_list(page.get("values"), "bitbucket.repositories.values"):
                 repository = self._repository(
@@ -281,7 +281,7 @@ class BitbucketAdapter:
             raise _boundary("Authenticated Bitbucket account does not match the connection profile")
         self._prove_confirmed_email()
         self._get(
-            f"{BITBUCKET_API_BASE_URL}/workspaces/{target}", not_found=_workspace_not_found(target)
+            f"{BITBUCKET_API_BASE_URL}/workspaces/{target}", not_found=workspace_not_found(target)
         )
         return BitbucketIdentity(account_id, target)
 
@@ -508,7 +508,7 @@ class BitbucketAdapter:
                 "Authorization": self._auth.authorization_header(),
             },
             params=params,
-            failure_refiner=_refiner(not_found),
+            failure_refiner=bitbucket_refiner(not_found),
         )
 
 
@@ -533,7 +533,7 @@ def next_page_url(data: Mapping[str, Any], collection: str) -> str | None:
     return raw
 
 
-def _workspace_not_found(workspace: str) -> ConnectorFailure:
+def workspace_not_found(workspace: str) -> ConnectorFailure:
     return ConnectorFailure(
         ReasonCode.WORKSPACE_NOT_FOUND,
         f"Bitbucket workspace {workspace} was not found or is not visible to this account",
@@ -575,7 +575,7 @@ def _collection_path(url: str) -> str:
     return unquote(urlparse(url).path).rstrip("/")
 
 
-def _refiner(not_found: ConnectorFailure | None) -> FailureRefiner:
+def bitbucket_refiner(not_found: ConnectorFailure | None) -> FailureRefiner:
     def refine(status_code: int, body: bytes) -> ConnectorFailure | None:
         if status_code == 401:
             return ConnectorFailure(ReasonCode.INVALID_CREDENTIALS, _REJECTED_CREDENTIALS)
@@ -589,7 +589,7 @@ def _refiner(not_found: ConnectorFailure | None) -> FailureRefiner:
 
 
 def _scope_denied(body: bytes) -> ConnectorFailure:
-    scopes = _required_scopes(body)
+    scopes = required_scopes(body)
     if scopes:
         return ConnectorFailure(
             ReasonCode.AUTHORIZATION_DENIED,
@@ -603,7 +603,7 @@ def _scope_denied(body: bytes) -> ConnectorFailure:
     )
 
 
-def _required_scopes(body: bytes) -> tuple[str, ...]:
+def required_scopes(body: bytes) -> tuple[str, ...]:
     """Read the missing scope names a 403 may carry; the shape is not documented, so be wary."""
 
     try:
