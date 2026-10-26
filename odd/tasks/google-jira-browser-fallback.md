@@ -63,6 +63,7 @@ igual Google, pero si no se puede entonces por Playwright».
 | D0.1 | `admin_policy_enforced` de Google y el token de Jira bloqueado por política se tratan como «permiso de la organización no disponible», es decir, son razones válidas para usar el respaldo. Es el mismo trato que hoy recibe `ADMIN_CONSENT_REQUIRED` en Outlook. | Se deriva de D0 y queda registrada en la ADR |
 | D1 | Alcance del navegador en Google frente a `SECURITY.md:80-82` («Do not call retired or undocumented provider endpoints»). La ADR registra una excepción solo para Google y solo de lectura, que cubre tres mecanismos: la exportación ICS de Calendar, la exportación a texto de Docs para Meet, y Gmail por el DOM de la búsqueda más la descarga del mensaje original. Los selectores son versionados y deterministas. Si un selector cambia, se falla de forma cerrada con `BROWSER_SELECTOR_MISMATCH`. | **Aceptada**: Camilo, 2026-10-25, «Todo, incluido Gmail» |
 | D3 | **Modo proyecto.** Se activa con `SOLERCIA_CONNECT_HOME=<proyecto>/.solercia-connect` y concentra en esa carpeta la configuración, los perfiles, las sesiones de navegador, los secretos en archivo y `connect.env`. Protecciones: carpeta 0700, archivos 0600 con escritura atómica, `.gitignore` automático con `*`, y fallo cerrado si git rastrea algo dentro. Sin `SOLERCIA_CONNECT_HOME` todo sigue igual (XDG y llavero), así que Solercia Command y los demás consumidores no cambian. | **Aceptada**: Camilo, 2026-10-25, «Archivo en el proyecto». Caso de uso: agente `migracion-angular-pandora` en `IDARTES/pandora_proxy`, con Gmail y Jira |
+| D4 | Escritura acotada en Jira: transición de estado de un issue por invocación, con `--allow-write`, solo por la ruta oficial, sin HTTP ni reintentos y con verificación posterior. Es la segunda escritura del producto, después de las categorías de Outlook. | **Aceptada**: Camilo, 2026-10-25, «ADR de transición» |
 | D2 | Un commit convencional por tarea en esta rama: en español, con scope `solercia` y sin atribución a IA. Cada rebanada de unas 400 líneas se anota en el documento, para encadenar más adelante los PRs sobre la rama de la feature (`feature-branch-chain`). Sin push ni PR. | **Aceptada**: Camilo, 2026-10-25 |
 
 ### Evidencia de que la ruta oficial funciona (AUTOMATINFORMES)
@@ -268,6 +269,27 @@ descubrimiento»: el lanzador por proyecto se reemplaza por el CLI global y el s
   - El agente nunca lee `connect.env`, `secrets/` ni `data/`.
 - [x] **T7.8** Retirar el lanzador de `pandora_proxy`. Esta tarea depende de que la herramienta
   global tenga este código; esa decisión de entrega la toma Camilo.
+
+### Fase 8 — Transición de estado en Jira (D4)
+
+Pedido de Camilo, 2026-10-25: «mi idea es conectarme con Jira en pandora_proxy e ir haciendo el
+cambio de estado de las historias que tengo acceso por api». Decisión D4, «ADR de transición»,
+aceptada ese mismo día. Contexto: sitio `idartes-tecnologia.atlassian.net`, proyecto `CP`.
+
+- [ ] **T8.0** Escribir la ADR de escritura de transiciones en Jira.
+  - Sigue el molde de `2026-10-19-escritura-categorias-outlook.md`.
+  - Actualizar `AGENTS.md`, `SECURITY.md` y el skill, para que la segunda escritura permitida sea
+    la transición de estado de un issue.
+- [ ] **T8.1** Lectura `external.issues.transitions.list --issue <clave>`.
+  - Devuelve las transiciones disponibles con su estado destino y si exigen campos.
+- [ ] **T8.2** Escritura `external.issues.transition --issue <clave> --to <estado> --allow-write`.
+  - Solo un issue y solo su estado.
+  - Exige coincidencia exacta de una sola transición. Si coinciden cero o varias, falla de forma
+    cerrada.
+  - Si la transición exige campos, falla de forma cerrada.
+  - Usa solo la ruta oficial, nunca por HTTP y sin reintentos.
+  - Lee el estado antes y después, y deja recibo de ambos.
+  - Con OAuth falla de forma cerrada mientras el grant no incluya `write:jira-work`.
 
 ### Fase 6 — Cierre
 
