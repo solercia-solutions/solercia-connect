@@ -78,7 +78,8 @@ keyring, and the same env-file rules apply.
 - Use least-privilege read scopes: Microsoft `Mail.Read`, `Calendars.Read`, and the separate Teams
   `OnlineMeetingTranscript.Read.All`; Google `gmail.readonly` and
   `calendar.events.readonly` are separate grants; Jira OAuth `read:jira-work`, `read:jira-user`,
-  `read:me` and `offline_access`.
+  `read:me` and `offline_access`; Bitbucket API token scopes `read:user:bitbucket`,
+  `read:workspace:bitbucket`, `read:repository:bitbucket` and `read:pullrequest:bitbucket`.
 - The read targets request no write scope. The official route of the category write would need
   `Mail.ReadWrite`, and adding it to the `outlook` target invalidates every existing grant, because
   a stored grant must contain all of the target's scopes. That route stays disabled until a
@@ -91,9 +92,33 @@ keyring, and the same env-file rules apply.
   Microsoft tenant/admin policy blocks never route around policy. Google and Jira organizational
   blocks follow the [browser fallback](#browser-fallback) rules below.
 
+### Bitbucket Cloud API token
+
+Bitbucket Cloud is read-only and official-only, as accepted in
+`docs/decisions/2026-10-26-conector-bitbucket.md`. It has no write and no browser route.
+
+- The credential is an Atlassian API token created with "Create API token with scopes" for the
+  Bitbucket app, holding exactly `read:user:bitbucket`, `read:workspace:bitbucket`,
+  `read:repository:bitbucket` and `read:pullrequest:bitbucket`. A classic, unscoped Jira API token
+  does not work. It travels as Basic `email:token` only to `https://api.bitbucket.org/2.0`.
+- `connect bitbucket <account> --workspace <workspace>` reads the token from `--token-env`, the
+  hidden prompt, or `--token-stdin`, never from an argument or over HTTP. It is stored only in the
+  `SecretStore` under `bitbucket:<email>` (keyring service `solercia-connect.api-token`, or the
+  private secret file in project mode); the profile keeps the workspace and the observed
+  `account_id`, never the token.
+- Identity is proven before anything is stored and before every read: `/2.0/user` returns the
+  stored `account_id`, `/2.0/user/emails` lists the account email as confirmed, and
+  `/2.0/workspaces/{workspace}` answers 200. Any mismatch, a missing or unconfirmed email, or an
+  unknown response shape fails closed with zero data reads; a failed connect stores nothing.
+- Pagination follows only `next` links on the same origin and collection path, with a fixed page
+  bound. Reaching it fails with `result_incomplete` instead of returning a truncated list.
+- A `403` may quote the missing scope names, which are not secret; nothing else from a provider
+  body is ever quoted.
+
 ## Service and output
 
 - The FastAPI adapter binds to loopback by default and rejects non-loopback host configuration.
+- HTTP never receives an API token: Jira and Bitbucket connect only in the CLI.
 - HTTP never writes: `POST /v1/run` rejects `mail.categories.set`, `external.issues.transition`,
   `mail.draft.create`, and `mail.draft.send` with 403 before the application service runs, with or
   without the interactive login opt-in.

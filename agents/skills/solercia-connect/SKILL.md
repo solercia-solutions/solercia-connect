@@ -1,10 +1,10 @@
 ---
 name: solercia-connect
-description: "Trigger: Outlook, Teams, Gmail, Google Calendar, Jira, GLPI, connector, leer correos, extraer calendario, transcripciones de reuniones. Use the standalone runtime instead of reimplementing integrations."
+description: "Trigger: Outlook, Teams, Gmail, Google Calendar, Jira, Bitbucket, GLPI, connector, leer correos, extraer calendario, transcripciones de reuniones. Use the standalone runtime instead of reimplementing integrations."
 license: MIT
 metadata:
   author: solercia
-  version: "2.2"
+  version: "2.3"
 ---
 
 ## Activation contract
@@ -46,6 +46,8 @@ being the current working directory.
 - Transition a Jira issue only when the user explicitly asks for it, one issue per invocation.
   Never loop over issues in bulk unless the user listed each key. When unsure of the exact target
   status name, run `external.issues.transitions.list` for that issue first.
+- Bitbucket Cloud is read-only and official-only: never pass `--allow-write` or
+  `--allow-browser-fallback` to it.
 
 ## Canonical workflow
 
@@ -79,6 +81,18 @@ browser session rather than official OAuth.
 solercia-connect connect jira user@example.com \
   --site https://your-site.atlassian.net --token-kind classic --token-env JIRA_API_TOKEN
 ```
+
+**Connecting Bitbucket Cloud.** The user creates an Atlassian API token with "Create API token
+with scopes", app Bitbucket, and the four read scopes `read:user:bitbucket`,
+`read:workspace:bitbucket`, `read:repository:bitbucket` and `read:pullrequest:bitbucket`. A classic
+Jira API token does not work. Then the user runs, once per account:
+
+```bash
+solercia-connect connect bitbucket <account> --workspace <workspace> --token-env BITBUCKET_API_TOKEN
+```
+
+`--workspace` is the slug in `bitbucket.org/<workspace>/<repo>`, stored as the default for reads.
+Without `--token-env` the CLI asks in a hidden prompt; `--token-stdin` reads one piped line.
 
 ## Project mode
 
@@ -191,6 +205,28 @@ may exist or the message may have been sent: ask the user to check Gmail and nev
 own. `write_scope_missing` means the user must run `solercia-connect connect gmail-compose
 <account>`. `draft_not_found` means the draft was already sent or deleted.
 
+**Reading Bitbucket.** Three reads, official route only, always with `--account`. `--workspace`
+defaults to the connected one; `--repo` takes one repository slug.
+
+```bash
+solercia-connect run --provider bitbucket.cloud --capability scm.repositories.list \
+  --account user@example.com
+solercia-connect run --provider bitbucket.cloud --capability scm.pullrequests.list \
+  --account user@example.com --repo pandora_proxy \
+  --start '2026-10-01T00:00:00-05:00' --end '2026-11-01T00:00:00-05:00' --state MERGED
+solercia-connect run --provider bitbucket.cloud --capability scm.commits.list \
+  --account user@example.com --repo pandora_proxy --branch develop \
+  --start '2026-10-01T00:00:00-05:00' --end '2026-11-01T00:00:00-05:00'
+```
+
+Pull requests are filtered by `updated_on` in the window; `--state` is repeatable among `OPEN`,
+`MERGED`, `DECLINED` and `SUPERSEDED` (all four by default). Commits are filtered by their date in
+the window; without `--branch` the repository's main branch is read. `result_incomplete` means the
+read hit its fixed page bound and returned nothing rather than a partial list: report it and
+narrow the window; never widen it. `invalid_credentials` means the token expired or lacks Bitbucket
+scopes, `authorization_denied` names the missing scopes when Bitbucket provides them, and
+`workspace_not_found` or `repository_not_found` means a wrong slug or no access.
+
 **Transcripts.** The official route addresses the online meeting, so it needs `--meeting-id` plus
 tenant-granted scopes. The browser route reads the recording that carries the transcript, which is
 a drive item, so it takes `--drive-id` with `--item-id`, or just a window that reads every
@@ -214,6 +250,7 @@ yet; until it ships, Playwright is not offered for Google Meet.
 | Existing read | Run the narrow capability; preserve record schema, provenance and receipt |
 | Category change | Only on an explicit user request; pass `--allow-write` for that one run |
 | Jira status change | Only on an explicit user request, one issue key per run with `--allow-write`; list the transitions first when the target name is uncertain |
+| Bitbucket read | Official route only, with `--account`; on `result_incomplete`, narrow the window and report it |
 | Sending a Gmail email | Confirm the account, create the draft, show the preview, and send only after the user explicitly approves that draft id |
 | Microsoft admin-consent failure | Use browser only when the user explicitly allowed it |
 | Google `admin_policy_enforced` or Jira API token blocked by the organization | Report the typed error; the browser route for these families is still being implemented |

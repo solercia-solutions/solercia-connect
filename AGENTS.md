@@ -1,15 +1,16 @@
 # AGENTS.md — Solercia Connect
 
 Solercia Connect is a Python 3.12, official-first connector runtime for Microsoft 365,
-Google Workspace, Jira, and GLPI. It normalizes read operations into typed records with
-provenance and deterministic execution receipts. It has exactly three bounded writes: assigning
-Outlook categories to one message (`mail.categories.set`), accepted in
+Google Workspace, Jira, Bitbucket Cloud, and GLPI. It normalizes read operations into typed
+records with provenance and deterministic execution receipts. It has exactly three bounded writes:
+assigning Outlook categories to one message (`mail.categories.set`), accepted in
 `docs/decisions/2026-10-19-escritura-categorias-outlook.md`; the status transition of one Jira
 issue (`external.issues.transition`), accepted in
 `docs/decisions/2026-10-25-escritura-transiciones-jira.md`; and sending Gmail in two steps, a
 draft (`mail.draft.create`) and then the send of that reviewed draft (`mail.draft.send`) over the
 separate `gmail-compose` connection, accepted in
-`docs/decisions/2026-10-25-envio-correo-gmail-dos-pasos.md`.
+`docs/decisions/2026-10-25-envio-correo-gmail-dos-pasos.md`. Bitbucket Cloud is read-only and
+official-only, accepted in `docs/decisions/2026-10-26-conector-bitbucket.md`.
 
 ## Stack
 

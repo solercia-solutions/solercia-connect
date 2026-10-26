@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptado
 - **Fecha de corte:** 2026-08-23
-- **Última actualización:** 2026-10-25
+- **Última actualización:** 2026-10-26
 - **Ámbito:** Identidad de producto, independencia operativa, integraciones, autenticación, límites de seguridad, persistencia y convenciones de datos
 - **Aplicación:** Obligatoria para cambios nuevos dentro de este ámbito
 
@@ -22,7 +22,7 @@ este registro fija la línea base aceptada al 2026-08-23.
 
 | Producto | Responsabilidad | Límite |
 | --- | --- | --- |
-| **Solercia Connect** | Runtime conector transversal para Outlook/Microsoft 365, Teams, Gmail, Google Calendar, Jira y GLPI. | Obtiene y normaliza hechos externos; no decide prioridades ni estados de trabajo. |
+| **Solercia Connect** | Runtime conector transversal para Outlook/Microsoft 365, Teams, Gmail, Google Calendar, Jira, Bitbucket Cloud (solo lectura, [ADR del 2026-10-26](2026-10-26-conector-bitbucket.md)) y GLPI. | Obtiene y normaliza hechos externos; no decide prioridades ni estados de trabajo. |
 | **Solercia Command** | Producto de trabajo, proyectos, tareas, calendario y priorización; es el nombre aprobado del checkout anteriormente llamado `gestion_proyectos`. | Es propietario del comportamiento operativo de trabajo; no reimplementa conectores. |
 | **Solercia Security** | Producto separado que puede consumir contratos de integración. | No es una dependencia de runtime de Connect ni de Command. |
 
@@ -30,7 +30,9 @@ este registro fija la línea base aceptada al 2026-08-23.
 
 ### 1. Identidad y propiedad funcional
 
-1. Solercia Connect concentra la integración determinista con los proveedores admitidos.
+1. Solercia Connect concentra la integración determinista con los proveedores admitidos. Bitbucket
+   Cloud se admitió el 2026-10-26, de solo lectura y solo por la API oficial, según
+   [`2026-10-26-conector-bitbucket.md`](2026-10-26-conector-bitbucket.md).
 2. Solercia Command es el nombre de producto aprobado y `solercia-command` es el checkout local
    aprobado. Los identificadores históricos de base de datos, API, paquetes, despliegue, remotos,
    dominios o marca jurídica no se renombran por inferencia.
@@ -274,6 +276,8 @@ No deben presentarse como capacidades terminadas.
   excepción de escritura para la transición de estado de un issue de Jira.
 - [`2026-10-25-envio-correo-gmail-dos-pasos.md`](2026-10-25-envio-correo-gmail-dos-pasos.md):
   excepción de escritura para el envío de correo de Gmail en dos pasos.
+- [`2026-10-26-conector-bitbucket.md`](2026-10-26-conector-bitbucket.md): conector de Bitbucket
+  Cloud de solo lectura.
 
 Las referencias anteriores amplían este registro. Si una descripción histórica queda menos
 precisa que una decisión aceptada aquí, debe corregirse mediante un cambio documental explícito,
