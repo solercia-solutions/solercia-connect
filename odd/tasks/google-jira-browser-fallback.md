@@ -64,6 +64,7 @@ igual Google, pero si no se puede entonces por Playwright».
 | D1 | Alcance del navegador en Google frente a `SECURITY.md:80-82` («Do not call retired or undocumented provider endpoints»). La ADR registra una excepción solo para Google y solo de lectura, que cubre tres mecanismos: la exportación ICS de Calendar, la exportación a texto de Docs para Meet, y Gmail por el DOM de la búsqueda más la descarga del mensaje original. Los selectores son versionados y deterministas. Si un selector cambia, se falla de forma cerrada con `BROWSER_SELECTOR_MISMATCH`. | **Aceptada**: Camilo, 2026-10-25, «Todo, incluido Gmail» |
 | D3 | **Modo proyecto.** Se activa con `SOLERCIA_CONNECT_HOME=<proyecto>/.solercia-connect` y concentra en esa carpeta la configuración, los perfiles, las sesiones de navegador, los secretos en archivo y `connect.env`. Protecciones: carpeta 0700, archivos 0600 con escritura atómica, `.gitignore` automático con `*`, y fallo cerrado si git rastrea algo dentro. Sin `SOLERCIA_CONNECT_HOME` todo sigue igual (XDG y llavero), así que Solercia Command y los demás consumidores no cambian. | **Aceptada**: Camilo, 2026-10-25, «Archivo en el proyecto». Caso de uso: agente `migracion-angular-pandora` en `IDARTES/pandora_proxy`, con Gmail y Jira |
 | D4 | Escritura acotada en Jira: transición de estado de un issue por invocación, con `--allow-write`, solo por la ruta oficial, sin HTTP ni reintentos y con verificación posterior. Es la segunda escritura del producto, después de las categorías de Outlook. | **Aceptada**: Camilo, 2026-10-25, «ADR de transición» |
+| D5 | **Envío de correo en Gmail dentro de `solercia-connect`, en dos pasos:** primero un borrador revisable y después el envío con aprobación y `--allow-write`. Usa una conexión separada (`gmail-compose`) y verifica duplicados antes de enviar. Es la tercera escritura del producto. | **Aceptada**: Camilo, 2026-10-25, «Dentro de solercia-connect». El orquestador decidió que la conexión fuera separada, por mínimo privilegio |
 | D2 | Un commit convencional por tarea en esta rama: en español, con scope `solercia` y sin atribución a IA. Cada rebanada de unas 400 líneas se anota en el documento, para encadenar más adelante los PRs sobre la rama de la feature (`feature-branch-chain`). Sin push ni PR. | **Aceptada**: Camilo, 2026-10-25 |
 
 ### Evidencia de que la ruta oficial funciona (AUTOMATINFORMES)
@@ -350,6 +351,28 @@ Pendientes nuevos:
   usuario. Hoy `external.issues.search` solo devuelve issues resueltos. Requiere la decisión de
   Camilo.
 - Candidato a feature nueva: integración con Bitbucket Cloud. Se evalúa aparte.
+
+### Fase 9 — Gmail: bandeja de entrada y envío en dos pasos (D5)
+
+Pedido de Camilo, 2026-10-25: «conectar para leer y enviar tambien correos a
+cristian.calderontapia@idartes.gov.co». Decisión D5, «Dentro de solercia-connect».
+
+- [ ] **T9.0** Escribir la ADR del envío de correo en Gmail en dos pasos.
+  - El agente crea un borrador, Camilo lo revisa en Gmail y solo con su aprobación se envía.
+  - El envío usa una conexión separada, `gmail-compose` con `gmail.compose`, por mínimo privilegio.
+    La conexión `gmail` sigue siendo de solo lectura.
+  - Actualizar `AGENTS.md`, `SECURITY.md` y el skill.
+- [ ] **T9.1** Lectura `mail.inbox.list` para Gmail, solo por la ruta oficial con `gmail.readonly`.
+  - Usa el mismo registro normalizado que la bandeja de Outlook.
+- [ ] **T9.2** Escritura `mail.draft.create`.
+  - Crea un borrador con destinatarios, asunto y cuerpo explícitos.
+  - Remitente: solo la cuenta conectada, sin alias. Sin adjuntos.
+  - Requiere `--allow-write`, nunca por HTTP y sin reintentos.
+- [ ] **T9.3** Escritura `mail.draft.send --draft-id`.
+  - Requiere `--allow-write`, nunca por HTTP y sin reintentos.
+  - Antes de enviar busca en Enviados un correo con el mismo asunto y los mismos destinatarios. Si
+    lo encuentra, falla de forma cerrada salvo que se pase `--allow-duplicate`.
+  - Deja recibo con el identificador del mensaje enviado.
 
 ### Fase 6 — Cierre
 
