@@ -44,6 +44,7 @@ from solercia_connect.domain import (
     IssueQuery,
     IssueTransitionsQuery,
     MailQuery,
+    OpenIssueQuery,
     QueryPayload,
     ReasonCode,
     TicketQuery,
@@ -275,6 +276,19 @@ def run_capability(
         str | None,
         typer.Option("--issue", help="One exact Jira issue key, such as CP-1356"),
     ] = None,
+    project: Annotated[
+        str | None,
+        typer.Option(
+            "--project", help="One Jira project key, such as CP (external.issues.open.list)"
+        ),
+    ] = None,
+    sprint: Annotated[
+        str | None,
+        typer.Option(
+            "--sprint",
+            help="Only `current`: keep issues in an open sprint (external.issues.open.list)",
+        ),
+    ] = None,
     to_values: Annotated[
         list[str] | None,
         typer.Option(
@@ -399,6 +413,10 @@ def run_capability(
         # Issue-scoped options travel only when given, so other capabilities keep their payload.
         if issue is not None:
             payload["issue"] = issue
+        if project is not None:
+            payload["project"] = project
+        if sprint is not None:
+            payload["sprint"] = sprint
         if to_values is not None:
             payload["to"] = _to_option(capability, to_values)
         # Draft options travel only when given, and the body is read only for the draft.
@@ -1111,6 +1129,8 @@ def _query_payload(
     drive_id: str | None = None,
     item_id: str | None = None,
     issue: str | None = None,
+    project: str | None = None,
+    sprint: str | None = None,
     limit: int,
 ) -> QueryPayload:
     if capability is Capability.MAIL_CATEGORIES_SET:
@@ -1136,6 +1156,10 @@ def _query_payload(
         if issue is None:
             raise _InputError("external.issues.transitions.list needs --issue with one Jira key")
         return IssueTransitionsQuery(issue, account)
+    if capability is Capability.EXTERNAL_ISSUES_OPEN_LIST:
+        if sprint is not None and sprint != "current":
+            raise _InputError("--sprint accepts only current")
+        return OpenIssueQuery(project, sprint == "current", jql, account, min(limit, 100))
     transcripts = {Capability.MEETING_TRANSCRIPTS_LIST, Capability.MEETING_TRANSCRIPT_GET}
     if capability in transcripts:
         # A transcript is selected by meeting, by recording, or by period, so a window is one

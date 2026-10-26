@@ -26,6 +26,7 @@ from solercia_connect.domain import (
     IssueQuery,
     IssueTransitionsQuery,
     MailQuery,
+    OpenIssueQuery,
     ProviderFamily,
     QueryPayload,
     ReasonCode,
@@ -46,6 +47,7 @@ _EXPECTED_QUERY_TYPES: dict[Capability, type[QueryPayload]] = {
     Capability.FILES_SEARCH: FileQuery,
     Capability.FILES_GET: FileQuery,
     Capability.EXTERNAL_ISSUES_SEARCH: IssueQuery,
+    Capability.EXTERNAL_ISSUES_OPEN_LIST: OpenIssueQuery,
     Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST: IssueTransitionsQuery,
     Capability.TICKETS_SEARCH: TicketQuery,
 }

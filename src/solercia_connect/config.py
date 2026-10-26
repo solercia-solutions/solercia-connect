@@ -205,6 +205,7 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
         "jira.cloud",
         (
             "external.issues.search",
+            "external.issues.open.list",
             "external.issues.transitions.list",
             "external.issues.transition",
         ),

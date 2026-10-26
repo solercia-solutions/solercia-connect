@@ -20,6 +20,8 @@ from solercia_connect.domain import (
     IssueTransitionRequest,
     IssueTransitionResult,
     IssueTransitionsQuery,
+    OpenIssue,
+    OpenIssueQuery,
     Provenance,
     ProviderFamily,
     ReasonCode,
@@ -131,6 +133,10 @@ class _Transition:
 _TRANSITIONS_ENDPOINT = "/rest/api/3/issue/{issueIdOrKey}/transitions"
 # Bounds the target names quoted back when no transition matches; they are not secret.
 _MAX_LISTED_TARGETS = 20
+_SEARCH_ENDPOINT = "/rest/api/3/search/jql"
+# Every JQL read stops after this many pages, so a page token that never ends cannot hold a run.
+_MAX_SEARCH_PAGES = 20
+_OPEN_ISSUE_FIELDS = ("summary", "status", "issuetype", "priority", "updated", "assignee")
 
 
 class JiraAdapter:
@@ -141,6 +147,7 @@ class JiraAdapter:
         frozenset(
             {
                 Capability.EXTERNAL_ISSUES_SEARCH,
+                Capability.EXTERNAL_ISSUES_OPEN_LIST,
                 Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST,
                 Capability.EXTERNAL_ISSUES_TRANSITION,
             }
@@ -183,6 +190,10 @@ class JiraAdapter:
             request.payload, IssueQuery
         ):
             return self.search_issues(request.payload)
+        if request.capability is Capability.EXTERNAL_ISSUES_OPEN_LIST and isinstance(
+            request.payload, OpenIssueQuery
+        ):
+            return self.list_open_issues(request.payload)
         if request.capability is Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST and isinstance(
             request.payload, IssueTransitionsQuery
         ):
@@ -285,12 +296,42 @@ class JiraAdapter:
             "resolutiondate",
             "project",
         ]
-        result: list[ExternalIssue] = []
+
+        def resolved_in_window(item: dict[str, Any]) -> ExternalIssue | None:
+            issue = self._normalize_issue(item, account_id)
+            if issue.resolved_at and query.window.start <= issue.resolved_at < query.window.end:
+                return issue
+            return None
+
+        return self._search_jql(jql, fields, query.limit, resolved_in_window)
+
+    def list_open_issues(self, query: OpenIssueQuery) -> tuple[OpenIssue, ...]:
+        """List the open issues of the proven account through the same enhanced JQL search."""
+        account_id = self._identity()
+        return self._search_jql(
+            query.jql or _open_issues_jql(query),
+            list(_OPEN_ISSUE_FIELDS),
+            query.limit,
+            lambda item: self._normalize_open_issue(item, account_id),
+        )
+
+    def _search_jql[T](
+        self,
+        jql: str,
+        fields: list[str],
+        limit: int,
+        convert: Callable[[dict[str, Any]], T | None],
+    ) -> tuple[T, ...]:
+        """Page through ``/search/jql`` until ``limit`` kept issues or the fixed page bound.
+
+        ``convert`` normalizes one raw issue, or returns ``None`` for one the caller drops.
+        """
+        result: list[T] = []
         next_page_token: str | None = None
         pages = 0
-        while len(result) < query.limit:
+        while len(result) < limit:
             pages += 1
-            if pages > 20:
+            if pages > _MAX_SEARCH_PAGES:
                 raise ConnectorFailure(
                     ReasonCode.MALFORMED_PROVIDER_DATA,
                     "Jira pagination exceeded the fixed page bound",
@@ -298,23 +339,23 @@ class JiraAdapter:
             body: dict[str, Any] = {
                 "jql": jql,
                 "fields": fields,
-                "maxResults": min(query.limit - len(result), 100),
+                "maxResults": min(limit - len(result), 100),
             }
             if next_page_token:
                 body["nextPageToken"] = next_page_token
             payload = request_json(
                 self._transport,
                 "POST",
-                f"{self._base_url}/rest/api/3/search/jql",
+                f"{self._base_url}{_SEARCH_ENDPOINT}",
                 headers=self._headers(),
                 json_body=body,
             )
             data = require_mapping(payload, "jira.search")
             for raw in require_list(data.get("issues") or [], "jira.search.issues"):
-                issue = self._normalize_issue(require_mapping(raw, "jira.issue"), account_id)
-                if issue.resolved_at and query.window.start <= issue.resolved_at < query.window.end:
-                    result.append(issue)
-                if len(result) >= query.limit:
+                item = convert(require_mapping(raw, "jira.issue"))
+                if item is not None:
+                    result.append(item)
+                if len(result) >= limit:
                     break
             raw_token = data.get("nextPageToken")
             next_page_token = raw_token if isinstance(raw_token, str) and raw_token else None
@@ -435,7 +476,30 @@ class JiraAdapter:
                 source_id,
                 self._clock(),
                 account_id,
-                "/rest/api/3/search/jql",
+                _SEARCH_ENDPOINT,
+            ),
+        )
+
+    def _normalize_open_issue(self, item: dict[str, Any], account_id: str) -> OpenIssue:
+        source_id = require_string(item.get("id"), "jira.issue.id")
+        fields = require_mapping(item.get("fields"), "jira.issue.fields")
+        return OpenIssue(
+            require_string(item.get("key"), "jira.issue.key"),
+            as_string(fields.get("summary")) or "",
+            _nested(fields.get("status"), "name"),
+            _nested(fields.get("status"), "statusCategory", "key"),
+            _nested(fields.get("issuetype"), "name"),
+            _nested(fields.get("priority"), "name"),
+            parse_optional_datetime(fields.get("updated"), "jira.issue.updated"),
+            _nested(fields.get("assignee"), "accountId"),
+            Provenance(
+                self.descriptor.provider_id,
+                self.descriptor.family,
+                self.descriptor.route,
+                source_id,
+                self._clock(),
+                account_id,
+                _SEARCH_ENDPOINT,
             ),
         )
 
@@ -612,6 +676,18 @@ def _default_jql(query: IssueQuery) -> str:
         f"assignee = {assignee} AND statusCategory = Done "
         f'AND resolved >= "{start}" AND resolved < "{end}" ORDER BY resolved DESC'
     )
+
+
+def _open_issues_jql(query: OpenIssueQuery) -> str:
+    """The fixed filter of the open-issue read, in a fixed clause order."""
+    clauses = ["assignee = currentUser()", "statusCategory != Done"]
+    if query.project is not None:
+        # The key already matched the exact project-key pattern; quoting it keeps a key that
+        # spells a JQL word, such as AND or IN, a plain value.
+        clauses.append(f'project = "{query.project}"')
+    if query.current_sprint:
+        clauses.append("sprint in openSprints()")
+    return " AND ".join(clauses) + " ORDER BY updated DESC"
 
 
 def _escape_jql(value: str | None) -> str:

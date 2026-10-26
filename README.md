@@ -100,6 +100,7 @@ The root wrapper is only a convenience alias and contains no provider logic:
 | `meeting.transcripts.*` (Microsoft) | yes | yes — different selector, see below |
 | `meeting.transcripts.*` (`google-meet`) | yes — Calendar + Drive APIs | no (official-only) |
 | `mail.categories.set` (write) | no — needs `Mail.ReadWrite` | yes, with `--allow-write` |
+| `external.issues.open.list` (Jira) | yes — REST v3, enhanced JQL | no (official-only) |
 | `external.issues.transitions.list` (Jira) | yes — REST v3 | no (official-only) |
 | `external.issues.transition` (Jira write) | yes, with `--allow-write`; API token only | no (official-only) |
 | `mail.draft.create` (Gmail write, `gmail-compose`) | yes, with `--allow-write` | no (official-only) |
@@ -145,6 +146,28 @@ solercia-connect run --provider microsoft.graph --capability mail.categories.set
 - Only the browser route serves it today. The official route needs `Mail.ReadWrite`, and adding that
   scope would invalidate every stored Outlook grant, so it waits for a scope decision. The HTTP
   service rejects the capability with 403.
+
+### List open Jira issues
+
+`external.issues.open.list` reads the issues assigned to the connected account whose status
+category is not Done. It is a read on the official route only; it takes no date window:
+
+```bash
+solercia-connect run --provider jira.cloud --capability external.issues.open.list \
+  --account user@example.com --project CP --sprint current --limit 50
+```
+
+- The default JQL is fixed: `assignee = currentUser() AND statusCategory != Done`, plus
+  `project = "<KEY>"` with `--project` and `sprint in openSprints()` with `--sprint current`, always
+  ordered by `updated DESC`.
+- `--project` takes one project key (`^[A-Z][A-Z0-9_]+$`). `--sprint` accepts only `current`.
+- `--jql` replaces the whole default filter, including the assignee and the open-only condition; it
+  cannot be blank and cannot be combined with `--project` or `--sprint`.
+- `--limit` is capped at 100. The read uses the same `/rest/api/3/search/jql` endpoint, page bound,
+  and `/myself` identity proof as `external.issues.search`.
+- Each record holds `key`, `summary`, `status`, `status_category` (the stable key: `new`,
+  `indeterminate`), `issue_type`, `priority`, `updated_at`, `assignee_account_id`, and
+  `provenance`.
 
 ### Change a Jira issue status: the second write
 

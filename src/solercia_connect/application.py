@@ -35,6 +35,7 @@ from solercia_connect.domain import (
     MailDraftRequest,
     MailDraftSendRequest,
     MailQuery,
+    OpenIssueQuery,
     QueryPayload,
     ReasonCode,
     ScmCommitQuery,
@@ -91,6 +92,10 @@ def run_application(
             raise ValueError("add, remove and replace apply only to mail.categories.set")
         if capability not in _ISSUE_CAPABILITIES and payload.get("issue") is not None:
             raise ValueError("issue applies only to the Jira transition capabilities")
+        if capability is not Capability.EXTERNAL_ISSUES_OPEN_LIST and any(
+            payload.get(name) is not None for name in ("project", "sprint")
+        ):
+            raise ValueError("project and sprint apply only to external.issues.open.list")
         if capability is not Capability.MAIL_DRAFT_CREATE and any(
             payload.get(name) is not None for name in ("cc", "bcc", "subject", "body")
         ):
@@ -535,6 +540,8 @@ def _query(
     limit = payload.get("limit", 50)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
         raise ValueError("limit must be an integer between 1 and 1000")
+    if capability is Capability.EXTERNAL_ISSUES_OPEN_LIST:
+        return _open_issues(account, payload, limit)
     optional_window_capabilities = {
         Capability.MEETING_TRANSCRIPTS_LIST,
         Capability.MEETING_TRANSCRIPT_GET,
@@ -651,6 +658,26 @@ def _categories_update(account: str | None, payload: dict[str, Any]) -> MailCate
         None if raw_replace is None else _category_names(raw_replace, "replace"),
         account,
         allow_write,
+    )
+
+
+def _open_issues(account: str | None, payload: dict[str, Any], limit: int) -> OpenIssueQuery:
+    """Build the open-issue read; the domain type validates the project key and the JQL."""
+    if payload.get("start") is not None or payload.get("end") is not None:
+        raise ValueError("external.issues.open.list takes no date window")
+    if payload.get("assignee") is not None:
+        raise ValueError(
+            "assignee does not apply to external.issues.open.list; it reads the connected account"
+        )
+    sprint = payload.get("sprint")
+    if sprint is not None and sprint != "current":
+        raise ValueError("sprint accepts only current")
+    return OpenIssueQuery(
+        payload.get("project"),
+        sprint == "current",
+        payload.get("jql"),
+        account,
+        min(limit, 100),
     )
 
 

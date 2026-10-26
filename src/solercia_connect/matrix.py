@@ -117,6 +117,13 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
     CapabilityRow(
         "Jira Cloud REST v3",
         "official",
+        "external.issues.open.list",
+        "implemented-offline",
+        "Own issues not Done, optional project and open sprint; official only; not live",
+    ),
+    CapabilityRow(
+        "Jira Cloud REST v3",
+        "official",
         "external.issues.transitions.list",
         "implemented-offline",
         "One exact issue key; current status plus transitions with fields; official only; not live",
