@@ -34,7 +34,7 @@ cómo crear los repositorios, Camilo eligió «Agregarlo a solercia-connect».
 | ID | Decisión | Estado |
 | --- | --- | --- |
 | R-D0 | La escritura nueva `scm.repositories.create` crea un repositorio git privado, vacío, en un proyecto de un workspace. No borra, no cambia permisos ni configuración y no hace push. | Aceptada por Camilo el 2026-10-25 |
-| R-D1 | Usa una conexión aparte, `bitbucket-admin`, con su propio token. Ese token lleva `read:user:bitbucket`, `read:workspace:bitbucket`, `read:repository:bitbucket` y `admin:repository:bitbucket`. La conexión `bitbucket` sigue siendo de solo lectura, igual que `gmail` frente a `gmail-compose`. | Decidido por el orquestador, siguiendo ese precedente |
+| R-D1 | Usa una conexión aparte, `bitbucket-admin`, con su propio token. Ese token lleva cinco alcances: `read:user:bitbucket`, `read:workspace:bitbucket`, `read:repository:bitbucket`, `read:project:bitbucket` y `admin:repository:bitbucket`. La conexión `bitbucket` sigue siendo de solo lectura, igual que `gmail` frente a `gmail-compose`. | Decidido por el orquestador, siguiendo ese precedente; `read:project:bitbucket` se agregó en R0 para la consulta previa del proyecto |
 | R-D2 | Reglas de la escritura: ver el detalle debajo de esta tabla. | Decidido por el orquestador |
 | R-D3 | El push queda fuera de Solercia Connect: lo hace `git` con la credencial que ya tiene guardada. | Decidido por el orquestador |
 
@@ -46,8 +46,14 @@ Reglas de la escritura (R-D2):
 - Siempre se fuerzan `is_private=true`, `scm=git` y `fork_policy=no_public_forks`.
 - Antes de crear se consulta si el repositorio existe. Si existe, falla con `repository_exists` y no
   lo toca.
-- Después de crear se verifica la respuesta. Si no coincide, falla de forma cerrada e informa que el
-  repositorio sí quedó creado.
+- Antes de crear se consulta el proyecto con `GET /workspaces/{workspace}/projects/{project_key}`,
+  que exige `read:project:bitbucket`. Si no existe, falla con `project_not_found`.
+- El slug se valida tal como llega: `[a-z0-9._-]+`, sin `.` ni `..`, sin mayúsculas, espacios, `/`
+  ni llaves, y sin longitud máxima, porque la especificación OpenAPI no declara patrón ni longitud.
+  La clave de proyecto es solo una clave (letras, dígitos y `_`), nunca un UUID.
+- Un 400 del `POST` se informa como `request_rejected` con un mensaje fijo, sin citar el cuerpo.
+- Después de crear se verifica la respuesta. Si no coincide, falla de forma cerrada con
+  `write_unverified` e informa que el repositorio sí quedó creado.
 
 ## Restricciones
 
@@ -66,7 +72,7 @@ Reglas de la escritura (R-D2):
 
 ## Tareas
 
-- [ ] **R0** ADR `docs/decisions/2026-10-25-escritura-creacion-repositorios-bitbucket.md`.
+- [x] **R0** ADR `docs/decisions/2026-10-25-escritura-creacion-repositorios-bitbucket.md`.
   - Enmendar el registro de plataforma, `AGENTS.md` (de tres a cuatro escrituras acotadas),
     `SECURITY.md` y el skill.
   - Agregar la prueba de política de documentos.
@@ -99,7 +105,21 @@ Reglas de la escritura (R-D2):
 | Tarea | Estado | Evidencia |
 | --- | --- | --- |
 | Exploración | Hecha | El push ya funciona por git; el alcance se verificó en OpenAPI |
+| R0 | Hecha | ADR y documentos de política; rojo con 3 fallos en `test_bitbucket_repo_create_policy_docs.py` (ADR inexistente, AGENTS.md sin «four» y skill sin las reglas nuevas) |
+
+Detalle:
+
+- **Pruebas existentes modificadas en R0, con autorización del orquestador:** la ADR cambia el
+  conteo de escrituras de tres a cuatro, y esas pruebas verificaban el texto anterior.
+  - `tests/test_bitbucket_policy_docs.py`, líneas 61 a 63: «three» pasó a «four» en AGENTS.md,
+    SECURITY.md y el skill. La función `test_policy_documents_add_bitbucket_without_a_fourth_write`
+    se renombró a `test_policy_documents_keep_bitbucket_reads_without_a_write`, porque su nombre
+    dejó de ser cierto.
+  - `tests/test_gmail_send_policy_docs.py`, líneas 48, 50 y 62: el mismo cambio de «three» a
+    «four».
+  - La prueba nueva de R0 verifica además que «exactly three bounded writes» ya no aparezca en
+    AGENTS.md. Ninguna otra línea de esos archivos cambió.
 
 ## Siguiente paso
 
-R0, a cargo de un escritor delegado.
+R1, la conexión `bitbucket-admin`.

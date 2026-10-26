@@ -1,11 +1,14 @@
 # Solercia Connect security boundary
 
 Solercia Connect reads institutional communication and service-management data. It has exactly
-three bounded writes: assigning Outlook categories to one message, the status transition of one
-Jira issue, and sending Gmail in two steps (a draft, then the send of that reviewed draft); see
+four bounded writes: assigning Outlook categories to one message, the status transition of one
+Jira issue, sending Gmail in two steps (a draft, then the send of that reviewed draft), and
+creating one private Bitbucket repository; see
 [Write exception: Outlook categories](#write-exception-outlook-categories),
-[Write exception: Jira issue transition](#write-exception-jira-issue-transition), and
-[Write exception: Gmail draft and send](#write-exception-gmail-draft-and-send). Treat OAuth
+[Write exception: Jira issue transition](#write-exception-jira-issue-transition),
+[Write exception: Gmail draft and send](#write-exception-gmail-draft-and-send), and
+[Write exception: Bitbucket repository creation](#write-exception-bitbucket-repository-creation).
+Treat OAuth
 grants, browser profiles, raw provider payloads, normalized output, and local API access as
 sensitive.
 
@@ -85,17 +88,23 @@ keyring, and the same env-file rules apply.
   a stored grant must contain all of the target's scopes. That route stays disabled until a
   separate scope decision. The Jira transition would need `write:jira-work`, which the Atlassian
   OAuth grant does not request, so an OAuth Jira profile cannot write; Jira API tokens can.
-- The only write scope is Google `gmail.compose`, requested solely by the separate `gmail-compose`
-  target (`openid`, `email`, `gmail.compose`, token key `gmail-compose:<account>`). The `gmail`
-  target keeps `gmail.readonly` alone, so no read grant can send.
+- The only write scopes are Google `gmail.compose`, requested solely by the separate
+  `gmail-compose` target (`openid`, `email`, `gmail.compose`, token key `gmail-compose:<account>`),
+  and Bitbucket `admin:repository:bitbucket`, held solely by the API token of the separate
+  `bitbucket-admin` target (token key `bitbucket-admin:<email>`). The `gmail` target keeps
+  `gmail.readonly` alone and the `bitbucket` token holds read scopes alone, so no read credential
+  can send mail or create a repository.
 - Teams transcripts require work/school accounts and tenant permission. Personal accounts and
   Microsoft tenant/admin policy blocks never route around policy. Google and Jira organizational
   blocks follow the [browser fallback](#browser-fallback) rules below.
 
 ### Bitbucket Cloud API token
 
-Bitbucket Cloud is read-only and official-only, as accepted in
-`docs/decisions/2026-10-26-conector-bitbucket.md`. It has no write and no browser route.
+Bitbucket Cloud is official-only, as accepted in
+`docs/decisions/2026-10-26-conector-bitbucket.md`, and has no browser route. The `bitbucket` target
+is read-only; its one write, the repository creation, runs on the separate `bitbucket-admin` target
+described in
+[Write exception: Bitbucket repository creation](#write-exception-bitbucket-repository-creation).
 
 - The credential is an Atlassian API token created with "Create API token with scopes" for the
   Bitbucket app, holding exactly `read:user:bitbucket`, `read:workspace:bitbucket`,
@@ -120,8 +129,8 @@ Bitbucket Cloud is read-only and official-only, as accepted in
 - The FastAPI adapter binds to loopback by default and rejects non-loopback host configuration.
 - HTTP never receives an API token: Jira and Bitbucket connect only in the CLI.
 - HTTP never writes: `POST /v1/run` rejects `mail.categories.set`, `external.issues.transition`,
-  `mail.draft.create`, and `mail.draft.send` with 403 before the application service runs, with or
-  without the interactive login opt-in.
+  `mail.draft.create`, `mail.draft.send`, and `scm.repositories.create` with 403 before the
+  application service runs, with or without the interactive login opt-in.
 - By default HTTP never opens or invokes a browser, starts interactive OAuth, or waits for
   login/MFA. Browser requests are rejected before application-service, runtime, or provider
   invocation. It returns an `action_required` envelope with the canonical CLI command.
@@ -278,6 +287,46 @@ filter, signature, or mailbox setting changes.
 - Errors and records never carry the full body or a raw provider body; the draft record carries a
   preview of the first 200 characters only.
 - HTTP rejects both capabilities by design; they run only in the canonical CLI and the library.
+
+## Write exception: Bitbucket repository creation
+
+Creating one private, empty git repository in an explicit project of a Bitbucket workspace
+(`scm.repositories.create`) is the fourth write, as accepted in
+`docs/decisions/2026-10-25-escritura-creacion-repositorios-bitbucket.md`. Nothing else is written:
+no repository is deleted, renamed, transferred, or changed, no permission, branch, restriction,
+webhook, project, or workspace setting changes, and Connect never pushes; `git` pushes with its own
+stored credential.
+
+- It runs only on the separate `bitbucket-admin` target and only over the official Bitbucket Cloud
+  API. The read-only `bitbucket` target does not offer it, and `--allow-browser-fallback` is
+  refused as `invalid_input`.
+- The `bitbucket-admin` credential is its own Atlassian API token with scopes for the Bitbucket app,
+  holding exactly `read:user:bitbucket`, `read:workspace:bitbucket`, `read:repository:bitbucket`,
+  `read:project:bitbucket`, and `admin:repository:bitbucket`. It is stored only in the
+  `SecretStore` under `bitbucket-admin:<email>`, apart from the read token under `bitbucket:<email>`,
+  and is read from `--token-env`, the hidden prompt, or `--token-stdin`, never from an argument or
+  over HTTP.
+- Every invocation needs `--allow-write`, off by default. Without it the command fails with
+  `write_not_authorized` before any registry or provider call. No environment variable or profile
+  stands in for it.
+- `--account` is required, and the identity is proven as for the reads (`/2.0/user`,
+  `/2.0/user/emails`, `/2.0/workspaces/{workspace}`) before anything else.
+- `--repo` takes one lower-case slug of letters, digits, `.`, `_`, and `-` (never `.`, `..`, a
+  slash, a space, or a braced UUID), and `--project` one project key; both are required and the
+  project has no default.
+- Before the write, `GET /repositories/{workspace}/{repo_slug}` must answer 404: a 200 fails with
+  `repository_exists` and nothing is touched. `GET /workspaces/{workspace}/projects/{project_key}`
+  must answer 200 with the same key, or the command fails with `project_not_found`.
+- The only write call is one `POST /repositories/{workspace}/{repo_slug}` whose body is exactly
+  `scm: git`, `is_private: true`, `fork_policy: no_public_forks`, and `project: {key}`. It is never
+  retried. A `5xx`, a timeout, a network failure, or an unreadable answer after it fails with
+  `write_unverified`, stating the repository may exist; check Bitbucket before any new attempt.
+- The answer must carry the same slug, workspace, and project key with `is_private: true`; any
+  mismatch fails with `write_unverified`, stating the repository was created and must be reviewed
+  in Bitbucket.
+- A `400` becomes `request_rejected` with a fixed message, and the clone URL in the record carries
+  no user name or password; no raw provider body is ever quoted.
+- HTTP rejects the capability by design; it runs only in the canonical CLI and the library.
 
 ## Never log or serialize
 

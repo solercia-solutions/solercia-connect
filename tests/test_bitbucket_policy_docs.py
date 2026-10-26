@@ -46,7 +46,7 @@ def test_the_adr_records_the_three_decisions_with_official_sources() -> None:
         assert voseo not in text, voseo
 
 
-def test_policy_documents_add_bitbucket_without_a_fourth_write() -> None:
+def test_policy_documents_keep_bitbucket_reads_without_a_write() -> None:
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
     platform = (ROOT / "docs/decisions/2026-08-23-solercia-platform-decisions.md").read_text(
@@ -58,9 +58,9 @@ def test_policy_documents_add_bitbucket_without_a_fourth_write() -> None:
         assert "Bitbucket" in text
     for text in (agents, security, platform):
         assert ADR_NAME in text
-    assert "exactly three bounded writes" in agents
-    assert "exactly\nthree bounded writes" in security
-    assert "There are exactly three writes" in skill
+    assert "exactly four bounded writes" in agents
+    assert "exactly\nfour bounded writes" in security
+    assert "There are exactly four writes" in skill
     for scope in READ_SCOPES:
         assert scope in security, scope
         assert scope in skill, scope

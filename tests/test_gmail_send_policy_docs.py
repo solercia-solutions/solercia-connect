@@ -45,9 +45,9 @@ def test_policy_documents_name_three_writes_and_the_separate_connection() -> Non
         encoding="utf-8"
     )
 
-    assert "exactly three bounded writes" in agents
+    assert "exactly four bounded writes" in agents
     assert "exactly two bounded writes" not in agents
-    assert "exactly\nthree bounded writes" in security
+    assert "exactly\nfour bounded writes" in security
     assert "## Write exception: Gmail draft and send" in security
     for text in (agents, security, platform):
         assert "mail.draft.create" in text
@@ -59,7 +59,7 @@ def test_policy_documents_name_three_writes_and_the_separate_connection() -> Non
 def test_the_skill_states_the_two_step_agent_workflow() -> None:
     skill = (ROOT / "agents/skills/solercia-connect/SKILL.md").read_text(encoding="utf-8")
 
-    assert "There are exactly three writes" in skill
+    assert "There are exactly four writes" in skill
     for token in (
         "solercia-connect connect gmail-compose <account>",
         "Confirm with the user which account sends the email",

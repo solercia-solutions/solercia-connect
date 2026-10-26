@@ -34,20 +34,26 @@ being the current working directory.
 - Keep exact timezone-aware end-exclusive ranges. **Empty remains empty**: if a range returns zero
   records, report zero. Never widen the window to find something.
 - Write large reads to a file with `--output`; never pour a month of mail through the context.
-- There are exactly three writes: `mail.categories.set` (the categories of one Outlook message),
-  `external.issues.transition` (the status of one Jira issue), and the Gmail pair
+- There are exactly four writes: `mail.categories.set` (the categories of one Outlook message),
+  `external.issues.transition` (the status of one Jira issue), the Gmail pair
   `mail.draft.create` / `mail.draft.send` (one draft, then the send of that reviewed draft, on the
-  separate `gmail-compose` connection). Add `--allow-write` only when the user asked for that exact
-  change in this conversation; never add it to a read, never run it over HTTP, and never retry a
-  `write_conflict` without reading the message or issue again.
+  separate `gmail-compose` connection), and `scm.repositories.create` (one new private Bitbucket
+  repository, on the separate `bitbucket-admin` connection). Add `--allow-write` only when the user
+  asked for that exact change in this conversation; never add it to a read, never run it over
+  HTTP, and never retry a `write_conflict` without reading the message or issue again.
 - Send Gmail only in two steps: draft, user review, then send after the user explicitly approves
   that draft id. Never send in loops, never invent recipients, and never pass `--allow-duplicate`
   without the user's explicit approval.
 - Transition a Jira issue only when the user explicitly asks for it, one issue per invocation.
   Never loop over issues in bulk unless the user listed each key. When unsure of the exact target
   status name, run `external.issues.transitions.list` for that issue first.
-- Bitbucket Cloud is read-only and official-only: never pass `--allow-write` or
-  `--allow-browser-fallback` to it.
+- The `bitbucket` target is read-only and official-only: never pass `--allow-write` or
+  `--allow-browser-fallback` to the `bitbucket` reads. Bitbucket has no browser route, so never
+  pass `--allow-browser-fallback` to `bitbucket-admin` either.
+- Create a Bitbucket repository only when the user explicitly asks for it, naming the workspace,
+  the repository slug and the project key, one repository per invocation. Never pick another slug
+  or project on your own: `repository_exists` and `project_not_found` are stops to report.
+  Solercia Connect never pushes; push with `git` and the credential it already stores.
 
 ## Canonical workflow
 

@@ -22,7 +22,7 @@ este registro fija la línea base aceptada al 2026-08-23.
 
 | Producto | Responsabilidad | Límite |
 | --- | --- | --- |
-| **Solercia Connect** | Runtime conector transversal para Outlook/Microsoft 365, Teams, Gmail, Google Calendar, Jira, Bitbucket Cloud (solo lectura, [ADR del 2026-10-26](2026-10-26-conector-bitbucket.md)) y GLPI. | Obtiene y normaliza hechos externos; no decide prioridades ni estados de trabajo. |
+| **Solercia Connect** | Runtime conector transversal para Outlook/Microsoft 365, Teams, Gmail, Google Calendar, Jira, Bitbucket Cloud (lecturas según el [ADR del 2026-10-26](2026-10-26-conector-bitbucket.md) y creación de repositorios según el [ADR del 2026-10-25](2026-10-25-escritura-creacion-repositorios-bitbucket.md)) y GLPI. | Obtiene y normaliza hechos externos; no decide prioridades ni estados de trabajo. |
 | **Solercia Command** | Producto de trabajo, proyectos, tareas, calendario y priorización; es el nombre aprobado del checkout anteriormente llamado `gestion_proyectos`. | Es propietario del comportamiento operativo de trabajo; no reimplementa conectores. |
 | **Solercia Security** | Producto separado que puede consumir contratos de integración. | No es una dependencia de runtime de Connect ni de Command. |
 
@@ -32,7 +32,11 @@ este registro fija la línea base aceptada al 2026-08-23.
 
 1. Solercia Connect concentra la integración determinista con los proveedores admitidos. Bitbucket
    Cloud se admitió el 2026-10-26, de solo lectura y solo por la API oficial, según
-   [`2026-10-26-conector-bitbucket.md`](2026-10-26-conector-bitbucket.md).
+   [`2026-10-26-conector-bitbucket.md`](2026-10-26-conector-bitbucket.md). Su única escritura, la
+   creación de repositorios (`scm.repositories.create`), corre sobre la conexión separada
+   `bitbucket-admin`, según
+   [`2026-10-25-escritura-creacion-repositorios-bitbucket.md`](2026-10-25-escritura-creacion-repositorios-bitbucket.md);
+   el target `bitbucket` sigue siendo de solo lectura.
 2. Solercia Command es el nombre de producto aprobado y `solercia-command` es el checkout local
    aprobado. Los identificadores históricos de base de datos, API, paquetes, despliegue, remotos,
    dominios o marca jurídica no se renombran por inferencia.
@@ -111,7 +115,14 @@ este registro fija la línea base aceptada al 2026-08-23.
    (`mail.draft.send`). Solo usa la API oficial y la conexión separada `gmail-compose` con
    `gmail.compose`; el target `gmail` sigue siendo de solo lectura. Exige `--allow-write` en cada
    invocación, fija el remitente en la cuenta conectada, verifica duplicados en Enviados antes de
-   enviar y no admite HTTP ni reintentos. Ninguna otra escritura queda autorizada.
+   enviar y no admite HTTP ni reintentos. El 2026-10-25 también se aceptó una cuarta excepción en
+   [`2026-10-25-escritura-creacion-repositorios-bitbucket.md`](2026-10-25-escritura-creacion-repositorios-bitbucket.md):
+   la creación de un repositorio git privado y vacío en un proyecto explícito de un workspace de
+   Bitbucket Cloud (`scm.repositories.create`). Solo usa la API oficial y la conexión separada
+   `bitbucket-admin`, con su propio API token; el target `bitbucket` sigue siendo de solo lectura.
+   Exige `--allow-write` en cada invocación, consulta antes que el repositorio no exista y que el
+   proyecto sí, fuerza un repositorio privado sin bifurcaciones públicas, verifica la respuesta y no
+   admite HTTP, reintentos ni push. Ninguna otra escritura queda autorizada.
 
 ### 4. Frontera de seguridad e identidad de cuenta
 
@@ -278,6 +289,8 @@ No deben presentarse como capacidades terminadas.
   excepción de escritura para el envío de correo de Gmail en dos pasos.
 - [`2026-10-26-conector-bitbucket.md`](2026-10-26-conector-bitbucket.md): conector de Bitbucket
   Cloud de solo lectura.
+- [`2026-10-25-escritura-creacion-repositorios-bitbucket.md`](2026-10-25-escritura-creacion-repositorios-bitbucket.md):
+  excepción de escritura para la creación de repositorios en Bitbucket Cloud.
 
 Las referencias anteriores amplían este registro. Si una descripción histórica queda menos
 precisa que una decisión aceptada aquí, debe corregirse mediante un cambio documental explícito,
