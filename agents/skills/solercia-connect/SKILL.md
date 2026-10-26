@@ -34,9 +34,13 @@ being the current working directory.
 - Keep exact timezone-aware end-exclusive ranges. **Empty remains empty**: if a range returns zero
   records, report zero. Never widen the window to find something.
 - Write large reads to a file with `--output`; never pour a month of mail through the context.
-- The only write is `mail.categories.set`. Add `--allow-write` only when the user asked for that
-  exact change in this conversation; never add it to a read, never run it over HTTP, and never
-  retry a `write_conflict` without reading the message again.
+- There are exactly two writes: `mail.categories.set` (the categories of one Outlook message) and
+  `external.issues.transition` (the status of one Jira issue). Add `--allow-write` only when the
+  user asked for that exact change in this conversation; never add it to a read, never run it over
+  HTTP, and never retry a `write_conflict` without reading the message or issue again.
+- Transition a Jira issue only when the user explicitly asks for it, one issue per invocation.
+  Never loop over issues in bulk unless the user listed each key. When unsure of the exact target
+  status name, run `external.issues.transitions.list` for that issue first.
 
 ## Canonical workflow
 
@@ -152,6 +156,7 @@ yet; until it ships, Playwright is not offered for Google Meet.
 | Interactive OAuth or browser login | Ask the user to run `connect TYPE ACCOUNT`; the user completes the provider interaction |
 | Existing read | Run the narrow capability; preserve record schema, provenance and receipt |
 | Category change | Only on an explicit user request; pass `--allow-write` for that one run |
+| Jira status change | Only on an explicit user request, one issue key per run with `--allow-write`; list the transitions first when the target name is uncertain |
 | Microsoft admin-consent failure | Use browser only when the user explicitly allowed it |
 | Google `admin_policy_enforced` or Jira API token blocked by the organization | Report the typed error; the browser route for these families is still being implemented |
 | Teams tenant policy or personal account | Stop with typed remediation; never bypass |

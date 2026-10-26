@@ -98,7 +98,11 @@ este registro fija la línea base aceptada al 2026-08-23.
    categorías, condicionado a la versión leída, después de verificar la identidad del buzón. El
    servicio HTTP la rechaza por diseño. La ruta oficial necesita `Mail.ReadWrite` y queda pendiente
    de una decisión de alcances, porque agregarlo al target `outlook` invalida las concesiones
-   existentes. Ninguna otra escritura queda autorizada.
+   existentes. El 2026-10-25 se aceptó una segunda excepción en
+   [`2026-10-25-escritura-transiciones-jira.md`](2026-10-25-escritura-transiciones-jira.md): la
+   transición de estado de un issue de Jira (`external.issues.transition`), solo por la API REST
+   oficial, con `--allow-write` en cada invocación, una clave por invocación, sin campos, sin HTTP,
+   sin reintentos y con lectura del estado antes y después. Ninguna otra escritura queda autorizada.
 
 ### 4. Frontera de seguridad e identidad de cuenta
 
@@ -259,6 +263,8 @@ No deben presentarse como capacidades terminadas.
   fallback de navegador para Google y Jira.
 - [`2026-10-25-modo-proyecto-secretos-en-archivo.md`](2026-10-25-modo-proyecto-secretos-en-archivo.md):
   modo proyecto con secretos en archivo.
+- [`2026-10-25-escritura-transiciones-jira.md`](2026-10-25-escritura-transiciones-jira.md):
+  excepción de escritura para la transición de estado de un issue de Jira.
 
 Las referencias anteriores amplían este registro. Si una descripción histórica queda menos
 precisa que una decisión aceptada aquí, debe corregirse mediante un cambio documental explícito,

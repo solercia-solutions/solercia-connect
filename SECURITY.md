@@ -1,9 +1,10 @@
 # Solercia Connect security boundary
 
-Solercia Connect reads institutional communication and service-management data. Its only write is
-assigning Outlook categories to one message; see [Write exception](#write-exception-outlook-categories).
-Treat OAuth grants, browser profiles, raw provider payloads, normalized output, and local API access
-as sensitive.
+Solercia Connect reads institutional communication and service-management data. It has exactly two
+bounded writes: assigning Outlook categories to one message, and the status transition of one Jira
+issue; see [Write exception: Outlook categories](#write-exception-outlook-categories) and
+[Write exception: Jira issue transition](#write-exception-jira-issue-transition). Treat OAuth grants,
+browser profiles, raw provider payloads, normalized output, and local API access as sensitive.
 
 ## Secret and configuration storage
 
@@ -78,7 +79,8 @@ keyring, and the same env-file rules apply.
 - No write scope is requested. The official route of the category write would need
   `Mail.ReadWrite`, and adding it to the `outlook` target invalidates every existing grant, because
   a stored grant must contain all of the target's scopes. That route stays disabled until a
-  separate scope decision.
+  separate scope decision. The Jira transition would need `write:jira-work`, which the Atlassian
+  OAuth grant does not request, so an OAuth Jira profile cannot write; Jira API tokens can.
 - Teams transcripts require work/school accounts and tenant permission. Personal accounts and
   Microsoft tenant/admin policy blocks never route around policy. Google and Jira organizational
   blocks follow the [browser fallback](#browser-fallback) rules below.
@@ -86,8 +88,8 @@ keyring, and the same env-file rules apply.
 ## Service and output
 
 - The FastAPI adapter binds to loopback by default and rejects non-loopback host configuration.
-- HTTP never writes: `POST /v1/run` rejects `mail.categories.set` with 403 before the application
-  service runs, with or without the interactive login opt-in.
+- HTTP never writes: `POST /v1/run` rejects `mail.categories.set` and `external.issues.transition`
+  with 403 before the application service runs, with or without the interactive login opt-in.
 - By default HTTP never opens or invokes a browser, starts interactive OAuth, or waits for
   login/MFA. Browser requests are rejected before application-service, runtime, or provider
   invocation. It returns an `action_required` envelope with the canonical CLI command.
@@ -141,8 +143,8 @@ keyring, and the same env-file rules apply.
     never included in a diagnostic.
   - It is read only from HTTPS requests whose host matches the provider allowlist, and it is sent
     only to endpoints on that same allowlist.
-  - It is used only for read-only calls to documented provider endpoints, plus the single
-    category write below when the same invocation also passes `--allow-write`.
+  - It is used only for read-only calls to documented provider endpoints, plus the category
+    write below when the same invocation also passes `--allow-write`.
 - Do not read `document.cookie`, browser local storage, session storage, or any other long-lived
   credential store. Do not persist cookies or profile contents outside the dedicated profile. Do
   not call retired or undocumented provider endpoints, except the scoped Google exception below.
@@ -164,10 +166,10 @@ mechanism is allowed.
 
 ## Write exception: Outlook categories
 
-Assigning categories to an existing Outlook message (`mail.categories.set`) is the only write, as
-accepted in `docs/decisions/2026-10-19-escritura-categorias-outlook.md`. Nothing else is written:
-no mail is sent, moved, marked, created, or deleted, and no master category, folder, calendar,
-file, or ticket changes.
+Assigning categories to an existing Outlook message (`mail.categories.set`) is one of the two
+writes, as accepted in `docs/decisions/2026-10-19-escritura-categorias-outlook.md`. Nothing else is
+written to the mailbox: no mail is sent, moved, marked, created, or deleted, and no master
+category, folder, calendar, file, or ticket changes.
 
 - Every invocation needs `--allow-write`, off by default. Without it the command fails with
   `write_not_authorized` before any registry, browser, or provider call. No environment variable or
@@ -177,6 +179,35 @@ file, or ticket changes.
   collection, sent with `If-Match` set to the version read just before. `412` or `409` fails with
   `write_conflict`; writes are never retried automatically.
 - When the computed list holds the same names the message already has, nothing is written.
+- HTTP rejects the capability by design; it runs only in the canonical CLI and the library.
+
+## Write exception: Jira issue transition
+
+Moving one existing Jira issue to another status through one workflow transition
+(`external.issues.transition`) is the second write, as accepted in
+`docs/decisions/2026-10-25-escritura-transiciones-jira.md`. Nothing else is written: no issue is
+created, edited, commented, assigned, archived, or deleted, no field is set (not even those of the
+transition screen), and no worklog, link, attachment, sprint, or project setting changes.
+
+- Every invocation needs `--allow-write`, off by default. Without it the command fails with
+  `write_not_authorized` before any registry or provider call. No environment variable or profile
+  stands in for it.
+- It runs only over the official Jira Cloud REST API. It is not on the Jira browser allowlist, so
+  `--allow-browser-fallback` never opens a browser route for it.
+- `--account` is required, and the Jira identity (`/rest/api/3/myself`) is proven before the reads
+  and the write.
+- `--issue` takes exactly one key matching `^[A-Z][A-Z0-9_]+-[1-9][0-9]*$`; lists, ranges, and JQL
+  are refused. A key that Jira resolves to another issue fails closed.
+- The only write call is one `POST` to the transitions of that issue whose body is exactly
+  `{"transition": {"id": "<id>"}}`. Zero or several transitions reaching the requested status, or a
+  transition that requires fields, fail closed before the write. `409` fails with
+  `write_conflict`; writes are never retried automatically.
+- When the issue already has the requested status, nothing is written.
+- The status is read again after the write; a mismatch fails with `write_unverified`, stating the
+  write may have applied.
+- Classic and scoped API tokens may write. An OAuth profile fails closed with
+  `write_scope_missing` before any provider call, because its grant lacks `write:jira-work`; the
+  default Atlassian OAuth scopes do not change.
 - HTTP rejects the capability by design; it runs only in the canonical CLI and the library.
 
 ## Never log or serialize
