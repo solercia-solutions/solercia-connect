@@ -208,7 +208,7 @@ class GoogleMeetAdapter:
                 continue
             file_id = require_string(attachment.get("fileId"), "meet.attachment.fileId")
             content = self._content(self._drive_export(file_id))
-            speakers = _speakers(content)
+            speakers = meet_transcript_speakers(content)
             source_id = f"meet:{event_id}:{file_id}"
             result.append(
                 MeetingTranscript(
@@ -297,7 +297,12 @@ def _event_in_window(event: dict[str, Any], query: TranscriptQuery) -> bool:
     return query.window.start <= start < query.window.end
 
 
-def _speakers(content: str) -> tuple[str, ...]:
+def meet_transcript_speakers(content: str) -> tuple[str, ...]:
+    """Name the speakers of a Meet transcript text, in order of first turn.
+
+    Both Google routes call this on the text they read, so the same transcript yields the same
+    speakers whichever route served it.
+    """
     speakers: dict[str, str] = {}
     for match in _TURN_LINE.finditer(content):
         name = match.group(1).strip()
