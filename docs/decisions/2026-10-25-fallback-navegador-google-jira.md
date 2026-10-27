@@ -218,6 +218,11 @@ trabajo ordena la implementación: primero la ruta oficial de Jira y Google (T2.
 la base de navegador genérica (T1.x) y por último las rutas de navegador de Jira (T3.x) y Google
 (T5.x).
 
+Al 2026-10-26, la ruta de navegador de Google Meet (T5.3) está implementada y probada offline en
+`providers/google_browser/`, con la sonda de identidad del botón de cuenta. La matriz la declara
+`implemented-offline` hasta que Camilo ejecute las compuertas en vivo T5.0 y T5.1. Gmail, Calendar
+y Jira siguen sin ruta de navegador.
+
 ### Validación en vivo pendiente
 
 | Tarea | Qué debe demostrar |

@@ -41,7 +41,8 @@ uv build
 - `providers/` contains vendor adapters; vendor payloads never cross this boundary.
 - Browser fallback covers Microsoft, Google, and Jira per
   `docs/decisions/2026-10-25-fallback-navegador-google-jira.md`, with one package per family;
-  `providers/m365_browser/` is the Microsoft one.
+  `providers/m365_browser/` is the Microsoft one and `providers/google_browser/` the Google one,
+  which serves Meet transcripts only.
 - No adapter owns persistence or transactions. This first slice has no database.
 
 ## Non-negotiable conventions
