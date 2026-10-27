@@ -113,6 +113,7 @@ Reglas de la escritura (R-D2):
 | R2 | Hecha | `6897b12`: capacidad `scm.repositories.create`; rojo por `ImportError` de `ScmRepositoryCreateRequest` en `test_bitbucket_repo_create.py`; cobertura de `bitbucket_admin.py` al 100 % |
 | R3 | Hecha | `d3a6612`: runbook, matriz, README, guía de uso, runbook de Outlook y skill; rojo con 4 fallos en `test_bitbucket_repo_create_wiring.py`. Compuertas finales: 1.520 pruebas, cobertura 90 %, `ruff` y `mypy` limpios |
 | Verificación del orquestador | Hecha | Repitió las compuertas: 1.520 pruebas, cobertura 89,52 %, `ruff` y `mypy` limpios. Las únicas líneas quitadas de pruebas existentes son las seis autorizadas y el renombre. Sin atribución en los commits. Reinstaló la CLI global y el skill. Desde `pandora_proxy`, `bitbucket-admin` queda en `action_required` y las demás conexiones en `connected_official` |
+| Integración | Hecha | Merge `3affac0` de `feat/google-jira-fallback` (`3d510fa..70a8481`, ruta de navegador de Google Meet), sin conflictos. Compuertas: 1.613 pruebas, cobertura 89,95 %, `ruff` y `mypy` limpios. Se reinstalaron la CLI global y el skill, que ahora tienen Bitbucket y Meet por navegador |
 
 Detalle:
 
@@ -171,10 +172,10 @@ Detalle:
 
 ## Siguiente paso
 
-- Camilo crea el token `bitbucket-admin` con los cinco alcances, lo agrega como
-  `BITBUCKET_ADMIN_API_TOKEN` y conecta.
-- `migracion-angular-pandora` ya recibió las instrucciones. Creará `pandora_auth` y
-  `pandora_auth_guard` en el proyecto `PAN` y les hará push con git.
+- El token `bitbucket-admin` ya está conectado. Camilo revisa el permiso de creación de
+  repositorios de su cuenta en el proyecto `PAN`, o un administrador crea los repositorios.
+- Después, `migracion-angular-pandora` creará `pandora_auth` y `pandora_auth_guard` en el
+  proyecto `PAN` y les hará push con git.
 - Falta confirmar en vivo:
   - la forma del 400;
   - si la clave de proyecto distingue mayúsculas;
