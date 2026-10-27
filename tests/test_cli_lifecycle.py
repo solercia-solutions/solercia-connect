@@ -480,7 +480,17 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
     assert cli._target_for_provider("unknown", None) is None
 
 
-def test_cli_rejects_google_meet_browser_fallback() -> None:
+def test_cli_passes_google_meet_browser_fallback_to_the_application(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Google Meet has a browser route now; the CLI forwards the explicit flag unchanged."""
+    received: dict[str, Any] = {}
+
+    def application(payload: dict[str, Any]) -> ResultEnvelope:
+        received.update(payload)
+        return ResultEnvelope.success(operation="run", provider="google-meet")
+
+    monkeypatch.setattr(cli, "run_application", application)
     result = runner.invoke(
         cli.app,
         [
@@ -488,20 +498,21 @@ def test_cli_rejects_google_meet_browser_fallback() -> None:
             "--provider",
             "google.meet",
             "--capability",
-            "meeting.transcript.get",
+            "meeting.transcripts.list",
             "--account",
             "user@example.com",
-            "--meeting-id",
-            "meeting-1",
+            "--start",
+            "2026-10-26T00:00:00-05:00",
+            "--end",
+            "2026-10-27T00:00:00-05:00",
             "--allow-browser-fallback",
         ],
         env={},
     )
 
-    assert result.exit_code == 2
-    payload = json.loads(result.stdout)
-    assert payload["error"]["code"] == "invalid_input"
-    assert "browser" in payload["error"]["message"].casefold()
+    assert result.exit_code == 0
+    assert received["type"] == "google-meet"
+    assert received["allow_browser_fallback"] is True
 
 
 def test_legacy_query_helper_fails_closed_on_an_unknown_capability() -> None:

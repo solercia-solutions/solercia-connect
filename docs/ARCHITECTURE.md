@@ -128,8 +128,10 @@ Microsoft to Google and Jira, with one browser package and one profile root per 
 | Google | `mail.sent.list`, `calendar.events.list`, `meeting.transcripts.list`, `meeting.transcript.get` |
 | Jira | `external.issues.search` |
 
-A family's route exists only once its browser adapter does (`browser_routes.py`). Today that is
-Microsoft alone, so a Google or Jira run that is allowed by policy ends in
+A target's route exists only once its family's browser adapter serves one of the target's
+capabilities (`browser_routes.py`). Today that is every Microsoft target and Google Meet
+(`providers/google_browser/`, Calendar web and Docs `mobilebasic` per the 2026-10-26 precision of
+D1). A Gmail, Google Calendar or Jira run that is allowed by policy ends in
 `browser_capability_not_implemented`. The decision's D0.1 adds Google `admin_policy_enforced` and
 a Jira API token blocked by organization policy as organizational permission not available,
 eligible like `admin_consent_required`.

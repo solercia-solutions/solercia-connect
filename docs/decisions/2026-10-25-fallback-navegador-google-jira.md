@@ -103,7 +103,8 @@ después de revisar esta evidencia.
    **solo para Google y solo de lectura**, limitada a tres mecanismos:
    - **Google Calendar:** la exportación ICS del calendario.
    - **Google Meet:** la exportación a texto plano del documento de Docs que contiene la
-     transcripción. Este mecanismo se probó en vivo el 2026-09-02.
+     transcripción. Este mecanismo se probó en vivo el 2026-09-02. La prueba en vivo del
+     2026-10-26 lo precisó: ver «Precisión del 2026-10-26: mecanismo de Google Meet».
    - **Gmail:** el listado de enviados sale del DOM de la búsqueda `in:sent after: before:` y el
      cuerpo completo sale de la descarga del mensaje original (RFC 822).
 
@@ -123,6 +124,37 @@ después de revisar esta evidencia.
    devuelva la identidad de la sesión web. La sonda se elige y se prueba en vivo en la tarea T5.1.
    Mientras esa prueba no exista, la ruta de navegador de Google permanece cerrada: responde con un
    fallo tipado y no lee datos.
+
+## Precisión del 2026-10-26: mecanismo de Google Meet
+
+- **Estado:** registrada el 2026-10-26 a partir de la prueba en vivo de ese día, hecha con una
+  cuenta de Google Workspace en un perfil de Chrome con la sesión iniciada por el usuario. Queda
+  pendiente la confirmación de Camilo; el documento de trabajo la lista como pregunta abierta.
+- **Qué se observó:**
+  - Pedida desde la página, la exportación a texto (`/document/d/{id}/export?format=txt`) responde
+    302 hacia una URL firmada de `googleusercontent.com` y el navegador la bloquea por CORS. Desde
+    la página no sirve.
+  - La vista `https://docs.google.com/document/d/{id}/mobilebasic` presenta el documento como HTML
+    simple. Su texto visible trae el título, «Asistentes», la lista de asistentes, «Transcripción»,
+    los turnos «Nombre: texto», una marca de tiempo cada cinco minutos y el cierre de la reunión.
+    En `/edit` el documento se dibuja en un canvas y su texto no se puede extraer.
+  - La vista diaria de Calendar web (`/calendar/u/0/r/day/AAAA/M/D`) muestra cada evento como un
+    botón. El detalle del evento trae los adjuntos «… - Recording» (Drive) y «… - Transcript»
+    (Docs) y el enlace de Meet.
+  - Calendar web y Drive web cargan sus datos con API internas (`sync.fetcheventrange`,
+    `calendar-pa.clients6.google.com`, `drivefrontend-pa.clients6.google.com`). Esas API no tienen
+    contrato y exigen una cabecera derivada de las cookies de la sesión.
+- **Precisión de D1 para Meet.** La excepción de Meet cubre exactamente dos lecturas de página:
+  1. el descubrimiento por el DOM de la vista diaria de Calendar web y del detalle de cada evento,
+     del que solo se toma el adjunto de transcripción;
+  2. el texto visible de la vista `mobilebasic` del documento de la transcripción.
+
+  Quedan excluidas las API internas de Calendar y Drive, toda lectura de cookies o cálculo de
+  cabeceras a partir de ellas, y las URL firmadas de la exportación. La exportación ICS de Calendar
+  y el mecanismo de Gmail de D1 no cambian.
+- **Prueba de identidad.** La sonda de T5.1 lee la cuenta del botón de cuenta de la barra de Google
+  en Calendar web y exige que coincida con la cuenta pedida. Su validación en vivo sigue pendiente;
+  mientras tanto, cualquier discrepancia del selector termina en un fallo tipado y en cero lecturas.
 
 ## Fuentes oficiales
 
@@ -185,6 +217,11 @@ Esta decisión no implementa código. Al 2026-10-25, `runtime.py` sigue limitand
 trabajo ordena la implementación: primero la ruta oficial de Jira y Google (T2.x y T4.x), después
 la base de navegador genérica (T1.x) y por último las rutas de navegador de Jira (T3.x) y Google
 (T5.x).
+
+Al 2026-10-26, la ruta de navegador de Google Meet (T5.3) está implementada y probada offline en
+`providers/google_browser/`, con la sonda de identidad del botón de cuenta. La matriz la declara
+`implemented-offline` hasta que Camilo ejecute las compuertas en vivo T5.0 y T5.1. Gmail, Calendar
+y Jira siguen sin ruta de navegador.
 
 ### Validación en vivo pendiente
 

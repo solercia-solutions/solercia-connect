@@ -98,7 +98,7 @@ The root wrapper is only a convenience alias and contains no provider logic:
 | `calendar.events.list` | yes | yes |
 | `files.search` / `files.get` | yes | yes |
 | `meeting.transcripts.*` (Microsoft) | yes | yes — different selector, see below |
-| `meeting.transcripts.*` (`google-meet`) | yes — Calendar + Drive APIs | no (official-only) |
+| `meeting.transcripts.*` (`google-meet`) | yes — Calendar + Drive APIs | yes — Calendar web + Docs `mobilebasic`, window only |
 | `mail.categories.set` (write) | no — needs `Mail.ReadWrite` | yes, with `--allow-write` |
 | `external.issues.open.list` (Jira) | yes — REST v3, enhanced JQL | no (official-only) |
 | `external.issues.transitions.list` (Jira) | yes — REST v3 | no (official-only) |
@@ -247,13 +247,21 @@ That is also why a meeting the account merely attended is readable: the site coo
 the organizer's `driveId` and item id directly. Recordings the account owns and recordings shared
 with it are both reported, and `include_shared: false` narrows the read to its own.
 
-Google Meet is a separate official-only target (`google-meet`, alias `meet`). It discovers
+Google Meet is a separate target (`google-meet`, alias `meet`). Its official route discovers
 transcript Google Docs from Calendar event attachments and exports them with Drive using
 `calendar.events.readonly` and `drive.readonly`. Use `--meeting-id` or an exact end-exclusive
 `--start`/`--end` window; `--drive-id` and `--item-id` are rejected. Results are `text/plain`
 speaker turns, with no synthesized timestamps. Missing permissions are typed failures with
-remediation to reconnect the Google OAuth profile; a zero-result window remains empty. Google
-Meet never uses Playwright, even when browser fallback is enabled.
+remediation to reconnect the Google OAuth profile; a zero-result window remains empty.
+
+When the organization blocks the Google app, `google-meet` also has a supervised browser route
+(decision 2026-10-25, D1 as made precise on 2026-10-26), behind the same double opt-in as
+Microsoft. It reads the Calendar web day view and each event's detail to find the transcript
+attachment, then the visible text of the document's Docs `mobilebasic` view; it never calls
+Google's internal APIs or reads cookies. It takes a window only (31 days at most) and returns the
+official record shape, except that `recorded_at` is the stamp Meet writes in the document name and
+`organizer` stays `null`. Its identity probe and selectors still wait for live proof; see the
+[Google Meet runbook](docs/runbooks/google-meet.md).
 
 Both Microsoft routes answer with speaker-named WebVTT. The drive-backed rendition that carries speakers is
 JSON, so it is converted rather than passed through — the WebVTT that surface serves directly has
@@ -341,7 +349,7 @@ interchangeable: a mail token is never reused for a drive call.
 | Teams | Device-code OAuth; known-meeting transcript list/download using `OnlineMeetingTranscript.Read.All` | Recording transcripts over the SharePoint drive, own and shared, by item or by period | Drive transcript contract verified live against a work tenant; official route pending admin proof |
 | Gmail | Desktop OAuth loopback with state + PKCE; read-only sent-mail and inbox capabilities | None | Pending dedicated account proof |
 | Google Calendar | Desktop OAuth loopback with state + PKCE; read-only event capability | None | Pending dedicated account proof |
-| Google Meet | Desktop OAuth loopback with state + PKCE; Calendar attachment discovery and Drive text export (`text/plain`) | None (official-only) | Offline contract verified; third-party transcript export pending |
+| Google Meet | Desktop OAuth loopback with state + PKCE; Calendar attachment discovery and Drive text export (`text/plain`) | Calendar web event detail and Docs `mobilebasic` text, by window | Offline contracts verified; browser identity probe and selectors pending live proof |
 | Jira | API-token or OAuth connection; JQL search, transition listing, and one-issue transition write (API token) | None | Pending supported-site proof |
 | Bitbucket Cloud | API token with Bitbucket scopes; read-only repositories, pull requests, and commits; repository creation over the separate `bitbucket-admin` token | None (official-only) | Reads verified against the IDARTES workspace; creation pending its first live run |
 | GLPI | Existing app/user-token session compatibility | None | Pending supported-installation proof |
@@ -366,7 +374,7 @@ It never reads a `.env`, a folder below the git root, or a folder that git track
 | `SOLERCIA_CONNECT_GOOGLE_CLIENT_ID` | Google Desktop app client ID |
 | `SOLERCIA_CONNECT_GOOGLE_CLIENT_SECRET` | Optional when required by the chosen Desktop client configuration |
 | `SOLERCIA_CONNECT_ENV_FILE` | Explicit environment file path |
-| `SOLERCIA_CONNECT_BROWSER_FALLBACK` | Makes the Microsoft browser route locally available; it never authorizes an invocation |
+| `SOLERCIA_CONNECT_BROWSER_FALLBACK` | Makes the Microsoft and Google Meet browser routes locally available; it never authorizes an invocation |
 | `SOLERCIA_CONNECT_M365_PROFILE_DIR` | Explicit root for dedicated Microsoft browser profiles |
 | `SOLERCIA_CONNECT_GOOGLE_PROFILE_DIR` | Explicit root for dedicated Google browser profiles |
 | `SOLERCIA_CONNECT_JIRA_PROFILE_DIR` | Explicit root for dedicated Jira browser profiles |
@@ -446,6 +454,15 @@ solercia-connect run \
   --capability meeting.transcript.get \
   --meeting-id EVENT_ID \
   --account user@example.com
+
+# Google Meet browser route: Calendar web -> Docs mobilebasic, by window only.
+solercia-connect run \
+  --provider google.meet \
+  --capability meeting.transcripts.list \
+  --start '2026-10-26T00:00:00-05:00' \
+  --end '2026-10-27T00:00:00-05:00' \
+  --account user@example.com \
+  --allow-browser-fallback
 ```
 
 ## Loopback HTTP adapter

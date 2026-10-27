@@ -194,7 +194,7 @@ def test_doctor_reports_loopback_api_security_and_profile_state(tmp_path: Path) 
     assert "local-test-key" not in str(report)
 
 
-def test_doctor_exposes_google_meet_official_readiness_without_browser_checks(
+def test_doctor_exposes_google_meet_official_readiness_and_a_disabled_browser_route(
     tmp_path: Path,
 ) -> None:
     settings = load_settings(
@@ -209,7 +209,7 @@ def test_doctor_exposes_google_meet_official_readiness_without_browser_checks(
         ProfileStore.from_settings(settings),
         module_available=lambda name: name == "keyring",
         keyring_probe=lambda: (True, "test-backend"),
-        browser_probe=lambda: pytest.fail("Google Meet must not probe Playwright"),
+        browser_probe=lambda: pytest.fail("A disabled browser route must not probe Playwright"),
     ).inspect("google-meet", "user@example.com")
     checks = {check.name: check for check in report.checks}
 
@@ -220,8 +220,9 @@ def test_doctor_exposes_google_meet_official_readiness_without_browser_checks(
     )
     assert "https://www.googleapis.com/auth/calendar.events.readonly" in report.oauth_scopes
     assert "https://www.googleapis.com/auth/drive.readonly" in report.oauth_scopes
-    assert "browser_profile" not in checks
-    assert "microsoft_browser_route" not in checks
+    # Google Meet has a browser route, reported but not probed while the route is disabled.
+    assert checks["browser_profile"].status in {"ready", "missing"}
+    assert checks["microsoft_browser_route"].status == "disabled"
     assert checks["keyring_package"].status == "ready"
     assert checks["keyring_backend"].status == "ready"
 

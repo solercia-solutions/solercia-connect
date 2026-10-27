@@ -10,7 +10,7 @@ from typing import Any, Protocol, cast
 from urllib.parse import urlsplit
 
 from solercia_connect.auth import BasicAuthProvider
-from solercia_connect.browser_profile import microsoft_browser_profile_path
+from solercia_connect.browser_profile import browser_profile_path, microsoft_browser_profile_path
 from solercia_connect.browser_routes import has_browser_route, target_family
 from solercia_connect.config import (
     BITBUCKET_TARGETS,
@@ -52,6 +52,10 @@ from solercia_connect.providers.bitbucket import (
 )
 from solercia_connect.providers.gmail_compose import GmailComposeAdapter
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
+from solercia_connect.providers.google_browser import (
+    GoogleBrowserAdapter,
+    PlaywrightGoogleBrowserDriver,
+)
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
 from solercia_connect.providers.jira import (
     JiraAdapter,
@@ -77,8 +81,8 @@ _GOOGLE_TARGETS = GOOGLE_TARGETS
 GOOGLE_POLICY_BLOCK_REMEDIATION = (
     "If Google showed admin_policy_enforced or org_internal instead of returning here, the "
     "organization blocks this app; see the browser fallback route in "
-    "docs/decisions/2026-10-25-fallback-navegador-google-jira.md (--allow-browser-fallback once "
-    "the Google browser route is available)."
+    "docs/decisions/2026-10-25-fallback-navegador-google-jira.md (google-meet only, with "
+    "--allow-browser-fallback)."
 )
 
 
@@ -183,6 +187,15 @@ class ConnectionService:
                 normalized,
                 allow_browser_fallback=allow_browser_fallback,
             )
+        if (
+            parsed in GOOGLE_TARGETS
+            and self._settings.google_client_id is None
+            and has_browser_route(parsed)
+            and self._browser_route_authorized(allow_browser_fallback)
+        ):
+            # Like Microsoft without a client ID: no OAuth app, so the supervised browser is the
+            # route the caller explicitly authorized.
+            return self._browser_fallback(parsed, normalized)
         missing = self._missing_configuration(parsed)
         if missing:
             return ResultEnvelope.failure(
@@ -547,7 +560,7 @@ class ConnectionService:
                         data={"interactive_flow_started": False},
                         error=ErrorDetail(
                             "configuration_invalid",
-                            "Microsoft browser fallback is not globally available",
+                            "Browser fallback is not globally available",
                             False,
                             remediation=(
                                 "SOLERCIA_CONNECT_BROWSER_FALLBACK=true solercia-connect status "
@@ -711,7 +724,7 @@ class ConnectionService:
                 parsed,
                 normalized,
                 ReasonCode.CAPABILITY_NOT_IMPLEMENTED,
-                "Browser login is available only for Microsoft targets",
+                "Browser login is available only for Microsoft targets and Google Meet",
                 (connect_command(parsed, normalized),),
                 "capability",
             )
@@ -738,7 +751,7 @@ class ConnectionService:
                 data={"interactive_flow_started": False},
                 error=ErrorDetail(
                     "configuration_invalid",
-                    "Microsoft browser fallback is not globally available",
+                    "Browser fallback is not globally available",
                     False,
                     ("SOLERCIA_CONNECT_BROWSER_FALLBACK",),
                     (
@@ -1158,10 +1171,20 @@ class ConnectionService:
         parsed: ConnectionType,
         account: str,
     ) -> BrowserProviderAdapter:
-        if target_family(parsed) is not ProviderFamily.MICROSOFT:
+        family = target_family(parsed)
+        if not has_browser_route(parsed) or family not in {
+            ProviderFamily.MICROSOFT,
+            ProviderFamily.GOOGLE,
+        }:
             raise ConnectorFailure(
                 ReasonCode.BROWSER_CAPABILITY_NOT_IMPLEMENTED,
                 f"No browser adapter exists for {parsed.value}",
+            )
+        if family is ProviderFamily.GOOGLE:
+            return GoogleBrowserAdapter(
+                PlaywrightGoogleBrowserDriver(),
+                profile_dir=browser_profile_path(self._settings, family, account),
+                expected_account=account,
             )
         return Microsoft365BrowserAdapter(
             PlaywrightBrowserDriver(),

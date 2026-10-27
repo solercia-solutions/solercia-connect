@@ -241,12 +241,14 @@ def test_provenance_is_the_only_place_the_route_is_visible() -> None:
     assert official.provenance.family is browser.provenance.family
 
 
-def test_google_meet_matrix_row_is_official_and_offline_honest() -> None:
+def test_google_meet_matrix_rows_are_offline_honest() -> None:
     rows = [row for row in CAPABILITY_MATRIX if row.capability == "meeting.transcripts.*"]
     assert [(row.provider, row.channel, row.v0_1_status) for row in rows] == [
         ("Microsoft Graph", "official", "implemented-offline"),
         ("Google Calendar + Drive APIs", "official", "implemented-offline"),
         ("Microsoft 365 Web", "browser", "implemented"),
+        # Not proven live yet: the identity probe and the selectors wait for tasks T5.0 and T5.1.
+        ("Google Calendar + Docs Web", "browser", "implemented-offline"),
     ]
 
 

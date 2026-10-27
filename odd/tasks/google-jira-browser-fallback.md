@@ -205,9 +205,15 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
   Playwright. Si Google bloquea el navegador («This browser or app may not be secure»), la fase se
   detiene.
 - [ ] **T5.1** Prueba de identidad de la sesión de Google, validada en vivo.
+  - Sonda implementada el 2026-10-26 (commit `00e8e36`): botón de cuenta de la barra de Google en
+    Calendar web. Falta la validación en vivo.
 - [ ] **T5.2** Leer `calendar.events.list` por la exportación ICS.
-- [ ] **T5.3** Leer `meeting.transcripts.*` exportando el documento a texto (ya probado en vivo el
-  2026-09-02).
+- [x] **T5.3** Leer `meeting.transcripts.*` por la página, según la precisión de D1 del
+  2026-10-26 en la ADR (implementada offline; ver «Detalle de T5.3»):
+  - descubrir por la vista diaria de Calendar web y el detalle de cada evento, tomando solo el
+    adjunto de transcripción;
+  - leer el texto visible de la vista `mobilebasic` del documento;
+  - sin API internas, sin cookies y sin URL firmadas.
 - [ ] **T5.4** Leer Gmail `mail.sent.list` por navegador.
   - El listado sale del DOM de la búsqueda `in:sent after: before:`.
   - El cuerpo completo sale de la descarga del mensaje original (RFC 822).
@@ -773,6 +779,43 @@ Detalle de T7.6 (commit `5e1c367`) y T7.7 (commit `80d4103`):
   - quitar la línea de `~/.zshrc`
 - **Cuando la rama se integre:** reinstalar desde `main` y volver a copiar el skill.
 
+Detalle de T5.3 (commits `68ca937`, `00e8e36` y `19544f2`, más la documentación):
+
+- **Origen:** prueba en vivo del 2026-10-26 hecha por el orquestador con la cuenta de Workspace de
+  IDARTES en un perfil de Chrome con la sesión iniciada por el usuario. La exportación a texto
+  falla por CORS desde la página; la vista `mobilebasic` sí entrega el texto.
+- **Decisión primero:** `68ca937` precisa D1 en la ADR y en `SECURITY.md` antes del código.
+- **Paquete `providers/google_browser/`** (`00e8e36`):
+  - `selectors.py`: versión `google-web-2026.10-v1`, hosts permitidos y selectores en español e
+    inglés.
+  - `parsing.py`: nombre del documento con su marca de tiempo, ID del documento, referencia del
+    evento, normalización del texto y días de la ventana.
+  - `driver.py`: Playwright solo observa el DOM; la navegación queda limitada a Calendar y Docs.
+  - `adapter.py`: identidad, descubrimiento por ventana, lectura y registro con el contrato de la
+    ruta oficial.
+- **Conexión con las superficies** (`19544f2`): `has_browser_route` exige que el adaptador de la
+  familia sirva alguna capacidad del destino, así que solo `google-meet` gana la ruta. `connect`
+  usa el navegador sin cliente de Google o ante `admin_consent_required`, y `bootstrap` registra el
+  adaptador para la conexión por navegador.
+- **Pruebas existentes adaptadas:** las que fijaban a Meet como solo oficial (gates, aplicación,
+  CLI, servicio, doctor, remediación de política y fila de la matriz). Gmail y Calendar conservan
+  sus rechazos.
+- **Compuertas:** 1381 pruebas aprobadas y 4 excluidas, cobertura de ramas 89 %, `ruff format
+  --check`, `ruff check` y `mypy src` limpios.
+- **Tamaño:** unas 2.500 líneas, de las cuales unas 1.380 son pruebas. Supera la heurística de 400
+  porque el paquete, su driver y sus fixtures forman una sola unidad; se partió en paquete y
+  conexión.
+- **Brechas y preguntas abiertas:**
+  - La sonda de identidad y el atributo `data-eventid` no se observaron en la prueba del
+    2026-10-26; los valida T5.1.
+  - `recorded_at` sale de la marca del nombre del documento y `organizer` queda en `null`: son las
+    dos diferencias con la ruta oficial.
+  - `--meeting-id` no está disponible en esta ruta.
+  - El enlace de la grabación no tiene campo en el esquema; no se agregó.
+  - La ruta oficial solo reconoce títulos con «transcript» y no los que terminan en
+    «Transcripción».
+  - El check de doctor de la ruta se sigue llamando `microsoft_browser_route` (T6.1).
+
 ### Rebanadas de entrega (`feature-branch-chain`)
 
 | Rebanada | Commits | Líneas | Contenido |
@@ -783,6 +826,7 @@ Detalle de T7.6 (commit `5e1c367`) y T7.7 (commit `80d4103`):
 | R4 | `675e80e`, `8fa6b87` | ~1.770 | OAuth de Atlassian y bloqueo de política en Google |
 | R5 | `43acc56`, `1d31b86`, `88955a3` | ~3.070 | Base de navegador por familias (Fase 1) |
 | R6 | `a6142b4` a `6ad07e3`, `0ab30c7` | ~2.730 | Modo proyecto (Fase 7) |
+| R7 | `68ca937`, `00e8e36`, `19544f2` y la documentación | ~2.700 | Google Meet por navegador (T5.3) |
 
 ## Seguimiento fuera de alcance
 
@@ -816,3 +860,7 @@ Hay una limitación: Gmail solo ofrece `mail.sent.list`, y la bandeja de entrada
 Outlook.
 
 Siguiente paso técnico: T3.1, el adaptador de navegador para Jira.
+
+Al 2026-10-26, T5.3 está implementada offline. Para usarla con datos reales, Camilo ejecuta las
+compuertas en vivo T5.0 (inicio de sesión en el perfil dedicado) y T5.1 (sonda de identidad) y
+confirma la precisión de D1 del 2026-10-26.

@@ -1,7 +1,7 @@
-"""Every surface offers the browser route only to a family whose browser adapter exists.
+"""Every surface offers the browser route only to a target whose family's adapter serves it.
 
-Today that is Microsoft alone, so Google and Jira targets must keep the exact refusals they had
-before the route policy learned their families.
+Today that is every Microsoft target and Google Meet. Gmail, Google Calendar and Jira must keep
+the exact refusals they had before the route policy learned their families.
 """
 
 from __future__ import annotations
@@ -44,7 +44,6 @@ _ACCOUNT = "user@example.com"
 _NON_BROWSER_TARGETS = (
     ConnectionType.GMAIL,
     ConnectionType.GOOGLE_CALENDAR,
-    ConnectionType.GOOGLE_MEET,
     ConnectionType.JIRA,
 )
 
@@ -102,10 +101,12 @@ def test_fallback_reasons_come_from_one_module() -> None:
     assert connections_module.CONNECT_FALLBACK_REASONS is CONNECT_FALLBACK_REASONS
 
 
-def test_only_microsoft_targets_have_a_browser_route_today() -> None:
-    assert {ProviderFamily.MICROSOFT} == BROWSER_ROUTE_FAMILIES
-    assert {"microsoft365.browser"} == BROWSER_PROVIDER_IDS
-    assert {target for target in ConnectionType if has_browser_route(target)} == MICROSOFT_TARGETS
+def test_microsoft_targets_and_google_meet_have_a_browser_route_today() -> None:
+    assert {ProviderFamily.MICROSOFT, ProviderFamily.GOOGLE} == BROWSER_ROUTE_FAMILIES
+    assert {"microsoft365.browser", "google.browser"} == BROWSER_PROVIDER_IDS
+    assert {target for target in ConnectionType if has_browser_route(target)} == (
+        MICROSOFT_TARGETS | {ConnectionType.GOOGLE_MEET}
+    )
 
 
 @pytest.mark.parametrize(
@@ -156,7 +157,7 @@ def test_health_of_every_available_browser_provider_needs_the_explicit_flag(
     assert f"health {provider} --allow-browser-fallback" in result.stdout
 
 
-# --- Today's refusals for Google and Jira are unchanged -------------------------------------
+# --- Today's refusals for Gmail, Google Calendar and Jira are unchanged ---------------------
 
 
 @pytest.mark.parametrize("target", _NON_BROWSER_TARGETS)
@@ -169,7 +170,9 @@ def test_supervised_browser_login_still_refuses_google_and_jira_targets(
     assert result.ok is False
     assert result.error is not None
     assert result.error.code == ReasonCode.CAPABILITY_NOT_IMPLEMENTED.value
-    assert result.error.message == "Browser login is available only for Microsoft targets"
+    assert result.error.message == (
+        "Browser login is available only for Microsoft targets and Google Meet"
+    )
 
 
 @pytest.mark.parametrize("target", [ConnectionType.GMAIL, ConnectionType.GOOGLE_CALENDAR])
@@ -211,21 +214,24 @@ def test_http_connect_and_run_models_still_refuse_browser_fallback_for_google_an
         )
 
 
-def test_a_google_meet_run_with_browser_fallback_is_still_invalid_input(tmp_path: Path) -> None:
+def test_a_google_calendar_run_with_browser_fallback_never_reaches_a_browser(
+    tmp_path: Path,
+) -> None:
+    """Google's adapter serves Meet only: a Calendar run with the flag ends typed, unread."""
     result = run_application(
         {
-            "type": "google-meet",
+            "type": "google-calendar",
             "account": _ACCOUNT,
-            "capability": "meeting.transcripts.list",
-            "meeting_id": "abc-defg-hij",
+            "capability": "calendar.events.list",
+            "start": "2026-10-26T00:00:00-05:00",
+            "end": "2026-10-27T00:00:00-05:00",
             "allow_browser_fallback": True,
         },
         settings=_settings(tmp_path),
     )
 
-    assert result.status == "invalid_input"
-    assert result.error is not None
-    assert result.error.message == "Browser fallback is not available for Google Meet"
+    assert result.ok is False
+    assert result.route != "browser"
 
 
 @pytest.mark.parametrize("target", ["gmail", "google-calendar", "jira"])
@@ -246,7 +252,7 @@ def test_doctor_offers_no_browser_checks_for_google_and_jira_targets(
     assert "microsoft_browser_route" not in names
 
 
-@pytest.mark.parametrize("provider", ["google.browser", "jira.browser"])
+@pytest.mark.parametrize("provider", ["jira.browser"])
 def test_health_of_a_browser_provider_that_does_not_exist_is_unchanged(
     monkeypatch: pytest.MonkeyPatch,
     provider: str,

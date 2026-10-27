@@ -26,8 +26,9 @@ being the current working directory.
   passwords or tokens in chat.
 - Use official APIs first. Browser fallback requires explicit opt-in: every browser attempt needs
   `--allow-browser-fallback` on that invocation. Configuration availability alone never authorizes
-  one. Today it serves Microsoft only; the Google and Jira browser routes are accepted in the
-  2026-10-25 ADR and are still being implemented, so never promise or attempt them yet.
+  one. Today it serves Microsoft and Google Meet transcripts; the Gmail, Google Calendar and Jira
+  browser routes are accepted in the 2026-10-25 ADR and are still being implemented, so never
+  promise or attempt them yet.
 - Never expose tokens, cookies, authorization headers, passwords, client secrets, device codes,
   API keys, raw provider errors, or tracebacks.
 - Never use an LLM to choose routes, account identity, retries, or failure classes.
@@ -139,7 +140,7 @@ installed runtime is older than this skill; ask the user to reinstall it.
 | `mail.inbox.list` | yes | yes (Outlook only) |
 | `calendar.events.list` | yes | yes |
 | `files.search` / `files.get` | yes | yes |
-| `meeting.transcripts.list` / `meeting.transcript.get` | yes, needs tenant scopes | yes (Microsoft only) |
+| `meeting.transcripts.list` / `meeting.transcript.get` | yes, needs tenant scopes | yes (Microsoft; Google Meet by window only) |
 | `mail.categories.set` (write) | no, needs a scope decision | yes, with `--allow-write` |
 | `external.issues.open.list` (Jira) | yes | no |
 | `external.issues.transitions.list` (Jira) | yes | no |
@@ -150,8 +151,9 @@ installed runtime is older than this skill; ask the user to reinstall it.
 | `scm.commits.list` (Bitbucket) | yes | no |
 | `scm.repositories.create` (Bitbucket write) | yes, `bitbucket-admin`, with `--allow-write` | no |
 
-The browser column describes Microsoft. Google (Gmail, Calendar, Meet) and Jira browser routes are
-being implemented per the 2026-10-25 ADR; until they ship, those providers are official-only.
+The browser column describes Microsoft, plus Google Meet transcripts. Gmail, Google Calendar and
+Jira browser routes are being implemented per the 2026-10-25 ADR; until they ship, those providers
+are official-only.
 
 Records are identical across routes; `provenance` is the only field naming the route.
 The `gmail` target reads `mail.sent.list` and `mail.inbox.list` over the official route. In the
@@ -288,13 +290,17 @@ a drive item, so it takes `--drive-id` with `--item-id`, or just a window that r
 recording in the period — including meetings the account only attended, not organized. Both routes
 answer with speaker-named WebVTT.
 
-**Google Meet.** The `google-meet` target (alias `meet`) is official-only: Calendar event attachments
-are discovered with `calendar.events.readonly` and transcript Docs are exported through Drive with
-`drive.readonly`. It accepts `--meeting-id` or an exact timezone-aware end-exclusive window. Drive
-item selectors are Microsoft-only and fail closed. Records use `text/plain` speaker turns and
-`last_cue_seconds` is `None`; no timestamps are synthesized. Empty windows stay empty. A Google Meet
-browser route (Docs export to plain text) is accepted in the 2026-10-25 ADR but not implemented
-yet; until it ships, Playwright is not offered for Google Meet.
+**Google Meet.** The `google-meet` target (alias `meet`) reads officially first: Calendar event
+attachments are discovered with `calendar.events.readonly` and transcript Docs are exported
+through Drive with `drive.readonly`. It accepts `--meeting-id` or an exact timezone-aware
+end-exclusive window. Drive item selectors are Microsoft-only and fail closed. Records use
+`text/plain` speaker turns and `last_cue_seconds` is `None`; no timestamps are synthesized. Empty
+windows stay empty. With `--allow-browser-fallback`, and only after the user connected the account
+by browser, a supervised route reads the Calendar web event detail and the Docs `mobilebasic` view
+of the transcript, by window only (31 days at most); `--meeting-id` stays official. Its records
+differ from the official ones only in `provenance`, in `recorded_at` (the stamp in the document
+name) and in `organizer` (`null`). Its identity probe and selectors are not proven live yet, so a
+`browser_selector_mismatch` is expected until then: report it, never improvise scraping.
 
 ## Decision gates
 
@@ -309,7 +315,7 @@ yet; until it ships, Playwright is not offered for Google Meet.
 | Bitbucket repository creation | Only on an explicit user request, one slug and project key per run on `bitbucket-admin` with `--allow-write`; push with `git` afterwards |
 | Sending a Gmail email | Confirm the account, create the draft, show the preview, and send only after the user explicitly approves that draft id |
 | Microsoft admin-consent failure | Use browser only when the user explicitly allowed it |
-| Google `admin_policy_enforced` or Jira API token blocked by the organization | Report the typed error; the browser route for these families is still being implemented |
+| Google `admin_policy_enforced` or Jira API token blocked by the organization | Report the typed error. For `google-meet` only, use the browser route when the user explicitly allowed it; the Gmail, Calendar and Jira browser routes are still being implemented |
 | Teams tenant policy or personal account | Stop with typed remediation; never bypass |
 | An `action_required` envelope | Stop and ask the user to run the exact `connect` command from its remediation; never attempt the login yourself or through the HTTP service, and never ask for passwords or tokens in chat |
 | Zero records | Report zero. Do not widen the range, and do not improvise scraping |
