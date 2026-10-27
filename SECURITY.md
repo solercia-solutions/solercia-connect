@@ -135,7 +135,9 @@ keyring, and the same env-file rules apply.
 - A uniquely verified browser identity may establish `connected_browser`. Jira identity is the
   `accountId` of `/rest/api/3/myself` equal to the `X-AAccountId` response header, bound to the
   site host; a visible `emailAddress` must match the account, and a blank or `unknown` `accountId`
-  fails closed. The Google browser route stays fail-closed until its identity probe is proven live.
+  fails closed. The Google browser identity is the account named by the Google bar's account
+  button in Calendar web, which must match the requested account; until task T5.1 proves that
+  probe live, any selector mismatch fails closed with zero reads.
   Built-in browser data extraction is enabled only for capabilities backed by documented read-only
   provider endpoints, plus the [scoped Google exception](#scoped-exception-google-browser-reads).
 - Jira browser reads are same-origin requests issued from the site's own page; Connect never reads
@@ -162,7 +164,10 @@ The same decision accepts one exception to the documented-endpoint rule, for Goo
 read-only. It covers exactly three mechanisms:
 
 - the Google Calendar ICS export;
-- the Docs export to plain text of the document that holds a Meet transcript;
+- for Meet, as made precise on 2026-10-26: the Calendar web day view and event-detail DOM, read
+  only for the transcript attachment, and the visible text of the Docs `mobilebasic` view of that
+  transcript document. Calendar and Drive internal APIs, any header derived from cookies, and the
+  signed export URLs stay out;
 - the Gmail sent-mail listing from the DOM of the search `in:sent after: before:`, plus the
   original-message (RFC 822) download.
 

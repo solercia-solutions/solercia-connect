@@ -206,8 +206,12 @@ generados. Supera el presupuesto de 400 líneas, así que la estrategia de caden
   detiene.
 - [ ] **T5.1** Prueba de identidad de la sesión de Google, validada en vivo.
 - [ ] **T5.2** Leer `calendar.events.list` por la exportación ICS.
-- [ ] **T5.3** Leer `meeting.transcripts.*` exportando el documento a texto (ya probado en vivo el
-  2026-09-02).
+- [ ] **T5.3** Leer `meeting.transcripts.*` por la página, según la precisión de D1 del
+  2026-10-26 en la ADR:
+  - descubrir por la vista diaria de Calendar web y el detalle de cada evento, tomando solo el
+    adjunto de transcripción;
+  - leer el texto visible de la vista `mobilebasic` del documento;
+  - sin API internas, sin cookies y sin URL firmadas.
 - [ ] **T5.4** Leer Gmail `mail.sent.list` por navegador.
   - El listado sale del DOM de la búsqueda `in:sent after: before:`.
   - El cuerpo completo sale de la descarga del mensaje original (RFC 822).
