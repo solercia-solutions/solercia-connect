@@ -252,31 +252,38 @@ def test_noninteractive_google_meet_requires_an_account() -> None:
     assert result.error is not None and result.error.cause_category == "input"
 
 
-def test_google_meet_rejects_browser_fallback_before_registry_access(
+def test_google_meet_browser_fallback_reaches_the_browser_registry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    called = False
+    """Google Meet now has a browser route, so the flag builds the browser registry."""
+    built: dict[str, Any] = {}
+    captured: dict[str, Any] = {}
+    outcome = ExecutionOutcome(
+        True,
+        (),
+        _receipt(ok=True, reason=ReasonCode.SUCCESS, route=RouteKind.BROWSER),
+    )
 
-    def unexpected_registry(**_: object) -> object:
-        nonlocal called
-        called = True
-        raise AssertionError("Google Meet must never use a browser registry route")
+    def registry(**kwargs: Any) -> str:
+        built.update(kwargs)
+        return "registry"
 
-    monkeypatch.setattr(application, "registry_from_environment", unexpected_registry)
+    monkeypatch.setattr(application, "registry_from_environment", registry)
+    monkeypatch.setattr(application, "ConnectorRuntime", _capturing_runtime(outcome, captured))
     result = application.run_application(
         _payload(
             type="google-meet",
-            capability="meeting.transcript.get",
-            start=None,
-            end=None,
-            meeting_id="meeting-1",
+            capability="meeting.transcripts.list",
+            start="2026-10-26T00:00:00-05:00",
+            end="2026-10-27T00:00:00-05:00",
             allow_browser_fallback=True,
         )
     )
 
-    assert result.status == "invalid_input"
-    assert result.error is not None and result.error.cause_category == "input"
-    assert called is False
+    assert result.ok is True
+    assert built["connection_type"] is ConnectionType.GOOGLE_MEET
+    assert built["include_browser"] is True
+    assert captured["request"].provider_id == "google.meet"
 
 
 def test_google_meet_transcript_dispatch_uses_the_declared_official_provider(

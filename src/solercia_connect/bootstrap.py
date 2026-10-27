@@ -9,12 +9,14 @@ from solercia_connect.auth import (
     GlpiCredentials,
 )
 from solercia_connect.browser_profile import (
+    browser_profile_path,
     microsoft_browser_profile_path,
     microsoft_browser_profile_root,
 )
 from solercia_connect.browser_routes import has_browser_route
 from solercia_connect.config import (
     GMAIL_COMPOSE_SCOPE,
+    GOOGLE_TARGETS,
     MICROSOFT_TARGETS,
     ConnectionType,
     ConnectSettings,
@@ -30,7 +32,7 @@ from solercia_connect.connections import (
     connect_command,
     oauth_provider_from_settings,
 )
-from solercia_connect.domain import Capability, ReasonCode
+from solercia_connect.domain import Capability, ProviderFamily, ReasonCode
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.oauth import OAuthTokenStore, grant_covers
 from solercia_connect.ports import HTTPTransport
@@ -42,6 +44,10 @@ from solercia_connect.project_secrets import (
 from solercia_connect.providers.glpi import GlpiAdapter
 from solercia_connect.providers.gmail_compose import GmailComposeAdapter
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
+from solercia_connect.providers.google_browser import (
+    GoogleBrowserAdapter,
+    PlaywrightGoogleBrowserDriver,
+)
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
 from solercia_connect.providers.jira import JiraAdapter, jira_api_base_url
 from solercia_connect.providers.m365_browser import (
@@ -251,6 +257,17 @@ def registry_from_environment(
     if (
         include_browser
         and settings.browser_fallback_enabled
+        and browser_type in GOOGLE_TARGETS
+        and normalized_account is not None
+        and browser_profile is not None
+        and browser_profile.route == "browser"
+    ):
+        # Google's browser route serves only the account's own browser connection: there is no
+        # environment-level Google profile to fall back on.
+        registry.register(google_browser_adapter(settings, normalized_account))
+    elif (
+        include_browser
+        and settings.browser_fallback_enabled
         and (
             (browser_profile is not None and browser_profile.route == "browser")
             or (
@@ -424,6 +441,16 @@ def browser_adapter_from_environment(
         connection_type=parsed_type,
         profile_dir=profile_path,
         expected_account=expected,
+    )
+
+
+def google_browser_adapter(settings: ConnectSettings, account: str) -> GoogleBrowserAdapter:
+    """Build the Google browser adapter over this account's dedicated Google profile."""
+    normalized = normalize_account(account)
+    return GoogleBrowserAdapter(
+        PlaywrightGoogleBrowserDriver(),
+        profile_dir=browser_profile_path(settings, ProviderFamily.GOOGLE, normalized),
+        expected_account=normalized,
     )
 
 

@@ -191,4 +191,14 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "implemented",
         "SharePoint recording transcripts, own and shared; speaker-named WebVTT, window filter",
     ),
+    CapabilityRow(
+        "Google Calendar + Docs Web",
+        "browser",
+        "meeting.transcripts.*",
+        "implemented-offline",
+        (
+            "Google Meet target; Calendar web event detail and Docs mobilebasic text; window only, "
+            "31 days max; identity probe and live proof pending"
+        ),
+    ),
 )

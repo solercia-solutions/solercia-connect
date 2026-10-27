@@ -707,14 +707,31 @@ def test_run_request_requires_account_for_google_meet() -> None:
         )
 
 
-def test_run_request_rejects_google_meet_browser_fallback() -> None:
-    with pytest.raises(ValidationError, match="Microsoft targets"):
+def test_run_request_accepts_google_meet_browser_fallback() -> None:
+    """Google Meet has a browser route (decision 2026-10-25, D1 as made precise on 2026-10-26)."""
+    request = RunRequest.model_validate(
+        {
+            "type": "google-meet",
+            "account": "user@example.com",
+            "capability": "meeting.transcripts.list",
+            "start": "2026-10-26T00:00:00-05:00",
+            "end": "2026-10-27T00:00:00-05:00",
+            "allow_browser_fallback": True,
+        }
+    )
+
+    assert request.allow_browser_fallback is True
+
+
+def test_run_request_still_rejects_gmail_browser_fallback() -> None:
+    with pytest.raises(ValidationError, match="Microsoft targets and Google Meet"):
         RunRequest.model_validate(
             {
-                "type": "google-meet",
+                "type": "gmail",
                 "account": "user@example.com",
-                "capability": "meeting.transcript.get",
-                "meeting_id": "meeting-1",
+                "capability": "mail.sent.list",
+                "start": "2026-10-26T00:00:00-05:00",
+                "end": "2026-10-27T00:00:00-05:00",
                 "allow_browser_fallback": True,
             }
         )

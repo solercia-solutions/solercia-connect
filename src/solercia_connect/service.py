@@ -101,7 +101,9 @@ class ConnectionConnectRequest(BaseModel):
     @model_validator(mode="after")
     def validate_browser_target(self) -> ConnectionConnectRequest:
         if self.allow_browser_fallback and not has_browser_route(self.type):
-            raise ValueError("browser fallback is available only for Microsoft targets")
+            raise ValueError(
+                "browser fallback is available only for Microsoft targets and Google Meet"
+            )
         return self
 
 
@@ -155,7 +157,9 @@ class RunRequest(BaseModel):
         if self.type in MICROSOFT_TARGETS | GOOGLE_TARGETS and self.account is None:
             raise ValueError("account is required for OAuth provider runs")
         if self.allow_browser_fallback and not has_browser_route(self.type):
-            raise ValueError("browser fallback is available only for Microsoft targets")
+            raise ValueError(
+                "browser fallback is available only for Microsoft targets and Google Meet"
+            )
         return self
 
     def application_payload(self) -> dict[str, Any]:

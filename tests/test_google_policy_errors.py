@@ -282,8 +282,8 @@ def test_the_shared_transport_still_maps_every_403_to_authorization_denied() -> 
 POLICY_BLOCK_LINE = (
     "If Google showed admin_policy_enforced or org_internal instead of returning here, the "
     "organization blocks this app; see the browser fallback route in "
-    "docs/decisions/2026-10-25-fallback-navegador-google-jira.md (--allow-browser-fallback once "
-    "the Google browser route is available)."
+    "docs/decisions/2026-10-25-fallback-navegador-google-jira.md (google-meet only, with "
+    "--allow-browser-fallback)."
 )
 
 
