@@ -1,6 +1,6 @@
 ---
 name: solercia-connect
-description: "Trigger: Outlook, Teams, Gmail, Google Calendar, Jira, Bitbucket, GLPI, connector, leer correos, extraer calendario, transcripciones de reuniones. Use the standalone runtime instead of reimplementing integrations."
+description: "Trigger: Outlook, Teams, Gmail, Google Calendar, Search Console, Jira, Bitbucket, GLPI, connector, leer correos, extraer calendario, transcripciones de reuniones, métricas SEO. Use the standalone runtime instead of reimplementing integrations."
 license: MIT
 metadata:
   author: solercia
@@ -55,6 +55,10 @@ being the current working directory.
   the repository slug and the project key, one repository per invocation. Never pick another slug
   or project on your own: `repository_exists` and `project_not_found` are stops to report.
   Solercia Connect never pushes; push with `git` and the credential it already stores.
+- Search Console is read-only and official-only: never pass `--allow-write` or
+  `--allow-browser-fallback` to it. It takes exact calendar days, inclusive at both ends, through
+  `--start-date` and `--end-date`, plus `--site-url sc-domain:example.com`. One query answers with
+  one report record; an empty range is `rows: []`.
 
 ## Canonical workflow
 
@@ -140,6 +144,7 @@ installed runtime is older than this skill; ask the user to reinstall it.
 | `mail.inbox.list` | yes | yes (Outlook only) |
 | `calendar.events.list` | yes | yes |
 | `files.search` / `files.get` | yes | yes |
+| `search.analytics.query` / `search.sitemaps.list` / `search.urls.inspect` | yes, Google Search Console | no |
 | `meeting.transcripts.list` / `meeting.transcript.get` | yes, needs tenant scopes | yes (Microsoft; Google Meet by window only) |
 | `mail.categories.set` (write) | no, needs a scope decision | yes, with `--allow-write` |
 | `external.issues.open.list` (Jira) | yes | no |

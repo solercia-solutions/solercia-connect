@@ -418,6 +418,13 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
         if capability is Capability.SCM_REPOSITORIES_CREATE:
             # A Bitbucket write; the helper refuses it (tests/test_bitbucket_repo_create.py).
             continue
+        if capability in {
+            Capability.SEARCH_ANALYTICS_QUERY,
+            Capability.SEARCH_SITEMAPS_LIST,
+            Capability.SEARCH_URLS_INSPECT,
+        }:
+            # Search Console reads run through run_application only (tests/test_search_console.py).
+            continue
         query = cli._query_payload(capability, **common)
         assert isinstance(query, _EXPECTED_QUERY_TYPES[capability])
 

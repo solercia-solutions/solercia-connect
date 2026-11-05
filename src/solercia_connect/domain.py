@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
+from urllib.parse import urlsplit
 
 
 class Capability(StrEnum):
@@ -38,6 +39,10 @@ class Capability(StrEnum):
     # The fourth write, on the separate bitbucket-admin target, official route only:
     # docs/decisions/2026-10-25-escritura-creacion-repositorios-bitbucket.md.
     SCM_REPOSITORIES_CREATE = "scm.repositories.create"
+    # Search Console reads, official route only; they add no write.
+    SEARCH_ANALYTICS_QUERY = "search.analytics.query"
+    SEARCH_SITEMAPS_LIST = "search.sitemaps.list"
+    SEARCH_URLS_INSPECT = "search.urls.inspect"
 
 
 class ProviderFamily(StrEnum):
@@ -57,6 +62,7 @@ _OFFICIAL_PROVIDER_FAMILIES: dict[str, ProviderFamily] = {
     "google.gmail": ProviderFamily.GOOGLE,
     "google.calendar": ProviderFamily.GOOGLE,
     "google.meet": ProviderFamily.GOOGLE,
+    "google.searchconsole": ProviderFamily.GOOGLE,
     "jira.cloud": ProviderFamily.JIRA,
     "glpi.rest": ProviderFamily.GLPI,
     "bitbucket.cloud": ProviderFamily.BITBUCKET,
@@ -727,6 +733,109 @@ class ScmRepositoryCreateRequest:
             object.__setattr__(self, "workspace", normalize_bitbucket_workspace(self.workspace))
 
 
+SEARCH_ANALYTICS_DIMENSIONS = frozenset(
+    {"country", "date", "device", "hour", "page", "query", "searchAppearance"}
+)
+SEARCH_ANALYTICS_TYPES = frozenset({"discover", "googleNews", "image", "news", "video", "web"})
+SEARCH_ANALYTICS_DATA_STATES = frozenset({"all", "final"})
+SEARCH_ANALYTICS_MAX_ROWS = 500_000
+
+_DOMAIN_PROPERTY = re.compile(r"sc-domain:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9-]+)+\Z")
+
+
+def validate_search_property(value: str) -> str:
+    """Accept a property exactly as Search Console names it.
+
+    A Domain property is ``sc-domain:example.com``. A URL-prefix property is an absolute URL with
+    a trailing slash, and without the slash it names a property that does not exist.
+    """
+    if _DOMAIN_PROPERTY.fullmatch(value):
+        return value
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname
+        and parsed.path.endswith("/")
+        and not parsed.query
+        and not parsed.fragment
+    ):
+        return value
+    raise ValueError(
+        "site_url must be sc-domain:example.com or a URL-prefix property ending in a slash"
+    )
+
+
+def url_belongs_to_search_property(url: str, site_url: str) -> bool:
+    """Tell whether a page falls under a property, which URL Inspection requires."""
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    if site_url.startswith("sc-domain:"):
+        domain = site_url.removeprefix("sc-domain:")
+        host = parsed.hostname.casefold()
+        return host == domain or host.endswith(f".{domain}")
+    return url.startswith(site_url)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchAnalyticsQuery:
+    """Read Search Console performance for exact calendar dates.
+
+    Search Console dates are calendar days in America/Los_Angeles, inclusive at both ends. They
+    are not instants, so this contract keeps the provider's own meaning instead of an
+    end-exclusive window that would shift each day by a time zone.
+    """
+
+    site_url: str
+    start_date: date
+    end_date: date
+    dimensions: tuple[str, ...] = ("date",)
+    search_type: str = "web"
+    data_state: str = "final"
+    row_limit: int = 25_000
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_search_property(self.site_url)
+        if self.start_date > self.end_date:
+            raise ValueError("start_date must not be after end_date")
+        unknown = set(self.dimensions) - SEARCH_ANALYTICS_DIMENSIONS
+        if unknown:
+            raise ValueError(f"Unsupported dimensions: {', '.join(sorted(unknown))}")
+        if len(set(self.dimensions)) != len(self.dimensions):
+            raise ValueError("dimensions cannot repeat")
+        if self.search_type not in SEARCH_ANALYTICS_TYPES:
+            raise ValueError("search_type is not a Search Console type")
+        if self.data_state not in SEARCH_ANALYTICS_DATA_STATES:
+            raise ValueError("data_state must be final or all")
+        if not 1 <= self.row_limit <= SEARCH_ANALYTICS_MAX_ROWS:
+            raise ValueError(f"row_limit must be between 1 and {SEARCH_ANALYTICS_MAX_ROWS}")
+
+
+@dataclass(frozen=True, slots=True)
+class SearchSitemapsQuery:
+    site_url: str
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_search_property(self.site_url)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchUrlInspectionQuery:
+    site_url: str
+    inspection_url: str
+    language_code: str = "es-CO"
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_search_property(self.site_url)
+        if not url_belongs_to_search_property(self.inspection_url, self.site_url):
+            raise ValueError("inspection_url must be a full URL under site_url")
+        if not self.language_code.strip():
+            raise ValueError("language_code cannot be blank")
+
+
 type QueryPayload = (
     MailQuery
     | CalendarQuery
@@ -744,6 +853,9 @@ type QueryPayload = (
     | ScmPullRequestQuery
     | ScmCommitQuery
     | ScmRepositoryCreateRequest
+    | SearchAnalyticsQuery
+    | SearchSitemapsQuery
+    | SearchUrlInspectionQuery
 )
 
 
@@ -997,6 +1109,44 @@ class MailDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class SearchAnalyticsRow:
+    """One grouped row; ``keys`` follows the order of the report's ``dimensions``."""
+
+    keys: tuple[str, ...]
+    clicks: float
+    impressions: float
+    ctr: float
+    position: float
+
+
+@dataclass(frozen=True, slots=True)
+class SearchAnalyticsReport:
+    """Everything one query answered, including an honest statement of what it covers.
+
+    A query always yields one report, so "no rows" is an observed answer and not an absent one.
+    ``first_day_with_data`` and ``last_day_with_data`` come only from returned rows and stay unset
+    when the query did not group by date. Search Console omits days without data, so neither value
+    says data began or ended beyond the requested range. ``truncated`` means the row limit was
+    reached and more rows may exist.
+    """
+
+    id: str
+    site_url: str
+    start_date: date
+    end_date: date
+    dimensions: tuple[str, ...]
+    search_type: str
+    data_state: str
+    rows: tuple[SearchAnalyticsRow, ...]
+    first_day_with_data: date | None
+    last_day_with_data: date | None
+    first_incomplete_date: date | None
+    aggregation_type: str | None
+    truncated: bool
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
 class MailSendResult:
     """The outcome of one Gmail draft send: the sent message and who it went to.
 
@@ -1013,6 +1163,28 @@ class MailSendResult:
     bcc: tuple[EmailAddress, ...]
     subject: str
     sent_at: datetime
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
+class SearchSitemapContent:
+    type: str
+    submitted: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class SearchSitemap:
+    id: str
+    site_url: str
+    path: str
+    is_pending: bool
+    is_index: bool
+    type: str | None
+    last_submitted: datetime | None
+    last_downloaded: datetime | None
+    errors: int
+    warnings: int
+    contents: tuple[SearchSitemapContent, ...]
     provenance: Provenance
 
 
@@ -1087,6 +1259,28 @@ class ScmRepositoryCreation:
     provenance: Provenance
 
 
+@dataclass(frozen=True, slots=True)
+class SearchUrlInspection:
+    """Google's indexed view of one URL; fields it did not report stay unset."""
+
+    id: str
+    site_url: str
+    inspection_url: str
+    verdict: str | None
+    coverage_state: str | None
+    robots_txt_state: str | None
+    indexing_state: str | None
+    page_fetch_state: str | None
+    last_crawl_time: datetime | None
+    google_canonical: str | None
+    user_canonical: str | None
+    crawled_as: str | None
+    sitemaps: tuple[str, ...]
+    referring_urls: tuple[str, ...]
+    inspection_link: str | None
+    provenance: Provenance
+
+
 type DomainRecord = (
     MailMessage
     | CalendarEvent
@@ -1104,6 +1298,9 @@ type DomainRecord = (
     | ScmPullRequest
     | ScmCommit
     | ScmRepositoryCreation
+    | SearchAnalyticsReport
+    | SearchSitemap
+    | SearchUrlInspection
 )
 
 
@@ -1197,6 +1394,9 @@ _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.SCM_PULLREQUESTS_LIST: ScmPullRequest,
     Capability.SCM_COMMITS_LIST: ScmCommit,
     Capability.SCM_REPOSITORIES_CREATE: ScmRepositoryCreation,
+    Capability.SEARCH_ANALYTICS_QUERY: SearchAnalyticsReport,
+    Capability.SEARCH_SITEMAPS_LIST: SearchSitemap,
+    Capability.SEARCH_URLS_INSPECT: SearchUrlInspection,
 }
 
 

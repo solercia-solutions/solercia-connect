@@ -350,6 +350,7 @@ interchangeable: a mail token is never reused for a drive call.
 | Gmail | Desktop OAuth loopback with state + PKCE; read-only sent-mail and inbox capabilities | None | Pending dedicated account proof |
 | Google Calendar | Desktop OAuth loopback with state + PKCE; read-only event capability | None | Pending dedicated account proof |
 | Google Meet | Desktop OAuth loopback with state + PKCE; Calendar attachment discovery and Drive text export (`text/plain`) | Calendar web event detail and Docs `mobilebasic` text, by window | Offline contracts verified; browser identity probe and selectors pending live proof |
+| Search Console | Desktop OAuth loopback with state + PKCE; `webmasters.readonly`; analytics, sitemaps, URL inspection | None | Hermetic contract only; live proof pending. See the [runbook](docs/runbooks/search-console.md) |
 | Jira | API-token or OAuth connection; JQL search, transition listing, and one-issue transition write (API token) | None | Pending supported-site proof |
 | Bitbucket Cloud | API token with Bitbucket scopes; read-only repositories, pull requests, and commits; repository creation over the separate `bitbucket-admin` token | None (official-only) | Reads verified against the IDARTES workspace; creation pending its first live run |
 | GLPI | Existing app/user-token session compatibility | None | Pending supported-installation proof |

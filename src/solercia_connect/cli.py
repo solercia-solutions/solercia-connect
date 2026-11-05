@@ -367,6 +367,42 @@ def run_capability(
             "by default (scm.pullrequests.list)",
         ),
     ] = None,
+    site_url: Annotated[
+        str | None,
+        typer.Option("--site-url", help="Search Console property, e.g. sc-domain:example.com"),
+    ] = None,
+    start_date: Annotated[
+        str | None,
+        typer.Option("--start-date", help="Search Console first day, YYYY-MM-DD, inclusive"),
+    ] = None,
+    end_date: Annotated[
+        str | None,
+        typer.Option("--end-date", help="Search Console last day, YYYY-MM-DD, inclusive"),
+    ] = None,
+    dimension: Annotated[
+        list[str] | None,
+        typer.Option("--dimension", help="Search Console grouping dimension; repeatable"),
+    ] = None,
+    search_type: Annotated[
+        str | None,
+        typer.Option("--search-type", help="Search Console type; defaults to web"),
+    ] = None,
+    data_state: Annotated[
+        str | None,
+        typer.Option("--data-state", help="final (default) or all, which includes fresh data"),
+    ] = None,
+    row_limit: Annotated[
+        int,
+        typer.Option("--row-limit", min=1, max=500_000, help="Search Console rows to page through"),
+    ] = 25_000,
+    inspection_url: Annotated[
+        str | None,
+        typer.Option("--url", help="Full URL to inspect, under the property"),
+    ] = None,
+    language_code: Annotated[
+        str | None,
+        typer.Option("--language", help="BCP-47 language for URL Inspection messages"),
+    ] = None,
     browser_fallback: Annotated[
         bool,
         typer.Option("--allow-browser-fallback", "--browser-fallback"),
@@ -413,6 +449,20 @@ def run_capability(
             "replace": list(replace) if replace else None,
             "allow_write": allow_write,
         }
+        if site_url is not None:
+            payload.update(
+                {
+                    "site_url": site_url,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "dimensions": dimension,
+                    "search_type": search_type,
+                    "data_state": data_state,
+                    "row_limit": row_limit,
+                    "inspection_url": inspection_url,
+                    "language_code": language_code,
+                }
+            )
         if with_content is not None:
             payload["include_content"] = with_content
         # Issue-scoped options travel only when given, so other capabilities keep their payload.

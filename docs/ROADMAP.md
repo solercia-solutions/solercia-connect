@@ -57,6 +57,8 @@ unchecked until dedicated live evidence exists.
 - [x] Refresh-capable Google OAuth provider and secure token storage.
 - [x] CLI-owned Desktop OAuth loopback with cryptographic state, PKCE S256, and finite timeout.
 - [x] Separate Gmail readonly and Calendar events-readonly connection profiles/scopes.
+- [x] Search Console read-only target: analytics, sitemaps, and URL inspection (hermetic contract).
+- [ ] Validate the Search Console contract against a real connected account.
 - [ ] Complete real Google OAuth consent and app verification where required.
 - [ ] Validate Gmail and Calendar contracts against dedicated Workspace test accounts.
 - [ ] Add Gmail thread expansion as an explicit capability.

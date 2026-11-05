@@ -79,8 +79,8 @@ keyring, and the same env-file rules apply.
   case-insensitively with the requested/profile account. Missing, ambiguous, or mismatched
   identity produces zero data reads.
 - Use least-privilege read scopes: Microsoft `Mail.Read`, `Calendars.Read`, and the separate Teams
-  `OnlineMeetingTranscript.Read.All`; Google `gmail.readonly` and
-  `calendar.events.readonly` are separate grants; Jira OAuth `read:jira-work`, `read:jira-user`,
+  `OnlineMeetingTranscript.Read.All`; Google `gmail.readonly`, `calendar.events.readonly`, and
+  `webmasters.readonly` are separate grants; Jira OAuth `read:jira-work`, `read:jira-user`,
   `read:me` and `offline_access`; Bitbucket API token scopes `read:user:bitbucket`,
   `read:workspace:bitbucket`, `read:repository:bitbucket` and `read:pullrequest:bitbucket`.
 - The read targets request no write scope. The official route of the category write would need

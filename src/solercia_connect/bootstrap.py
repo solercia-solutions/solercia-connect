@@ -59,6 +59,7 @@ from solercia_connect.providers.m365_browser import (
     browser_surface_for_capability,
 )
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
+from solercia_connect.providers.search_console import GoogleSearchConsoleAdapter
 from solercia_connect.registry import ProviderRegistry
 from solercia_connect.secret_store import SecretStore
 from solercia_connect.secrets import SecretValue
@@ -166,12 +167,14 @@ def registry_from_environment(
             )
         )
         registry.register(GoogleMeetAdapter(transport, auth, expected_account=expected))
+        registry.register(GoogleSearchConsoleAdapter(transport, auth, expected_account=expected))
     elif (
         parsed_type
         in {
             ConnectionType.GMAIL,
             ConnectionType.GOOGLE_CALENDAR,
             ConnectionType.GOOGLE_MEET,
+            ConnectionType.SEARCH_CONSOLE,
         }
         and normalized_account is not None
         and (profile := profiles.get(parsed_type, normalized_account)) is not None
@@ -187,6 +190,10 @@ def registry_from_environment(
         if parsed_type is ConnectionType.GMAIL:
             registry.register(
                 GoogleGmailAdapter(transport, auth, expected_account=normalized_account)
+            )
+        elif parsed_type is ConnectionType.SEARCH_CONSOLE:
+            registry.register(
+                GoogleSearchConsoleAdapter(transport, auth, expected_account=normalized_account)
             )
         elif parsed_type is ConnectionType.GOOGLE_CALENDAR:
             registry.register(

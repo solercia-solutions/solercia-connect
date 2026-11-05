@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from solercia_connect.bootstrap import registry_from_environment
@@ -43,6 +43,9 @@ from solercia_connect.domain import (
     ScmPullRequestQuery,
     ScmRepositoryCreateRequest,
     ScmRepositoryQuery,
+    SearchAnalyticsQuery,
+    SearchSitemapsQuery,
+    SearchUrlInspectionQuery,
     TicketQuery,
     TranscriptQuery,
 )
@@ -589,6 +592,12 @@ def _query(
         raise ValueError("limit must be an integer between 1 and 1000")
     if capability is Capability.EXTERNAL_ISSUES_OPEN_LIST:
         return _open_issues(account, payload, limit)
+    if capability in {
+        Capability.SEARCH_ANALYTICS_QUERY,
+        Capability.SEARCH_SITEMAPS_LIST,
+        Capability.SEARCH_URLS_INSPECT,
+    }:
+        return _search_console_query(capability, account, payload)
     optional_window_capabilities = {
         Capability.MEETING_TRANSCRIPTS_LIST,
         Capability.MEETING_TRANSCRIPT_GET,
@@ -812,6 +821,44 @@ def _category_names(value: Any, name: str) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"{name} must be a list of category names")
     return tuple(value)
+
+
+def _search_console_query(
+    capability: Capability,
+    account: str | None,
+    payload: dict[str, Any],
+) -> SearchAnalyticsQuery | SearchSitemapsQuery | SearchUrlInspectionQuery:
+    # Search Console takes calendar days, not instants, so this reads exact dates rather than the
+    # timezone-aware window the other capabilities share.
+    site_url = _required_string(payload, "site_url")
+    if capability is Capability.SEARCH_SITEMAPS_LIST:
+        return SearchSitemapsQuery(site_url, account)
+    if capability is Capability.SEARCH_URLS_INSPECT:
+        language = _optional_string(payload.get("language_code")) or "es-CO"
+        return SearchUrlInspectionQuery(
+            site_url,
+            _required_string(payload, "inspection_url"),
+            language,
+            account,
+        )
+    raw_dimensions = payload.get("dimensions") or ["date"]
+    if not isinstance(raw_dimensions, (list, tuple)) or not all(
+        isinstance(item, str) for item in raw_dimensions
+    ):
+        raise ValueError("dimensions must be a list of names")
+    row_limit = payload.get("row_limit", 25_000)
+    if isinstance(row_limit, bool) or not isinstance(row_limit, int):
+        raise ValueError("row_limit must be an integer")
+    return SearchAnalyticsQuery(
+        site_url,
+        date.fromisoformat(_required_string(payload, "start_date")),
+        date.fromisoformat(_required_string(payload, "end_date")),
+        tuple(raw_dimensions),
+        _optional_string(payload.get("search_type")) or "web",
+        _optional_string(payload.get("data_state")) or "final",
+        row_limit,
+        account,
+    )
 
 
 def _window(start: Any, end: Any, *, optional: bool = False) -> DateWindow | None:

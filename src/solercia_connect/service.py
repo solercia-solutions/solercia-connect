@@ -133,6 +133,15 @@ class RunRequest(BaseModel):
     max_content_bytes: int = Field(default=10_485_760, ge=1)
     limit: int = Field(default=50, ge=1, le=1000)
     allow_browser_fallback: bool = False
+    site_url: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    dimensions: list[str] | None = None
+    search_type: str | None = None
+    data_state: str | None = None
+    row_limit: int = Field(default=25_000, ge=1, le=500_000)
+    inspection_url: str | None = None
+    language_code: str | None = None
 
     @field_validator("account")
     @classmethod
@@ -186,6 +195,21 @@ class RunRequest(BaseModel):
             "max_attachment_bytes": self.max_attachment_bytes,
             "limit": self.limit,
             "allow_browser_fallback": self.allow_browser_fallback,
+            **(
+                {}
+                if self.site_url is None
+                else {
+                    "site_url": self.site_url,
+                    "start_date": self.start_date,
+                    "end_date": self.end_date,
+                    "dimensions": self.dimensions,
+                    "search_type": self.search_type,
+                    "data_state": self.data_state,
+                    "row_limit": self.row_limit,
+                    "inspection_url": self.inspection_url,
+                    "language_code": self.language_code,
+                }
+            ),
             **({} if self.include_content is None else {"include_content": self.include_content}),
         }
 

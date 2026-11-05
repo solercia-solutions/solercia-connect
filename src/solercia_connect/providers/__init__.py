@@ -4,6 +4,7 @@ from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmail
 from solercia_connect.providers.google_meet import GoogleMeetAdapter
 from solercia_connect.providers.jira import JiraAdapter
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
+from solercia_connect.providers.search_console import GoogleSearchConsoleAdapter
 
 __all__ = [
     "BitbucketAdapter",
@@ -11,6 +12,7 @@ __all__ = [
     "GoogleCalendarAdapter",
     "GoogleGmailAdapter",
     "GoogleMeetAdapter",
+    "GoogleSearchConsoleAdapter",
     "JiraAdapter",
     "MicrosoftGraphAdapter",
 ]

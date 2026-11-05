@@ -14,7 +14,7 @@ from solercia_connect.config import (
     normalize_account,
     target_spec,
 )
-from solercia_connect.oauth import KeyringOAuthTokenStore
+from solercia_connect.oauth import KeyringOAuthTokenStore, grant_covers
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,8 +92,7 @@ def _token_store_ready(type_value: ConnectionType, account: str) -> bool:
         return False
     if tokens is None:
         return False
-    required = set(target_spec(type_value).oauth_scopes)
-    return required.issubset(tokens.scopes)
+    return grant_covers(target_spec(type_value).oauth_scopes, tokens.scopes)
 
 
 def _diagnostic(code: str, missing: tuple[str, ...]) -> str:

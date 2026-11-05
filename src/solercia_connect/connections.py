@@ -70,6 +70,7 @@ from solercia_connect.providers.m365_browser import (
     browser_extraction_report,
 )
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
+from solercia_connect.providers.search_console import GoogleSearchConsoleAdapter
 from solercia_connect.runtime import CONNECT_FALLBACK_REASONS
 from solercia_connect.secret_store import SecretStore
 from solercia_connect.secrets import SecretValue
@@ -909,6 +910,17 @@ class ConnectionService:
         if parsed is ConnectionType.GOOGLE_MEET:
             return (
                 GoogleMeetAdapter(
+                    self._transport,
+                    oauth,
+                    expected_account=account,
+                )
+                .health()
+                .account_id
+                or ""
+            )
+        if parsed is ConnectionType.SEARCH_CONSOLE:
+            return (
+                GoogleSearchConsoleAdapter(
                     self._transport,
                     oauth,
                     expected_account=account,

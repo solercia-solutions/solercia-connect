@@ -59,6 +59,7 @@ def test_bootstrap_registers_every_legacy_token_provider_without_exposing_secret
         "google.calendar",
         "google.gmail",
         "google.meet",
+        "google.searchconsole",
         "jira.cloud",
         "microsoft.graph",
     ]
@@ -129,6 +130,7 @@ def test_google_meet_never_registers_a_microsoft_browser_adapter(
         "google.calendar",
         "google.gmail",
         "google.meet",
+        "google.searchconsole",
     ]
     assert all(item.family.value == "google" for item in registry.descriptors())
 

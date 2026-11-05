@@ -57,6 +57,7 @@ class ConnectionType(StrEnum):
     GMAIL_COMPOSE = "gmail-compose"
     GOOGLE_CALENDAR = "google-calendar"
     GOOGLE_MEET = "google-meet"
+    SEARCH_CONSOLE = "search-console"
     JIRA = "jira"
     GLPI = "glpi"
     BITBUCKET = "bitbucket"
@@ -111,6 +112,7 @@ GOOGLE_TARGETS: frozenset[ConnectionType] = frozenset(
         ConnectionType.GMAIL_COMPOSE,
         ConnectionType.GOOGLE_CALENDAR,
         ConnectionType.GOOGLE_MEET,
+        ConnectionType.SEARCH_CONSOLE,
     }
 )
 # Every target connected with a Bitbucket API token, a workspace and the B-D2 identity proof.
@@ -207,6 +209,20 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
             "Google OAuth Desktop app client",
             "Google Workspace account with Google Meet transcription enabled",
             "Workspace admin approval when policy requires it",
+        ),
+    ),
+    TargetSpec(
+        ConnectionType.SEARCH_CONSOLE,
+        "google.searchconsole",
+        ("search.analytics.query", "search.sitemaps.list", "search.urls.inspect"),
+        ("SOLERCIA_CONNECT_GOOGLE_CLIENT_ID",),
+        ("openid", "email", "https://www.googleapis.com/auth/webmasters.readonly"),
+        (
+            "Google OAuth Desktop app client",
+            "Search Console API enabled in the Google Cloud project",
+            "Consent screen published to production for unattended use: while it is in Testing "
+            "the refresh token expires after 7 days",
+            "The account must have access to the Search Console property",
         ),
     ),
     TargetSpec(

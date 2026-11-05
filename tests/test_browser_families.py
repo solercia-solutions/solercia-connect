@@ -220,6 +220,7 @@ def test_every_target_provider_has_one_declared_family() -> None:
         "google.gmail": ProviderFamily.GOOGLE,
         "google.calendar": ProviderFamily.GOOGLE,
         "google.meet": ProviderFamily.GOOGLE,
+        "google.searchconsole": ProviderFamily.GOOGLE,
         "jira.cloud": ProviderFamily.JIRA,
         "glpi.rest": ProviderFamily.GLPI,
         "bitbucket.cloud": ProviderFamily.BITBUCKET,
