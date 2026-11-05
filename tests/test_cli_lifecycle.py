@@ -336,7 +336,7 @@ def test_doctor_ready_branch_and_config_validation_failure_are_uniform(
     ready = runner.invoke(cli.app, ["doctor"])
 
     assert ready.exit_code == 0
-    assert len(json.loads(ready.stdout)["data"]["reports"]) == 7
+    assert len(json.loads(ready.stdout)["data"]["reports"]) == 8
 
     monkeypatch.setattr(
         cli,

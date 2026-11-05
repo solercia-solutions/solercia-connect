@@ -29,6 +29,7 @@ from solercia_connect.providers.m365_browser import (
     browser_surface_for_capability,
 )
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
+from solercia_connect.providers.search_console import GoogleSearchConsoleAdapter
 from solercia_connect.registry import ProviderRegistry
 from solercia_connect.secrets import SecretValue
 from solercia_connect.transport import HttpxTransport
@@ -116,8 +117,10 @@ def registry_from_environment(
                 health_calendar_id=_value(values, "GOOGLE_CALENDAR_ID") or "primary",
             )
         )
+        registry.register(GoogleSearchConsoleAdapter(transport, auth, expected_account=expected))
     elif (
-        parsed_type in {ConnectionType.GMAIL, ConnectionType.GOOGLE_CALENDAR}
+        parsed_type
+        in {ConnectionType.GMAIL, ConnectionType.GOOGLE_CALENDAR, ConnectionType.SEARCH_CONSOLE}
         and normalized_account is not None
         and (profile := profiles.get(parsed_type, normalized_account)) is not None
         and profile.route == "official"
@@ -132,6 +135,10 @@ def registry_from_environment(
         if parsed_type is ConnectionType.GMAIL:
             registry.register(
                 GoogleGmailAdapter(transport, auth, expected_account=normalized_account)
+            )
+        elif parsed_type is ConnectionType.SEARCH_CONSOLE:
+            registry.register(
+                GoogleSearchConsoleAdapter(transport, auth, expected_account=normalized_account)
             )
         else:
             registry.register(

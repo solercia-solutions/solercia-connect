@@ -25,6 +25,7 @@ from solercia_connect.oauth import (
     GoogleOAuthProvider,
     MicrosoftOAuthProvider,
     OAuthTokenStore,
+    grant_covers_scopes,
 )
 from solercia_connect.oauth_session import LoopbackCallbackServer, build_pkce_pair
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
@@ -34,6 +35,7 @@ from solercia_connect.providers.m365_browser import (
     browser_extraction_report,
 )
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
+from solercia_connect.providers.search_console import GoogleSearchConsoleAdapter
 from solercia_connect.transport import HttpxTransport
 
 _MICROSOFT_FALLBACK_REASONS = frozenset(
@@ -278,8 +280,7 @@ class ConnectionService:
             tokens = self._tokens.load(_token_key(parsed, normalized))
             if tokens is None:
                 return self._action_required("status", parsed, normalized)
-            required_scopes = set(target_spec(parsed).oauth_scopes)
-            if not required_scopes.issubset(tokens.scopes):
+            if not grant_covers_scopes(target_spec(parsed).oauth_scopes, tokens.scopes):
                 return self._failure(
                     "status",
                     parsed,
@@ -486,6 +487,17 @@ class ConnectionService:
         if parsed is ConnectionType.GOOGLE_CALENDAR:
             return (
                 GoogleCalendarAdapter(
+                    self._transport,
+                    oauth,
+                    expected_account=account,
+                )
+                .health()
+                .account_id
+                or ""
+            )
+        if parsed is ConnectionType.SEARCH_CONSOLE:
+            return (
+                GoogleSearchConsoleAdapter(
                     self._transport,
                     oauth,
                     expected_account=account,
@@ -794,7 +806,11 @@ def oauth_provider_from_settings(
             store=token_store,
             store_key=key,
         )
-    if parsed in {ConnectionType.GMAIL, ConnectionType.GOOGLE_CALENDAR}:
+    if parsed in {
+        ConnectionType.GMAIL,
+        ConnectionType.GOOGLE_CALENDAR,
+        ConnectionType.SEARCH_CONSOLE,
+    }:
         client_id = settings.google_client_id
         if client_id is None:
             raise ValueError("Google client ID is not configured")

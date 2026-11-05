@@ -155,6 +155,7 @@ interchangeable: a mail token is never reused for a drive call.
 | Teams | Device-code OAuth; known-meeting transcript list/download using `OnlineMeetingTranscript.Read.All` | Recording transcripts over the SharePoint drive, own and shared, by item or by period | Drive transcript contract verified live against a work tenant; official route pending admin proof |
 | Gmail | Desktop OAuth loopback with state + PKCE; read-only sent-mail capability | None | Pending dedicated account proof |
 | Google Calendar | Desktop OAuth loopback with state + PKCE; read-only event capability | None | Pending dedicated account proof |
+| Search Console | Desktop OAuth loopback with state + PKCE; `webmasters.readonly`; analytics, sitemaps, URL inspection | None | Hermetic contract only; live proof pending. See the [runbook](docs/runbooks/search-console.md) |
 | Jira | Existing API-token/JQL compatibility | None | Pending supported-site proof |
 | GLPI | Existing app/user-token session compatibility | None | Pending supported-installation proof |
 

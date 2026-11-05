@@ -24,6 +24,7 @@ def test_connection_types_are_ordered_and_accounts_are_validated_before_use() ->
         "onedrive",
         "gmail",
         "google-calendar",
+        "search-console",
         "jira",
         "glpi",
     ]

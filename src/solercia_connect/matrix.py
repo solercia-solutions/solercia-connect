@@ -63,6 +63,27 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "Recurring expansion, paging, exact account/calendar boundary",
     ),
     CapabilityRow(
+        "Google Search Console API",
+        "official",
+        "search.analytics.query",
+        "implemented-offline",
+        "Exact dates, dimensions, paging, stated coverage; hermetic contract, live proof pending",
+    ),
+    CapabilityRow(
+        "Google Search Console API",
+        "official",
+        "search.sitemaps.list",
+        "implemented-offline",
+        "Submitted sitemaps with errors and warnings; hermetic contract, live proof pending",
+    ),
+    CapabilityRow(
+        "Google Search Console API",
+        "official",
+        "search.urls.inspect",
+        "implemented-offline",
+        "One URL at a time under its property; hermetic contract, live proof pending",
+    ),
+    CapabilityRow(
         "Jira Cloud REST v3",
         "official",
         "external.issues.search",

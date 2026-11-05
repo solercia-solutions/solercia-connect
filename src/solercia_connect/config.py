@@ -32,6 +32,7 @@ class ConnectionType(StrEnum):
     ONEDRIVE = "onedrive"
     GMAIL = "gmail"
     GOOGLE_CALENDAR = "google-calendar"
+    SEARCH_CONSOLE = "search-console"
     JIRA = "jira"
     GLPI = "glpi"
 
@@ -130,6 +131,20 @@ TARGET_SPECS: tuple[TargetSpec, ...] = (
             "https://www.googleapis.com/auth/calendar.events.readonly",
         ),
         ("Google OAuth Desktop app client", "Workspace admin approval when policy requires it"),
+    ),
+    TargetSpec(
+        ConnectionType.SEARCH_CONSOLE,
+        "google.searchconsole",
+        ("search.analytics.query", "search.sitemaps.list", "search.urls.inspect"),
+        ("SOLERCIA_CONNECT_GOOGLE_CLIENT_ID",),
+        ("openid", "email", "https://www.googleapis.com/auth/webmasters.readonly"),
+        (
+            "Google OAuth Desktop app client",
+            "Search Console API enabled in the Google Cloud project",
+            "Consent screen published to production for unattended use: while it is in Testing "
+            "the refresh token expires after 7 days",
+            "The account must have access to the Search Console property",
+        ),
     ),
     TargetSpec(
         ConnectionType.JIRA,

@@ -1,6 +1,6 @@
 ---
 name: solercia-connect
-description: "Trigger: Outlook, Teams, Gmail, Google Calendar, Jira, GLPI, connector, leer correos, extraer calendario, transcripciones de reuniones. Use the standalone runtime instead of reimplementing integrations."
+description: "Trigger: Outlook, Teams, Gmail, Google Calendar, Search Console, Jira, GLPI, connector, leer correos, extraer calendario, transcripciones de reuniones, métricas SEO. Use the standalone runtime instead of reimplementing integrations."
 license: MIT
 metadata:
   author: solercia
@@ -30,6 +30,10 @@ being the current working directory.
   records, report zero. Never widen the window to find something.
 - Write large reads to a file with `--output`; never pour a month of mail through the context.
 
+- Search Console takes exact calendar days, inclusive at both ends, through `--start-date` and
+  `--end-date`, plus `--site-url sc-domain:example.com`. One query answers with one report record;
+  an empty range is `rows: []`.
+
 ## Canonical workflow
 
 ```bash
@@ -56,6 +60,7 @@ browser session rather than official OAuth.
 | `mail.sent.list` | yes | yes |
 | `calendar.events.list` | yes | yes |
 | `files.search` / `files.get` | yes | yes |
+| `search.analytics.query` / `search.sitemaps.list` / `search.urls.inspect` | yes, Google Search Console | no |
 | `meeting.transcripts.list` / `meeting.transcript.get` | yes, needs tenant scopes | yes |
 
 Records are identical across routes; `provenance` is the only field naming the route.

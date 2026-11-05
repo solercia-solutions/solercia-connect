@@ -106,6 +106,7 @@ class DoctorService:
             ConnectionType.ONEDRIVE,
             ConnectionType.GMAIL,
             ConnectionType.GOOGLE_CALENDAR,
+            ConnectionType.SEARCH_CONSOLE,
         }
         browser_profile_status = "not_applicable"
         browser_profile_detail = "Microsoft browser profiles do not apply to this target"

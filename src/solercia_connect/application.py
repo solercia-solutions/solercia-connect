@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from solercia_connect.bootstrap import registry_from_environment
@@ -23,12 +23,15 @@ from solercia_connect.domain import (
     MailQuery,
     QueryPayload,
     ReasonCode,
+    SearchAnalyticsQuery,
+    SearchSitemapsQuery,
+    SearchUrlInspectionQuery,
     TicketQuery,
     TranscriptQuery,
 )
 from solercia_connect.envelope import ErrorDetail, ResultEnvelope, versioned_record
 from solercia_connect.errors import ConnectorFailure
-from solercia_connect.oauth import KeyringOAuthTokenStore, OAuthTokenStore
+from solercia_connect.oauth import KeyringOAuthTokenStore, OAuthTokenStore, grant_covers_scopes
 from solercia_connect.runtime import ConnectorRuntime
 
 
@@ -101,7 +104,9 @@ def run_application(
             tokens = (token_store or KeyringOAuthTokenStore()).load(f"{type_value.value}:{account}")
         except ConnectorFailure as failure:
             return _configuration_failure(type_value, account, failure.safe_message)
-        if tokens is None or not set(target_spec(type_value).oauth_scopes).issubset(tokens.scopes):
+        if tokens is None or not grant_covers_scopes(
+            target_spec(type_value).oauth_scopes, tokens.scopes
+        ):
             return _interactive_action(type_value, account)
 
     try:
@@ -178,6 +183,7 @@ _OAUTH_TYPES = frozenset(
         ConnectionType.ONEDRIVE,
         ConnectionType.GMAIL,
         ConnectionType.GOOGLE_CALENDAR,
+        ConnectionType.SEARCH_CONSOLE,
     }
 )
 _INTERACTIVE_REASONS = frozenset(
@@ -266,6 +272,12 @@ def _query(
     limit = payload.get("limit", 50)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
         raise ValueError("limit must be an integer between 1 and 1000")
+    if capability in {
+        Capability.SEARCH_ANALYTICS_QUERY,
+        Capability.SEARCH_SITEMAPS_LIST,
+        Capability.SEARCH_URLS_INSPECT,
+    }:
+        return _search_console_query(capability, account, payload)
     optional_window_capabilities = {
         Capability.MEETING_TRANSCRIPTS_LIST,
         Capability.MEETING_TRANSCRIPT_GET,
@@ -367,6 +379,44 @@ def _query(
     if type_value is not ConnectionType.GLPI:
         raise ValueError("Ticket search requires the GLPI target")
     return TicketQuery(_required_window(window), min(limit, 1000))
+
+
+def _search_console_query(
+    capability: Capability,
+    account: str | None,
+    payload: dict[str, Any],
+) -> SearchAnalyticsQuery | SearchSitemapsQuery | SearchUrlInspectionQuery:
+    # Search Console takes calendar days, not instants, so this reads exact dates rather than the
+    # timezone-aware window the other capabilities share.
+    site_url = _required_string(payload, "site_url")
+    if capability is Capability.SEARCH_SITEMAPS_LIST:
+        return SearchSitemapsQuery(site_url, account)
+    if capability is Capability.SEARCH_URLS_INSPECT:
+        language = _optional_string(payload.get("language_code")) or "es-CO"
+        return SearchUrlInspectionQuery(
+            site_url,
+            _required_string(payload, "inspection_url"),
+            language,
+            account,
+        )
+    raw_dimensions = payload.get("dimensions") or ["date"]
+    if not isinstance(raw_dimensions, (list, tuple)) or not all(
+        isinstance(item, str) for item in raw_dimensions
+    ):
+        raise ValueError("dimensions must be a list of names")
+    row_limit = payload.get("row_limit", 25_000)
+    if isinstance(row_limit, bool) or not isinstance(row_limit, int):
+        raise ValueError("row_limit must be an integer")
+    return SearchAnalyticsQuery(
+        site_url,
+        date.fromisoformat(_required_string(payload, "start_date")),
+        date.fromisoformat(_required_string(payload, "end_date")),
+        tuple(raw_dimensions),
+        _optional_string(payload.get("search_type")) or "web",
+        _optional_string(payload.get("data_state")) or "final",
+        row_limit,
+        account,
+    )
 
 
 def _window(start: Any, end: Any, *, optional: bool = False) -> DateWindow | None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import isfinite
@@ -515,6 +515,23 @@ class GoogleOAuthProvider(_RefreshCapableOAuthProvider):
                 "prompt": "consent",
             },
         )
+
+
+_GOOGLE_SCOPE_ALIASES = {
+    "email": "https://www.googleapis.com/auth/userinfo.email",
+    "profile": "https://www.googleapis.com/auth/userinfo.profile",
+}
+
+
+def grant_covers_scopes(required: Iterable[str], granted: Iterable[str]) -> bool:
+    """Compare scopes by meaning, because a token response may name them differently.
+
+    Google documents ``email`` and ``userinfo.email`` as equivalent, and a grant can answer with
+    the long form of a scope requested in the short one. Comparing raw strings would make such a
+    valid grant look incomplete and demand a new interactive login on every unattended run.
+    """
+    held = {_GOOGLE_SCOPE_ALIASES.get(scope, scope) for scope in granted}
+    return all(_GOOGLE_SCOPE_ALIASES.get(scope, scope) in held for scope in required)
 
 
 @dataclass(frozen=True, slots=True)

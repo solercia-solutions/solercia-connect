@@ -57,6 +57,7 @@ def test_bootstrap_registers_every_legacy_token_provider_without_exposing_secret
         "glpi.rest",
         "google.calendar",
         "google.gmail",
+        "google.searchconsole",
         "jira.cloud",
         "microsoft.graph",
     ]

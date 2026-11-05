@@ -45,8 +45,8 @@ There is no database. Provider clients are semantic integration ports, not CRUD 
 
 ## Configuration and profiles
 
-`ConnectionType` establishes ordered targets: Outlook, Teams, Gmail, Google Calendar, Jira, and
-GLPI. Account identifiers are validated before factories, files, keyrings, browsers, or network
+`ConnectionType` establishes ordered targets: Outlook, Teams, OneDrive, Gmail, Google Calendar,
+Search Console, Jira, and GLPI. Account identifiers are validated before factories, files, keyrings, browsers, or network
 operations run. Settings come from process environment plus an optional explicit
 `SOLERCIA_CONNECT_ENV_FILE`.
 
@@ -68,7 +68,7 @@ Microsoft public device-code clients do not require a client secret.
 
 ### Google
 
-Gmail and Google Calendar use separate read-only grants. A single-use HTTP listener binds to
+Gmail, Google Calendar, and Search Console use separate read-only grants. A single-use HTTP listener binds to
 `127.0.0.1`, with finite timeout, exact callback path, one state, one code, strict UTF-8/percent
 decoding, bounded request/query sizes, and PKCE S256. The
 browser can be opened by the CLI or the URL can be opened manually with `--no-open-browser`.
@@ -81,6 +81,8 @@ browser can be opened by the CLI or the URL can be opened manually with `--no-op
   policy boundary; no browser bypass occurs.
 - Gmail: profile identity, messages list, and full MIME message reads.
 - Google Calendar: primary-calendar identity, expanded events, and acceptance/cancellation filters.
+- Search Console: OpenID Connect `userinfo` identity, Search Analytics paging over exact inclusive
+  calendar days with a stated coverage record, sitemaps, and one-URL inspection.
 - Jira and GLPI retain their existing API-token/session contracts.
 
 Official references: [Teams transcript listing](https://learn.microsoft.com/en-us/graph/api/onlinemeeting-list-transcripts?view=graph-rest-1.0),

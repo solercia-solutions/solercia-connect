@@ -29,8 +29,8 @@ sensitive.
   case-insensitively with the requested/profile account. Missing, ambiguous, or mismatched
   identity produces zero data reads.
 - Use least-privilege read scopes: Microsoft `Mail.Read`, `Calendars.Read`, and the separate Teams
-  `OnlineMeetingTranscript.Read.All`; Google `gmail.readonly` and
-  `calendar.events.readonly` are separate grants.
+  `OnlineMeetingTranscript.Read.All`; Google `gmail.readonly`,
+  `calendar.events.readonly`, and `webmasters.readonly` are separate grants.
 - Teams transcripts require work/school accounts and tenant permission. Personal accounts and
   tenant/admin policy blocks never route around policy.
 
