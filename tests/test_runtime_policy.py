@@ -17,11 +17,12 @@ from solercia_connect.domain import (
     ReasonCode,
     RouteKind,
     StepOutcome,
+    TicketQuery,
 )
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.providers.m365_browser import Microsoft365BrowserAdapter
 from solercia_connect.registry import ProviderRegistry
-from solercia_connect.runtime import ConnectorRuntime
+from solercia_connect.runtime import ConnectorRuntime, RoutePolicy
 from tests.fakes import (
     NOW,
     FakeAdapter,
@@ -41,6 +42,27 @@ def request() -> ConnectorRequest:
         Capability.MAIL_SENT_LIST,
         MailQuery(window, account_id="user@example.com"),
     )
+
+
+def test_inbox_mail_is_allowlisted_for_the_microsoft_browser_fallback() -> None:
+    window = DateWindow(
+        datetime(2026, 8, 1, tzinfo=UTC),
+        datetime(2026, 9, 1, tzinfo=UTC),
+    )
+    inbox_request = ConnectorRequest.create(
+        "microsoft.graph",
+        Capability.MAIL_INBOX_LIST,
+        MailQuery(window, account_id="user@example.com"),
+    )
+    failure = ConnectorFailure(
+        ReasonCode.OFFICIAL_CAPABILITY_UNAVAILABLE,
+        "Official adapter does not expose the requested capability",
+    )
+    policy = RoutePolicy()
+
+    assert Capability.MAIL_INBOX_LIST in policy.browser_fallback_capabilities
+    assert policy.allows_browser(inbox_request, failure, ProviderFamily.MICROSOFT) is True
+    assert policy.allows_browser(inbox_request, failure, ProviderFamily.GOOGLE) is False
 
 
 def test_official_success_never_calls_browser(tmp_path: Path) -> None:
@@ -375,31 +397,46 @@ def test_missing_official_capability_is_recorded_before_disabled_fallback() -> N
     ]
 
 
-def test_browser_fallback_is_denied_for_non_microsoft_family() -> None:
+@pytest.mark.parametrize(
+    ("family", "official_id", "browser_id", "capability"),
+    [
+        # A family on no browser allowlist, with a capability on no family's list.
+        (ProviderFamily.GLPI, "glpi.rest", "glpi.browser", Capability.TICKETS_SEARCH),
+        # An allowlisted family asking for a capability outside its own list.
+        (ProviderFamily.GOOGLE, "google.gmail", "google.browser", Capability.MAIL_INBOX_LIST),
+    ],
+)
+def test_browser_fallback_is_denied_outside_the_family_allowlist(
+    family: ProviderFamily,
+    official_id: str,
+    browser_id: str,
+    capability: Capability,
+) -> None:
     official = FakeAdapter(
-        "google.gmail",
-        ProviderFamily.GOOGLE,
+        official_id,
+        family,
         RouteKind.OFFICIAL,
         frozenset(),
     )
     browser = FakeAdapter(
-        "google.browser",
-        ProviderFamily.GOOGLE,
+        browser_id,
+        family,
         RouteKind.BROWSER,
-        frozenset({Capability.MAIL_SENT_LIST}),
-        (mail_record("google.browser", ProviderFamily.GOOGLE, RouteKind.BROWSER),),
+        frozenset({capability}),
     )
     registry = ProviderRegistry()
     registry.register(official)
     registry.register(browser)
-    google_request = ConnectorRequest.create(
-        "google.gmail",
-        Capability.MAIL_SENT_LIST,
-        request().payload,
+    denied_request = ConnectorRequest.create(
+        official_id,
+        capability,
+        TicketQuery(request().payload.window)
+        if capability is Capability.TICKETS_SEARCH
+        else request().payload,
     )
 
     outcome = ConnectorRuntime(registry, clock=lambda: NOW).execute(
-        google_request,
+        denied_request,
         browser_fallback_enabled=True,
     )
 

@@ -44,6 +44,10 @@ unchecked until dedicated live evidence exists.
 - [ ] Implement and live-validate Teams/SharePoint browser transcript fallback without token capture.
 - [ ] Capture sanitized selector fixtures and define an upgrade compatibility policy.
 - [ ] Add mail attachment metadata/content reads behind explicit capabilities.
+- [x] Outlook category write (`mail.categories.set`) over the browser route, offline-proven, behind
+  per-invocation `--allow-write`.
+- [ ] Live-prove the category write, including `If-Match`, on a test message and test category.
+- [ ] Decide the scope model that would let the official route request `Mail.ReadWrite`.
 
 ## Google Workspace — Gmail and Calendar
 
@@ -53,6 +57,8 @@ unchecked until dedicated live evidence exists.
 - [x] Refresh-capable Google OAuth provider and secure token storage.
 - [x] CLI-owned Desktop OAuth loopback with cryptographic state, PKCE S256, and finite timeout.
 - [x] Separate Gmail readonly and Calendar events-readonly connection profiles/scopes.
+- [x] Search Console read-only target: analytics, sitemaps, and URL inspection (hermetic contract).
+- [ ] Validate the Search Console contract against a real connected account.
 - [ ] Complete real Google OAuth consent and app verification where required.
 - [ ] Validate Gmail and Calendar contracts against dedicated Workspace test accounts.
 - [ ] Add Gmail thread expansion as an explicit capability.
@@ -62,6 +68,10 @@ unchecked until dedicated live evidence exists.
 
 - [x] `/myself` health/account validation and enhanced JQL representative read.
 - [x] Normalized completed/resolved issue records with provenance.
+- [x] Issue transition listing (`external.issues.transitions.list`) and the one-issue status
+  transition write (`external.issues.transition`), offline-proven, official route only, behind
+  per-invocation `--allow-write`.
+- [ ] Live-prove the transition listing and one transition on a test issue of a real Jira site.
 - [ ] Validate classic API-token and OAuth integrations against real Jira Cloud sites.
 - [ ] Add configurable project/type/status policy objects without embedding report rules.
 - [ ] Add bounded paging fixtures for sites with more than one result page.

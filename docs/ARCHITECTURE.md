@@ -2,29 +2,42 @@
 
 Solercia Connect is an independently installable connector product. Interactive OAuth belongs to
 the installed CLI; the loopback FastAPI service is a non-interactive adapter over the same Python
-application services. Skills and docs orchestrate the runtime but contain no provider behavior.
+application services, with one explicit local opt-in for the supervised Microsoft browser login.
+Skills and docs orchestrate the runtime but contain no provider behavior.
 
 ## Request paths
 
 ```text
 Typer CLI (interactive) -----------+
                                    |
-FastAPI loopback (non-interactive) +--> application services
+FastAPI loopback (non-interactive, +--> application services
+  opt-in browser login)            |
                                           |-- typed settings + doctor
                                           |-- connection lifecycle + OAuth
                                           |-- capability execution
                                           v
                                    ConnectorRuntime + RoutePolicy
                                      | official ProviderAdapter
-                                     ` Microsoft browser fallback (explicit)
+                                     ` browser fallback (explicit): Microsoft, Google, Jira
                                           v
                               versioned envelope + record(s) + receipt
 ```
 
-HTTP never opens or invokes a browser. The FastAPI boundary rejects a requested browser route
-before calling an application service; non-interactive application execution also excludes the
-browser adapter before runtime construction. An interactive prerequisite becomes
+By default HTTP never opens or invokes a browser. The FastAPI boundary rejects a requested browser
+route before calling an application service; non-interactive application execution also excludes
+the browser adapter before runtime construction. An interactive prerequisite becomes
 `action_required` with the exact `solercia-connect connect TYPE ACCOUNT` command.
+
+The opt-in is `SOLERCIA_CONNECT_HTTP_INTERACTIVE_LOGIN=true`, effective only together with
+`SOLERCIA_CONNECT_BROWSER_FALLBACK=true` and a configured API key (`http_interactive_allowed`).
+With the gate on, `POST /v1/connections/connect` runs `ConnectionService.connect_browser` in a
+daemon thread tracked by a process-local `InteractiveSessionRegistry` (one headed browser at a
+time, results kept in memory for one hour), `GET /v1/connections/sessions/{id}` reports it, and
+`/v1/connections/test` and `/v1/run` accept `allow_browser_fallback` so a browser-route profile
+serves reads headless (`run_application(..., browser_via_http=True)`). `connect_browser` is the one
+documented deviation from official-first: over HTTP there is no terminal in which to show a device
+code, so it goes straight to the browser route. Login and MFA still happen on Microsoft's page
+inside the persistent profile; no credential crosses HTTP.
 
 ## Boundaries
 
@@ -38,15 +51,15 @@ browser adapter before runtime construction. An interactive prerequisite becomes
 | Domain | Capabilities, queries, DTOs, provenance, receipt vocabulary | HTTP, OAuth, selectors |
 | Provider adapters | Vendor endpoints, paging, normalization, pre-read identity | Retry/fallback policy, persistence |
 | Runtime | Fixed retries, fallback decision, immutable receipt | Vendor parsing, LLM route selection |
-| FastAPI adapter | Typed POST bodies, loopback API-key boundary, HTTP status mapping | Interactive login or provider-specific logic |
+| FastAPI adapter | Typed POST bodies, loopback API-key boundary, HTTP status mapping, opt-in supervised browser sessions | Hidden interaction, credentials in HTTP, provider-specific logic |
 | Browser adapter | Dedicated-profile login/MFA/status, transient Outlook session authorization, and identity binding | Persisted tokens, passwords, undocumented extraction claims |
 
 There is no database. Provider clients are semantic integration ports, not CRUD repositories.
 
 ## Configuration and profiles
 
-`ConnectionType` establishes ordered targets: Outlook, Teams, Gmail, Google Calendar, Jira, and
-GLPI. Account identifiers are validated before factories, files, keyrings, browsers, or network
+`ConnectionType` establishes ordered targets: Outlook, Teams, OneDrive, Gmail, Google Calendar,
+Search Console, Jira, and GLPI. Account identifiers are validated before factories, files, keyrings, browsers, or network
 operations run. Settings come from process environment plus an optional explicit
 `SOLERCIA_CONNECT_ENV_FILE`.
 
@@ -68,7 +81,7 @@ Microsoft public device-code clients do not require a client secret.
 
 ### Google
 
-Gmail and Google Calendar use separate read-only grants. A single-use HTTP listener binds to
+Gmail, Google Calendar, and Search Console use separate read-only grants. A single-use HTTP listener binds to
 `127.0.0.1`, with finite timeout, exact callback path, one state, one code, strict UTF-8/percent
 decoding, bounded request/query sizes, and PKCE S256. The
 browser can be opened by the CLI or the URL can be opened manually with `--no-open-browser`.
@@ -81,6 +94,8 @@ browser can be opened by the CLI or the URL can be opened manually with `--no-op
   policy boundary; no browser bypass occurs.
 - Gmail: profile identity, messages list, and full MIME message reads.
 - Google Calendar: primary-calendar identity, expanded events, and acceptance/cancellation filters.
+- Search Console: OpenID Connect `userinfo` identity, Search Analytics paging over exact inclusive
+  calendar days with a stated coverage record, sitemaps, and one-URL inspection.
 - Jira and GLPI retain their existing API-token/session contracts.
 
 Official references: [Teams transcript listing](https://learn.microsoft.com/en-us/graph/api/onlinemeeting-list-transcripts?view=graph-rest-1.0),
@@ -91,12 +106,47 @@ Official references: [Teams transcript listing](https://learn.microsoft.com/en-u
 
 ## Routing and browser status
 
-Official failures are typed before routing. Only `admin_consent_required` and
-`official_capability_unavailable` can enter Microsoft browser fallback, and only after the current
-CLI invocation explicitly supplies `--allow-browser-fallback`. Configuration can make the route
+Official failures are typed before routing. Only `admin_consent_required`,
+`official_capability_unavailable`, and `configuration_invalid` can enter browser fallback, only
+for a capability on the requesting family's own allowlist, and only after the current CLI
+invocation explicitly supplies `--allow-browser-fallback`. Configuration can make the route
 available but cannot authorize a call; every browser attempt requires --allow-browser-fallback.
-Invalid credentials, identity mismatch, tenant transcript policy, malformed data, and
-unknown errors never fall back.
+Invalid credentials, identity mismatch, tenant transcript policy, malformed data, and unknown
+errors never fall back.
+
+The reasons have one source in `runtime.py`: `RUNTIME_FALLBACK_REASONS`, shared by every family,
+and `CONNECT_FALLBACK_REASONS`, the same set without `configuration_invalid`, which `connect`
+uses because a missing client ID is detected before OAuth starts and offered the browser route
+on its own.
+
+`docs/decisions/2026-10-25-fallback-navegador-google-jira.md` extends the fallback families from
+Microsoft to Google and Jira, with one browser package and one profile root per family.
+`RoutePolicy.browser_fallback_families` holds the three families, and
+`BROWSER_FALLBACK_CAPABILITIES` in `runtime.py` lists what each one may serve:
+
+| Family | Browser capabilities |
+| --- | --- |
+| Microsoft | `mail.sent.list`, `mail.inbox.list`, `mail.categories.set`, `calendar.events.list`, `meeting.transcripts.list`, `meeting.transcript.get`, `files.search`, `files.get` |
+| Google | `mail.sent.list`, `calendar.events.list`, `meeting.transcripts.list`, `meeting.transcript.get` |
+| Jira | `external.issues.search` |
+
+A target's route exists only once its family's browser adapter serves one of the target's
+capabilities (`browser_routes.py`). Today that is every Microsoft target and Google Meet
+(`providers/google_browser/`, Calendar web and Docs `mobilebasic` per the 2026-10-26 precision of
+D1). A Gmail, Google Calendar or Jira run that is allowed by policy ends in
+`browser_capability_not_implemented`. The decision's D0.1 adds Google `admin_policy_enforced` and
+a Jira API token blocked by organization policy as organizational permission not available,
+eligible like `admin_consent_required`.
+
+The two writes, `mail.categories.set` and `external.issues.transition`, add a second
+per-invocation gate: the runtime refuses them with `write_not_authorized` before any adapter runs
+unless the request carries the CLI's `--allow-write`, and it never retries a write. The category
+write is described next; the Jira transition runs only on the official Jira adapter, which is on
+no browser list (`docs/decisions/2026-10-25-escritura-transiciones-jira.md`). The official Graph adapter does not expose it (its
+`Mail.ReadWrite` scope would invalidate stored Outlook grants), so it reaches the browser adapter
+through `official_capability_unavailable`. There the driver reads the message's categories and
+version, writes nothing when the names already match, and otherwise sends one `If-Match` `PATCH`
+whose body holds only the category collection. The HTTP service rejects it with 403.
 
 The same per-invocation boundary applies to browser-backed connection status, explicit browser
 health, and the legacy `m365 login/status` aliases. Merely loading a browser profile or setting the

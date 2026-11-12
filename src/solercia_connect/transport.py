@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 import httpx
@@ -11,6 +11,9 @@ from solercia_connect.errors import ConnectorFailure, TransportNetworkError, Tra
 from solercia_connect.ports import TransportResponse
 
 type JsonPayload = dict[str, Any] | list[Any]
+# A provider's chance to classify an error status from its structured body before the generic
+# status mapping. It returns a failure with a fixed message, never one that quotes the body.
+type FailureRefiner = Callable[[int, bytes], ConnectorFailure | None]
 
 
 class HttpxTransport:
@@ -58,6 +61,7 @@ def request_json(
     params: Mapping[str, Any] | None = None,
     json_body: Mapping[str, Any] | None = None,
     timeout_seconds: float = 30.0,
+    failure_refiner: FailureRefiner | None = None,
 ) -> JsonPayload:
     try:
         response = cast(
@@ -78,7 +82,7 @@ def request_json(
             ReasonCode.NETWORK_UNAVAILABLE, "Provider network is unavailable"
         ) from exc
 
-    _raise_for_status(response.status_code)
+    _raise_for_status(response, failure_refiner)
     if response.status_code == 204 or not response.content:
         return {}
     try:
@@ -104,6 +108,7 @@ def request_bytes(
     headers: Mapping[str, str] | None = None,
     params: Mapping[str, Any] | None = None,
     timeout_seconds: float = 30.0,
+    failure_refiner: FailureRefiner | None = None,
 ) -> TransportResponse:
     try:
         response = cast(
@@ -122,13 +127,16 @@ def request_bytes(
         raise ConnectorFailure(
             ReasonCode.NETWORK_UNAVAILABLE, "Provider network is unavailable"
         ) from exc
-    _raise_for_status(response.status_code)
+    _raise_for_status(response, failure_refiner)
     return response
 
 
-def _raise_for_status(status_code: int) -> None:
+def _raise_for_status(response: TransportResponse, refiner: FailureRefiner | None) -> None:
+    status_code = response.status_code
     if 200 <= status_code < 300:
         return
+    if refiner is not None and (refined := refiner(status_code, response.content)) is not None:
+        raise refined
     if status_code == 401:
         raise ConnectorFailure(ReasonCode.INVALID_CREDENTIALS, "Provider rejected credentials")
     if status_code == 403:

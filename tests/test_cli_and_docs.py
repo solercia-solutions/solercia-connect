@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from solercia_connect import __version__
 from solercia_connect.cli import app
+from solercia_connect.matrix import CAPABILITY_MATRIX
 
 runner = CliRunner()
 
@@ -135,6 +136,20 @@ def test_readme_documents_the_no_client_id_browser_fallback_make_path() -> None:
     assert "make connect TYPE=outlook ACCOUNT=user@example.com ALLOW_BROWSER_FALLBACK=1" in readme
     assert "`connected_browser`" in readme
     assert '"route": "browser"' in readme
+
+
+def test_docs_declare_the_inbox_capability_for_both_routes() -> None:
+    root = Path(__file__).parents[1]
+    readme = (root / "README.md").read_text()
+    runbook = (root / "docs/runbooks/outlook.md").read_text()
+    uso_con_agentes = (root / "docs/USO-CON-AGENTES.md").read_text()
+    skill = (root / "agents/skills/solercia-connect/SKILL.md").read_text()
+
+    for document in (readme, runbook, uso_con_agentes, skill):
+        assert "mail.inbox.list" in document
+
+    inbox_rows = [row for row in CAPABILITY_MATRIX if row.capability == "mail.inbox.list"]
+    assert {row.channel for row in inbox_rows} == {"official", "browser"}
 
 
 def test_canonical_agent_symlinks_are_valid() -> None:

@@ -5,7 +5,7 @@ import re
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
 
 from solercia_connect.auth import AuthorizationProvider
@@ -33,6 +33,7 @@ from solercia_connect.domain import (
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.ports import HTTPTransport, ProviderDescriptor
 from solercia_connect.providers._microsoft import (
+    MailFolderName,
     microsoft_provenance,
     normalize_drive_item,
     normalize_mail_attachment,
@@ -52,6 +53,29 @@ from solercia_connect.transport import request_bytes, request_json
 
 _MICROSOFT_GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
+_GRAPH_MAIL_SELECT_BASE = (
+    "id",
+    "subject",
+    "sentDateTime",
+    "from",
+    "sender",
+    "toRecipients",
+    "ccRecipients",
+    "body",
+    "conversationId",
+    "hasAttachments",
+    "internetMessageId",
+    "categories",
+)
+_GRAPH_SENT_SELECT = ",".join(_GRAPH_MAIL_SELECT_BASE)  # 12 fields
+_GRAPH_INBOX_SELECT = ",".join((*_GRAPH_MAIL_SELECT_BASE, "receivedDateTime"))  # 13 fields
+_GraphMailFolder = Literal["inbox", "sentitems"]
+_GraphMailTimeField = Literal["receivedDateTime", "sentDateTime"]
+_GRAPH_MAIL_FOLDERS: dict[_GraphMailFolder, tuple[str, MailFolderName]] = {
+    "sentitems": (_GRAPH_SENT_SELECT, "sent"),
+    "inbox": (_GRAPH_INBOX_SELECT, "inbox"),
+}
+
 
 class MicrosoftGraphAdapter:
     descriptor = ProviderDescriptor(
@@ -61,6 +85,7 @@ class MicrosoftGraphAdapter:
         frozenset(
             {
                 Capability.MAIL_SENT_LIST,
+                Capability.MAIL_INBOX_LIST,
                 Capability.CALENDAR_EVENTS_LIST,
                 Capability.MEETING_TRANSCRIPTS_LIST,
                 Capability.MEETING_TRANSCRIPT_GET,
@@ -107,6 +132,10 @@ class MicrosoftGraphAdapter:
             request.payload, MailQuery
         ):
             return self.list_sent_mail(request.payload)
+        if request.capability is Capability.MAIL_INBOX_LIST and isinstance(
+            request.payload, MailQuery
+        ):
+            return self.list_inbox_mail(request.payload)
         if request.capability is Capability.CALENDAR_EVENTS_LIST and isinstance(
             request.payload, CalendarQuery
         ):
@@ -133,28 +162,45 @@ class MicrosoftGraphAdapter:
         )
 
     def list_sent_mail(self, query: MailQuery) -> tuple[MailMessage, ...]:
+        return self._list_folder_mail(
+            query, folder="sentitems", time_field="sentDateTime", order="desc"
+        )
+
+    def list_inbox_mail(self, query: MailQuery) -> tuple[MailMessage, ...]:
+        return self._list_folder_mail(
+            query, folder="inbox", time_field="receivedDateTime", order="asc"
+        )
+
+    def _list_folder_mail(
+        self,
+        query: MailQuery,
+        *,
+        folder: _GraphMailFolder,
+        time_field: _GraphMailTimeField,
+        order: Literal["asc", "desc"],
+    ) -> tuple[MailMessage, ...]:
         account_id = self._identity()
         if query.account_id and query.account_id.lower() != account_id.lower():
             raise ConnectorFailure(
                 ReasonCode.AUTHORIZATION_BOUNDARY_VIOLATION,
                 "Requested mailbox does not match the authenticated Microsoft account",
             )
+        select, record_folder = _GRAPH_MAIL_FOLDERS[folder]
+        endpoint = f"/me/mailFolders/{folder}/messages"
         params: dict[str, Any] = {
             "$filter": (
-                f"sentDateTime ge {_graph_datetime(query.window.start)} "
-                f"and sentDateTime lt {_graph_datetime(query.window.end)}"
+                f"{time_field} ge {_graph_datetime(query.window.start)} "
+                f"and {time_field} lt {_graph_datetime(query.window.end)}"
             ),
-            "$select": (
-                "id,subject,sentDateTime,from,sender,toRecipients,ccRecipients,body,"
-                "conversationId,hasAttachments"
-            ),
-            "$orderby": "sentDateTime desc",
+            "$select": select,
+            "$orderby": f"{time_field} {order}",
             "$top": min(query.limit, 100),
         }
-        items = self._paged_values(
-            f"{self._base_url}/me/mailFolders/sentitems/messages", params, query.limit
-        )
-        messages = [self._normalize_message(item, account_id) for item in items]
+        items = self._paged_values(f"{self._base_url}{endpoint}", params, query.limit)
+        messages = [
+            self._normalize_message(item, account_id, endpoint=endpoint, folder=record_folder)
+            for item in items
+        ]
         if query.include_attachments:
             messages = [self._message_with_attachments(message, query) for message in messages]
         return tuple(messages)
@@ -464,7 +510,14 @@ class MicrosoftGraphAdapter:
             next_params = None
         return items
 
-    def _normalize_message(self, item: dict[str, Any], account_id: str) -> MailMessage:
+    def _normalize_message(
+        self,
+        item: dict[str, Any],
+        account_id: str,
+        *,
+        endpoint: str,
+        folder: MailFolderName,
+    ) -> MailMessage:
         """Normalize through the shared Microsoft layer, exactly like the browser route."""
         source_id = require_string(item.get("id"), "message.id")
         return normalize_mail_message(
@@ -475,8 +528,9 @@ class MicrosoftGraphAdapter:
                 source_id=source_id,
                 fetched_at=self._clock(),
                 account_id=account_id,
-                endpoint="/me/mailFolders/sentitems/messages",
+                endpoint=endpoint,
             ),
+            folder=folder,
         )
 
     def _normalize_event(self, item: dict[str, Any], account_id: str) -> CalendarEvent:

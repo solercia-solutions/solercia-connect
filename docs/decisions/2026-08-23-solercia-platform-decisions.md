@@ -2,7 +2,7 @@
 
 - **Estado:** Aceptado
 - **Fecha de corte:** 2026-08-23
-- **Última actualización:** 2026-08-24
+- **Última actualización:** 2026-10-26
 - **Ámbito:** Identidad de producto, independencia operativa, integraciones, autenticación, límites de seguridad, persistencia y convenciones de datos
 - **Aplicación:** Obligatoria para cambios nuevos dentro de este ámbito
 
@@ -22,7 +22,7 @@ este registro fija la línea base aceptada al 2026-08-23.
 
 | Producto | Responsabilidad | Límite |
 | --- | --- | --- |
-| **Solercia Connect** | Runtime conector transversal para Outlook/Microsoft 365, Teams, Gmail, Google Calendar, Jira y GLPI. | Obtiene y normaliza hechos externos; no decide prioridades ni estados de trabajo. |
+| **Solercia Connect** | Runtime conector transversal para Outlook/Microsoft 365, Teams, Gmail, Google Calendar, Jira, Bitbucket Cloud (lecturas según el [ADR del 2026-10-26](2026-10-26-conector-bitbucket.md) y creación de repositorios según el [ADR del 2026-10-25](2026-10-25-escritura-creacion-repositorios-bitbucket.md)) y GLPI. | Obtiene y normaliza hechos externos; no decide prioridades ni estados de trabajo. |
 | **Solercia Command** | Producto de trabajo, proyectos, tareas, calendario y priorización; es el nombre aprobado del checkout anteriormente llamado `gestion_proyectos`. | Es propietario del comportamiento operativo de trabajo; no reimplementa conectores. |
 | **Solercia Security** | Producto separado que puede consumir contratos de integración. | No es una dependencia de runtime de Connect ni de Command. |
 
@@ -30,7 +30,13 @@ este registro fija la línea base aceptada al 2026-08-23.
 
 ### 1. Identidad y propiedad funcional
 
-1. Solercia Connect concentra la integración determinista con los proveedores admitidos.
+1. Solercia Connect concentra la integración determinista con los proveedores admitidos. Bitbucket
+   Cloud se admitió el 2026-10-26, de solo lectura y solo por la API oficial, según
+   [`2026-10-26-conector-bitbucket.md`](2026-10-26-conector-bitbucket.md). Su única escritura, la
+   creación de repositorios (`scm.repositories.create`), corre sobre la conexión separada
+   `bitbucket-admin`, según
+   [`2026-10-25-escritura-creacion-repositorios-bitbucket.md`](2026-10-25-escritura-creacion-repositorios-bitbucket.md);
+   el target `bitbucket` sigue siendo de solo lectura.
 2. Solercia Command es el nombre de producto aprobado y `solercia-command` es el checkout local
    aprobado. Los identificadores históricos de base de datos, API, paquetes, despliegue, remotos,
    dominios o marca jurídica no se renombran por inferencia.
@@ -57,19 +63,23 @@ este registro fija la línea base aceptada al 2026-08-23.
 
 1. La ruta primaria es siempre la API oficial con OAuth oficial o el mecanismo oficial de
    autenticación del proveedor.
-2. Playwright es únicamente un fallback para Microsoft. Debe ser explícito, tipado, incluido en
-   listas permitidas, determinista y fail-closed mientras no estén disponibles los permisos del
-   tenant. La configuración global solo habilita su disponibilidad: cada intento, incluidos
-   status, health y los alias m365, requiere `--allow-browser-fallback` en esa invocación.
+2. Playwright es únicamente un fallback para Microsoft, Google y Jira, según
+   [`2026-10-25-fallback-navegador-google-jira.md`](2026-10-25-fallback-navegador-google-jira.md).
+   Debe ser explícito, tipado, incluido en listas permitidas, determinista y fail-closed mientras
+   no estén disponibles los permisos del tenant o de la organización. La configuración global solo
+   habilita su disponibilidad: cada intento, incluidos status, health y los alias m365, requiere
+   `--allow-browser-fallback` en esa invocación.
 3. El usuario realiza el inicio de sesión interactivo, la contraseña y el MFA. Los prompts y logs
    de agentes nunca solicitan ni registran credenciales, cookies o tokens.
 4. Ningún LLM elige rutas, selectores, reintentos, identidad de cuenta o clasificación de fallos.
    Esas decisiones pertenecen a código y contratos deterministas.
 5. Las pruebas offline no demuestran estabilidad de APIs reales, permisos de tenant, selectores
    web, sesiones de navegador ni contratos vivos con proveedores.
-6. El fallback de navegador selecciona el destino por `ConnectionType`: Outlook abre Outlook y
-   Teams abre Teams. La ventana visible se usa únicamente para login/MFA y se cierra de forma
-   intencional para persistir la sesión en el perfil privado y acotado por cuenta.
+6. El fallback de navegador selecciona el destino por `ConnectionType`: Outlook abre Outlook,
+   Teams abre Teams, Gmail, Google Calendar y Google Meet abren su servicio de Google, y Jira abre
+   el sitio de la cuenta (ADR del 2026-10-25). La ventana visible se usa únicamente para login/MFA
+   y se cierra de forma intencional para persistir la sesión en el perfil privado y acotado por
+   cuenta.
 7. No existe un daemon de navegador. Después del cierre visible, Connect reabre inmediatamente el
    mismo perfil en modo headless y exige la misma identidad observada antes de guardar
    `connected_browser`; los estados posteriores repiten una apertura headless acotada y la cierran.
@@ -80,7 +90,39 @@ este registro fija la línea base aceptada al 2026-08-23.
    sesión web; no usa selectores DOM de identidad. El Bearer se acepta solo desde hosts HTTPS
    Outlook/Substrate permitidos, permanece transitorio, no se registra ni persiste y se elimina en
    éxito o error. Teams conserva su estrategia DOM versionada y acotada. Esta prueba de identidad no
-   habilita extracción de buzón ni modifica el estado `not_implemented` del navegador.
+   habilita extracción de buzón ni modifica el estado `not_implemented` del navegador. Jira, según
+   el ADR del 2026-10-25, exige que el `accountId` de `GET /rest/api/3/myself` sea igual a la
+   cabecera de respuesta `X-AAccountId`, ligado al host del sitio; si `emailAddress` está presente
+   debe coincidir con la cuenta, y un `accountId` vacío o `unknown` falla cerrado. La prueba de
+   Google se elige y se valida en vivo (tarea T5.1 de ese ADR); mientras no exista, la ruta de
+   navegador de Google falla cerrada.
+9. Connect es de solo lectura con una única excepción, aceptada el 2026-10-19 en
+   [`2026-10-19-escritura-categorias-outlook.md`](2026-10-19-escritura-categorias-outlook.md):
+   asignar categorías de Outlook a un mensaje existente (`mail.categories.set`). Cada invocación
+   exige `--allow-write`, apagada por defecto; la ruta de navegador exige además
+   `--allow-browser-fallback`. La única escritura es un `PATCH` cuyo cuerpo contiene solo las
+   categorías, condicionado a la versión leída, después de verificar la identidad del buzón. El
+   servicio HTTP la rechaza por diseño. La ruta oficial necesita `Mail.ReadWrite` y queda pendiente
+   de una decisión de alcances, porque agregarlo al target `outlook` invalida las concesiones
+   existentes. El 2026-10-25 se aceptó una segunda excepción en
+   [`2026-10-25-escritura-transiciones-jira.md`](2026-10-25-escritura-transiciones-jira.md): la
+   transición de estado de un issue de Jira (`external.issues.transition`), solo por la API REST
+   oficial, con `--allow-write` en cada invocación, una clave por invocación, sin campos, sin HTTP,
+   sin reintentos y con lectura del estado antes y después. El mismo día se aceptó una tercera
+   excepción en [`2026-10-25-envio-correo-gmail-dos-pasos.md`](2026-10-25-envio-correo-gmail-dos-pasos.md):
+   el envío de correo de Gmail en dos pasos, primero un borrador (`mail.draft.create`) y, después de
+   la revisión y la aprobación expresa de la persona usuaria, el envío de ese borrador
+   (`mail.draft.send`). Solo usa la API oficial y la conexión separada `gmail-compose` con
+   `gmail.compose`; el target `gmail` sigue siendo de solo lectura. Exige `--allow-write` en cada
+   invocación, fija el remitente en la cuenta conectada, verifica duplicados en Enviados antes de
+   enviar y no admite HTTP ni reintentos. El 2026-10-25 también se aceptó una cuarta excepción en
+   [`2026-10-25-escritura-creacion-repositorios-bitbucket.md`](2026-10-25-escritura-creacion-repositorios-bitbucket.md):
+   la creación de un repositorio git privado y vacío en un proyecto explícito de un workspace de
+   Bitbucket Cloud (`scm.repositories.create`). Solo usa la API oficial y la conexión separada
+   `bitbucket-admin`, con su propio API token; el target `bitbucket` sigue siendo de solo lectura.
+   Exige `--allow-write` en cada invocación, consulta antes que el repositorio no exista y que el
+   proyecto sí, fuerza un repositorio privado sin bifurcaciones públicas, verifica la respuesta y no
+   admite HTTP, reintentos ni push. Ninguna otra escritura queda autorizada.
 
 ### 4. Frontera de seguridad e identidad de cuenta
 
@@ -92,7 +134,9 @@ este registro fija la línea base aceptada al 2026-08-23.
 3. La procedencia usa la identidad observada y verificada; nunca sustituye esa evidencia por una
    identidad solicitada sin verificar.
 4. OAuth usa endpoints oficiales fijos, PKCE, rotación o preservación correcta de refresh tokens
-   y un almacén seguro de tokens inyectado. No existe fallback a texto plano.
+   y un almacén seguro de tokens inyectado. No existe fallback a texto plano: el almacén en
+   archivo del modo proyecto no reemplaza al llavero ante un fallo, solo se usa cuando
+   `SOLERCIA_CONNECT_HOME` está definida (ADR del 2026-10-25 sobre el modo proyecto).
 5. El polling de dispositivo queda acotado por cantidad de intentos, demora máxima local y tiempo
    restante de expiración.
 6. El servicio de conexión usado por la CLI es propietario del listener loopback acotado, la
@@ -100,10 +144,14 @@ este registro fija la línea base aceptada al 2026-08-23.
    nunca inicia ni espera un flujo interactivo.
 7. Los perfiles locales no secretos se escriben de forma atómica y privada bajo XDG. Tokens y
    refresh tokens permanecen exclusivamente en un `OAuthTokenStore` seguro inyectado; las
-   variables de access token se conservan solo como bootstrap de desarrollo explícito.
+   variables de access token se conservan solo como bootstrap de desarrollo explícito. En modo
+   proyecto, perfiles, sesiones de navegador y secretos quedan en `SOLERCIA_CONNECT_HOME`, y los
+   secretos se guardan en archivos privados en texto plano, como riesgo aceptado en ese ADR.
 8. La lectura de perfiles rechaza directorios o archivos públicos, enlaces simbólicos, tipos no
    regulares y ownership ajeno cuando la plataforma lo expone. Nunca corrige permisos inseguros de
-   forma silenciosa. Doctor y Playwright comparten el mismo auditor de rutas de perfil.
+   forma silenciosa. Doctor y Playwright comparten el mismo auditor de rutas de perfil. Cada
+   familia de navegador tiene su propia raíz de perfil (`m365`, `google` y `jira`), con un perfil
+   dedicado por cuenta, y nunca comparte perfiles con otra familia (ADR del 2026-10-25).
 
 ### 5. Arquitectura y contratos de integración
 
@@ -122,7 +170,9 @@ este registro fija la línea base aceptada al 2026-08-23.
 6. La lista y descarga oficial de transcripciones de Teams para un meeting ID conocido están
    implementadas contra Graph v1.0 y probadas offline. Sus scopes, políticas de tenant y contenido
    siguen pendientes de evidencia viva. La extracción por navegador no está implementada y una
-   sesión conectada no constituye una promesa de extracción.
+   sesión conectada no constituye una promesa de extracción. Las transcripciones de Google Meet
+   por navegador quedan autorizadas por el ADR del 2026-10-25, mediante la exportación a texto del
+   documento de Docs, y siguen pendientes de implementación.
 7. CLI y HTTP comparten el sobre versionado `solercia.connect/v1`, errores estructurados y DTOs
    normalizados con schema propio; ningún adaptador expone cuerpos crudos del proveedor.
 
@@ -201,6 +251,8 @@ este registro fija la línea base aceptada al 2026-08-23.
 - Añadir, cuando el despliegue lo requiera, un `OAuthTokenStore` de gestor de secretos externo;
   keyring ya cubre el almacenamiento seguro local.
 - Validar Jira y GLPI contra instalaciones reales admitidas.
+- Validar en vivo las rutas de navegador de Jira y Google (tareas T3.2, T5.0 y T5.1 del ADR del
+  2026-10-25).
 - Implementar la ingestión e integración efectiva de Connect en Command, incluidos puertos,
   adaptadores, idempotencia y degradación operativa.
 
@@ -225,6 +277,20 @@ No deben presentarse como capacidades terminadas.
 - [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md): límites de dominio, puertos, runtime, OAuth y fallback.
 - [`SECURITY.md`](../../SECURITY.md): identidad autenticada, secretos, logging y política fail-closed.
 - [`docs/ROADMAP.md`](../ROADMAP.md): estado implementado frente a validación viva pendiente.
+- [`2026-10-19-escritura-categorias-outlook.md`](2026-10-19-escritura-categorias-outlook.md):
+  excepción de escritura para las categorías de Outlook.
+- [`2026-10-25-fallback-navegador-google-jira.md`](2026-10-25-fallback-navegador-google-jira.md):
+  fallback de navegador para Google y Jira.
+- [`2026-10-25-modo-proyecto-secretos-en-archivo.md`](2026-10-25-modo-proyecto-secretos-en-archivo.md):
+  modo proyecto con secretos en archivo.
+- [`2026-10-25-escritura-transiciones-jira.md`](2026-10-25-escritura-transiciones-jira.md):
+  excepción de escritura para la transición de estado de un issue de Jira.
+- [`2026-10-25-envio-correo-gmail-dos-pasos.md`](2026-10-25-envio-correo-gmail-dos-pasos.md):
+  excepción de escritura para el envío de correo de Gmail en dos pasos.
+- [`2026-10-26-conector-bitbucket.md`](2026-10-26-conector-bitbucket.md): conector de Bitbucket
+  Cloud de solo lectura.
+- [`2026-10-25-escritura-creacion-repositorios-bitbucket.md`](2026-10-25-escritura-creacion-repositorios-bitbucket.md):
+  excepción de escritura para la creación de repositorios en Bitbucket Cloud.
 
 Las referencias anteriores amplían este registro. Si una descripción histórica queda menos
 precisa que una decisión aceptada aquí, debe corregirse mediante un cambio documental explícito,

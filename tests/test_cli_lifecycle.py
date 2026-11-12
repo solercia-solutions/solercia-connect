@@ -3,26 +3,54 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from typer.testing import CliRunner
 
 import solercia_connect.cli as cli
-from solercia_connect.config import ConnectionProfile, ConnectionType, ProfileStore, load_settings
+from solercia_connect.config import (
+    TARGET_SPECS,
+    ConnectionProfile,
+    ConnectionType,
+    ProfileStore,
+    load_settings,
+)
 from solercia_connect.doctor import DoctorCheck, DoctorReport
 from solercia_connect.domain import (
+    CalendarQuery,
     Capability,
+    FileQuery,
     HealthReport,
     HealthState,
+    IssueQuery,
+    IssueTransitionsQuery,
+    MailQuery,
+    OpenIssueQuery,
     ProviderFamily,
+    QueryPayload,
     ReasonCode,
     RouteKind,
+    TicketQuery,
     TranscriptQuery,
 )
 from solercia_connect.envelope import ResultEnvelope
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.ports import ProviderDescriptor
+
+_EXPECTED_QUERY_TYPES: dict[Capability, type[QueryPayload]] = {
+    Capability.MAIL_SENT_LIST: MailQuery,
+    Capability.MAIL_INBOX_LIST: MailQuery,
+    Capability.CALENDAR_EVENTS_LIST: CalendarQuery,
+    Capability.MEETING_TRANSCRIPTS_LIST: TranscriptQuery,
+    Capability.MEETING_TRANSCRIPT_GET: TranscriptQuery,
+    Capability.FILES_SEARCH: FileQuery,
+    Capability.FILES_GET: FileQuery,
+    Capability.EXTERNAL_ISSUES_SEARCH: IssueQuery,
+    Capability.EXTERNAL_ISSUES_OPEN_LIST: OpenIssueQuery,
+    Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST: IssueTransitionsQuery,
+    Capability.TICKETS_SEARCH: TicketQuery,
+}
 
 runner = CliRunner()
 
@@ -252,6 +280,11 @@ def test_run_command_maps_targets_flags_and_input_errors(monkeypatch: pytest.Mon
             "include_attachments": False,
             "max_attachment_bytes": 10_485_760,
             "limit": 50,
+            "message_id": None,
+            "add": None,
+            "remove": None,
+            "replace": None,
+            "allow_write": False,
             "allow_browser_fallback": True,
         }
     ]
@@ -336,7 +369,7 @@ def test_doctor_ready_branch_and_config_validation_failure_are_uniform(
     ready = runner.invoke(cli.app, ["doctor"])
 
     assert ready.exit_code == 0
-    assert len(json.loads(ready.stdout)["data"]["reports"]) == 7
+    assert len(json.loads(ready.stdout)["data"]["reports"]) == len(TARGET_SPECS)
 
     monkeypatch.setattr(
         cli,
@@ -358,10 +391,42 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
         "jql": "status = Done",
         "meeting_id": "meeting-1",
         "limit": 500,
+        "issue": "CP-1356",
     }
     for capability in Capability:
+        if capability is Capability.MAIL_CATEGORIES_SET:
+            # A write is not a query; the helper refuses it (tests/test_mail_categories_set.py).
+            continue
+        if capability is Capability.EXTERNAL_ISSUES_TRANSITION:
+            # Also a write; the helper refuses it (tests/test_jira_transition_write.py).
+            continue
+        if capability is Capability.MAIL_DRAFT_CREATE:
+            # A Gmail write; the helper refuses it (tests/test_gmail_draft_create.py).
+            continue
+        if capability is Capability.MAIL_DRAFT_SEND:
+            # The Gmail send; the helper refuses it (tests/test_gmail_draft_send.py).
+            continue
+        if capability is Capability.SCM_REPOSITORIES_LIST:
+            # A Bitbucket read runs through run_application only (tests/test_bitbucket_reads.py).
+            continue
+        if capability is Capability.SCM_PULLREQUESTS_LIST:
+            # A Bitbucket read runs through run_application only (tests/test_bitbucket_reads.py).
+            continue
+        if capability is Capability.SCM_COMMITS_LIST:
+            # A Bitbucket read runs through run_application only (tests/test_bitbucket_reads.py).
+            continue
+        if capability is Capability.SCM_REPOSITORIES_CREATE:
+            # A Bitbucket write; the helper refuses it (tests/test_bitbucket_repo_create.py).
+            continue
+        if capability in {
+            Capability.SEARCH_ANALYTICS_QUERY,
+            Capability.SEARCH_SITEMAPS_LIST,
+            Capability.SEARCH_URLS_INSPECT,
+        }:
+            # Search Console reads run through run_application only (tests/test_search_console.py).
+            continue
         query = cli._query_payload(capability, **common)
-        assert query is not None
+        assert isinstance(query, _EXPECTED_QUERY_TYPES[capability])
 
     # A transcript is selected by meeting, by recording, or by period. Dropping the meeting id
     # while a window stands is still a complete request; dropping every selector is not.
@@ -407,11 +472,71 @@ def test_legacy_query_helpers_cover_all_capability_shapes_and_provider_mapping()
         cli._target_for_provider("microsoft.graph", Capability.MEETING_TRANSCRIPTS_LIST)
         is ConnectionType.TEAMS
     )
+    assert (
+        cli._target_for_provider("microsoft.graph", Capability.MAIL_INBOX_LIST)
+        is ConnectionType.OUTLOOK
+    )
     assert cli._target_for_provider("google.gmail", None) is ConnectionType.GMAIL
     assert cli._target_for_provider("google.calendar", None) is ConnectionType.GOOGLE_CALENDAR
+    assert (
+        cli._target_for_provider("google.meet", Capability.MEETING_TRANSCRIPT_GET)
+        is ConnectionType.GOOGLE_MEET
+    )
     assert cli._target_for_provider("jira.cloud", None) is ConnectionType.JIRA
     assert cli._target_for_provider("glpi.rest", None) is ConnectionType.GLPI
     assert cli._target_for_provider("unknown", None) is None
+
+
+def test_cli_passes_google_meet_browser_fallback_to_the_application(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Google Meet has a browser route now; the CLI forwards the explicit flag unchanged."""
+    received: dict[str, Any] = {}
+
+    def application(payload: dict[str, Any]) -> ResultEnvelope:
+        received.update(payload)
+        return ResultEnvelope.success(operation="run", provider="google-meet")
+
+    monkeypatch.setattr(cli, "run_application", application)
+    result = runner.invoke(
+        cli.app,
+        [
+            "run",
+            "--provider",
+            "google.meet",
+            "--capability",
+            "meeting.transcripts.list",
+            "--account",
+            "user@example.com",
+            "--start",
+            "2026-10-26T00:00:00-05:00",
+            "--end",
+            "2026-10-27T00:00:00-05:00",
+            "--allow-browser-fallback",
+        ],
+        env={},
+    )
+
+    assert result.exit_code == 0
+    assert received["type"] == "google-meet"
+    assert received["allow_browser_fallback"] is True
+
+
+def test_legacy_query_helper_fails_closed_on_an_unknown_capability() -> None:
+    unknown = cast(Capability, "mail.archive.list")
+
+    with pytest.raises(cli._InputError, match="Unsupported capability"):
+        cli._query_payload(
+            unknown,
+            start="2026-08-01T00:00:00+00:00",
+            end="2026-09-01T00:00:00+00:00",
+            account="user@example.com",
+            calendar_id="primary",
+            assignee=None,
+            jql=None,
+            meeting_id=None,
+            limit=50,
+        )
 
 
 @pytest.mark.parametrize(

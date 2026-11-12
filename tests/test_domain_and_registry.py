@@ -71,4 +71,4 @@ def test_query_limits_are_bounded() -> None:
     )
 
     with pytest.raises(ValueError):
-        MailQuery(window, limit=101)
+        MailQuery(window, limit=1001)

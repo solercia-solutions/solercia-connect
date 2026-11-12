@@ -1,25 +1,33 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
+from types import MappingProxyType
 
 from solercia_connect.domain import (
+    WRITE_CAPABILITIES,
     CalendarQuery,
     Capability,
     ConnectorRequest,
     DomainRecord,
     ExecutionOutcome,
     ExecutionReceipt,
+    IssueTransitionRequest,
+    MailCategoriesUpdate,
+    MailDraftRequest,
+    MailDraftSendRequest,
     MailQuery,
     ProviderFamily,
     ReasonCode,
     ReceiptStatus,
     RouteKind,
+    ScmRepositoryCreateRequest,
     StepOutcome,
     TraceStep,
     TranscriptQuery,
+    official_provider_family,
     receipt_fingerprint,
     record_matches_capability,
     utc_now,
@@ -27,6 +35,53 @@ from solercia_connect.domain import (
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.ports import ProviderAdapter, ProviderDescriptor
 from solercia_connect.registry import ProviderRegistry
+
+# The one source of the typed official failures that may enter the browser route.
+RUNTIME_FALLBACK_REASONS: frozenset[ReasonCode] = frozenset(
+    {
+        ReasonCode.ADMIN_CONSENT_REQUIRED,
+        ReasonCode.OFFICIAL_CAPABILITY_UNAVAILABLE,
+        # A tenant that grants no application registration leaves the official route
+        # unconfigured. That is the primary reason the browser fallback exists, so it
+        # must be able to take over instead of ending the run.
+        ReasonCode.CONFIGURATION_INVALID,
+    }
+)
+# Connecting excludes CONFIGURATION_INVALID: a missing client ID is detected before any OAuth
+# starts and offered the browser route explicitly, so a configuration failure raised during OAuth
+# is a real misconfiguration that must surface, not be hidden behind the browser.
+CONNECT_FALLBACK_REASONS: frozenset[ReasonCode] = RUNTIME_FALLBACK_REASONS - {
+    ReasonCode.CONFIGURATION_INVALID
+}
+# What each family's browser route may serve (decision 2026-10-25, D0). A capability is allowed
+# only for the family that lists it, so no family's route can serve another family's surface.
+# The category write, mail.categories.set, stays on the Microsoft list alone; the Jira transitions
+# are on no list, so they run over the official route only.
+BROWSER_FALLBACK_CAPABILITIES: Mapping[ProviderFamily, frozenset[Capability]] = MappingProxyType(
+    {
+        ProviderFamily.MICROSOFT: frozenset(
+            {
+                Capability.MAIL_SENT_LIST,
+                Capability.MAIL_INBOX_LIST,
+                Capability.MAIL_CATEGORIES_SET,
+                Capability.CALENDAR_EVENTS_LIST,
+                Capability.MEETING_TRANSCRIPTS_LIST,
+                Capability.MEETING_TRANSCRIPT_GET,
+                Capability.FILES_SEARCH,
+                Capability.FILES_GET,
+            }
+        ),
+        ProviderFamily.GOOGLE: frozenset(
+            {
+                Capability.MAIL_SENT_LIST,
+                Capability.CALENDAR_EVENTS_LIST,
+                Capability.MEETING_TRANSCRIPTS_LIST,
+                Capability.MEETING_TRANSCRIPT_GET,
+            }
+        ),
+        ProviderFamily.JIRA: frozenset({Capability.EXTERNAL_ISSUES_SEARCH}),
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,27 +96,17 @@ class RoutePolicy:
             ReasonCode.PROVIDER_UNAVAILABLE,
         }
     )
-    browser_fallback_reasons: frozenset[ReasonCode] = frozenset(
-        {
-            ReasonCode.ADMIN_CONSENT_REQUIRED,
-            ReasonCode.OFFICIAL_CAPABILITY_UNAVAILABLE,
-            # A tenant that grants no application registration leaves the official route
-            # unconfigured. That is the primary reason the browser fallback exists, so it
-            # must be able to take over instead of ending the run.
-            ReasonCode.CONFIGURATION_INVALID,
-        }
+    # Every family shares one reason set: the decision gives Google and Jira Microsoft's guarantees.
+    browser_fallback_reasons: frozenset[ReasonCode] = RUNTIME_FALLBACK_REASONS
+    # Excluded from the hash only because a mapping is unhashable; it still decides equality.
+    browser_fallback_capabilities_by_family: Mapping[ProviderFamily, frozenset[Capability]] = field(
+        default_factory=lambda: BROWSER_FALLBACK_CAPABILITIES, hash=False
     )
-    browser_fallback_capabilities: frozenset[Capability] = frozenset(
-        {
-            Capability.MAIL_SENT_LIST,
-            Capability.CALENDAR_EVENTS_LIST,
-            Capability.MEETING_TRANSCRIPTS_LIST,
-            Capability.MEETING_TRANSCRIPT_GET,
-            Capability.FILES_SEARCH,
-            Capability.FILES_GET,
-        }
+    # A family listed here may enter the browser route only once its browser adapter exists;
+    # without one the run ends in BROWSER_CAPABILITY_NOT_IMPLEMENTED.
+    browser_fallback_families: frozenset[ProviderFamily] = frozenset(
+        {ProviderFamily.MICROSOFT, ProviderFamily.GOOGLE, ProviderFamily.JIRA}
     )
-    browser_fallback_families: frozenset[ProviderFamily] = frozenset({ProviderFamily.MICROSOFT})
 
     def __post_init__(self) -> None:
         if self.official_max_attempts < 1:
@@ -72,6 +117,11 @@ class RoutePolicy:
         if any(delay < 0 for delay in self.official_retry_delays_seconds):
             raise ValueError("Retry delays cannot be negative")
 
+    @property
+    def browser_fallback_capabilities(self) -> frozenset[Capability]:
+        """Every capability that at least one family's browser route may serve."""
+        return frozenset().union(*self.browser_fallback_capabilities_by_family.values())
+
     def allows_browser(
         self,
         request: ConnectorRequest,
@@ -80,7 +130,8 @@ class RoutePolicy:
     ) -> bool:
         return (
             failure.reason in self.browser_fallback_reasons
-            and request.capability in self.browser_fallback_capabilities
+            and request.capability
+            in self.browser_fallback_capabilities_by_family.get(family, frozenset())
             and family in self.browser_fallback_families
         )
 
@@ -106,6 +157,21 @@ class ConnectorRuntime:
         browser_fallback_enabled: bool = False,
     ) -> ExecutionOutcome:
         steps: list[TraceStep] = []
+        if request.capability in WRITE_CAPABILITIES and not _write_authorized(request):
+            # A library caller reaches the runtime without the CLI's input checks, so the write
+            # authorization is enforced here too, before any adapter can touch the provider.
+            steps.append(
+                TraceStep(
+                    1,
+                    RouteKind.OFFICIAL,
+                    "write-policy",
+                    0,
+                    StepOutcome.SKIPPED,
+                    ReasonCode.WRITE_NOT_AUTHORIZED,
+                    "Write was not explicitly authorized for this invocation",
+                )
+            )
+            return self._failure_outcome(request, steps, ReasonCode.WRITE_NOT_AUTHORIZED)
         try:
             official = self._registry.official(request.provider_id)
         except ConnectorFailure as registry_failure:
@@ -173,7 +239,10 @@ class ConnectorRuntime:
         browser = (
             self._registry.browser(family)
             if family is not None
-            else self._registry.browser_for_capability(request.capability)
+            else self._registry.browser_for_capability(
+                request.capability,
+                family=official_provider_family(request.provider_id),
+            )
         )
         if browser is None:
             steps.append(
@@ -301,6 +370,7 @@ class ConnectorRuntime:
             retry = (
                 last_failure.reason in self._policy.retryable_reasons
                 and attempt < self._policy.official_max_attempts
+                and request.capability not in WRITE_CAPABILITIES
             )
             steps.append(
                 TraceStep(
@@ -418,9 +488,39 @@ def _validate_records(
 
 def _request_account_boundary(request: ConnectorRequest) -> str | None:
     payload = request.payload
-    if isinstance(payload, (MailQuery, CalendarQuery, TranscriptQuery)) and payload.account_id:
+    if (
+        isinstance(
+            payload,
+            (
+                MailQuery,
+                CalendarQuery,
+                TranscriptQuery,
+                MailCategoriesUpdate,
+                MailDraftRequest,
+                MailDraftSendRequest,
+            ),
+        )
+        and payload.account_id
+    ):
         return _canonical_account(payload.account_id)
     return None
+
+
+def _write_authorized(request: ConnectorRequest) -> bool:
+    payload = request.payload
+    return (
+        isinstance(
+            payload,
+            (
+                MailCategoriesUpdate,
+                IssueTransitionRequest,
+                MailDraftRequest,
+                MailDraftSendRequest,
+                ScmRepositoryCreateRequest,
+            ),
+        )
+        and payload.write_authorized is True
+    )
 
 
 def _canonical_account(value: str) -> str:

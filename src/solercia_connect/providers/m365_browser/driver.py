@@ -1,21 +1,19 @@
 from __future__ import annotations
 
 import base64
-import importlib
-import re
+
+# Kept importable here: callers patch ``driver.importlib.import_module`` to stand in for Playwright.
+import importlib  # noqa: F401
 from collections import deque
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from urllib.parse import quote, urlsplit
 
-from solercia_connect.browser_profile import (
-    audit_browser_profile_path,
-    ensure_browser_profile_path,
-)
+from solercia_connect.browser_profile import audit_browser_profile_path
 from solercia_connect.config import ConnectionType
 from solercia_connect.domain import (
     CalendarEvent,
@@ -25,6 +23,8 @@ from solercia_connect.domain import (
     DomainRecord,
     DriveFile,
     FileQuery,
+    MailCategoriesUpdate,
+    MailCategoryAssignment,
     MailMessage,
     MailQuery,
     MeetingTranscript,
@@ -32,11 +32,14 @@ from solercia_connect.domain import (
     ReasonCode,
     RouteKind,
     TranscriptQuery,
+    same_categories,
     utc_now,
 )
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.providers._microsoft import (
+    MailFolderName,
     field,
+    microsoft_categories,
     microsoft_provenance,
     normalize_calendar_event,
     normalize_drive_item,
@@ -46,7 +49,24 @@ from solercia_connect.providers._microsoft import (
     optional_microsoft_datetime,
 )
 from solercia_connect.providers._shared import unique_canonical_account_identity
+from solercia_connect.providers.browser_core.session import (
+    MAX_BEARER_BYTES,
+    PlaywrightSession,
+    TransientBearer,
+    authorization_header,
+    is_allowed_request_url,
+    launch_failure_message,
+    parse_bearer,
+)
 from solercia_connect.providers.m365_browser.selectors import ENDPOINTS, Microsoft365Selectors
+
+# The generic session pieces live in the vendor-neutral core; these names stay importable.
+_TransientBearer = TransientBearer
+_parse_bearer = parse_bearer
+_is_allowed_request_url = is_allowed_request_url
+_authorization_header = authorization_header
+_launch_failure_message = launch_failure_message
+_MAX_OUTLOOK_BEARER_BYTES = MAX_BEARER_BYTES
 
 _OUTLOOK_AUTHORIZATION_HOST_SUFFIXES = (
     "outlook.cloud.microsoft",
@@ -57,7 +77,6 @@ _FILES_AUTHORIZATION_HOST_SUFFIXES = (
     "sharepoint.com",
     "onedrive.live.com",
 )
-_MAX_OUTLOOK_BEARER_BYTES = 8_192
 _READ_BEARER_WAIT_INTERVAL_MS = 500
 _READ_BEARER_MAX_CYCLES = 20
 _OUTLOOK_PAGE_SIZE = 50
@@ -70,13 +89,28 @@ _RECORDING_FOLDER_NAMES = ("Recordings", "Grabaciones")
 _RECORDING_SELECT = "id,name,lastModifiedDateTime,createdDateTime,parentReference,createdBy"
 _SHARED_SELECT = "id,name,lastModifiedDateTime,remoteItem,createdBy"
 _MAX_TRANSCRIPT_BYTES = 8_388_608
-_SENT_MAIL_SELECT = (
-    "Id,Subject,SentDateTime,From,ToRecipients,CcRecipients,Body,ConversationId,HasAttachments"
+_OUTLOOK_MAIL_SELECT_BASE = (
+    "Id",
+    "Subject",
+    "SentDateTime",
+    "From",
+    "ToRecipients",
+    "CcRecipients",
+    "Body",
+    "ConversationId",
+    "HasAttachments",
+    "InternetMessageId",
+    "Categories",
 )
-_BEARER_AUTHORIZATION = re.compile(
-    r"Bearer[ \t]+([A-Z0-9._~+/-]+=*)",
-    re.IGNORECASE,
-)
+_SENT_MAIL_SELECT = ",".join(_OUTLOOK_MAIL_SELECT_BASE)
+_INBOX_MAIL_SELECT = ",".join((*_OUTLOOK_MAIL_SELECT_BASE, "ReceivedDateTime"))
+_OutlookTimeField = Literal["SentDateTime", "ReceivedDateTime"]
+# Single source of truth: the time field a folder is filtered/ordered by determines both its
+# `$select` projection and the `folder` value stamped on each normalized record.
+_OUTLOOK_MAIL_READS: dict[_OutlookTimeField, tuple[str, MailFolderName]] = {
+    "SentDateTime": (_SENT_MAIL_SELECT, "sent"),
+    "ReceivedDateTime": (_INBOX_MAIL_SELECT, "inbox"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,35 +126,6 @@ class _Recording:
     @property
     def key(self) -> tuple[str, str]:
         return (self.drive_id, self.item_id)
-
-
-class _TransientBearer:
-    """Mutable, non-printable storage for one captured browser bearer token."""
-
-    __slots__ = ("_buffer",)
-
-    def __init__(self, token: str) -> None:
-        self._buffer = bytearray(token, "ascii")
-
-    @property
-    def cleared(self) -> bool:
-        return not self._buffer
-
-    def authorization_header(self) -> str:
-        if self.cleared:
-            raise RuntimeError("Transient bearer has already been cleared")
-        return f"Bearer {self._buffer.decode('ascii')}"
-
-    def clear(self) -> None:
-        for index in range(len(self._buffer)):
-            self._buffer[index] = 0
-        self._buffer.clear()
-
-    def __repr__(self) -> str:
-        return "_TransientBearer(<redacted>)"
-
-    def __del__(self) -> None:
-        self.clear()
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,19 +187,23 @@ class BrowserDriver(Protocol):
         timeout_ms: int,
     ) -> tuple[DomainRecord, ...]: ...
 
+    def set_mail_categories(
+        self,
+        update: MailCategoriesUpdate,
+        *,
+        timeout_ms: int,
+    ) -> MailCategoryAssignment: ...
+
     def close(self) -> None: ...
 
 
-class PlaywrightBrowserDriver:
+class PlaywrightBrowserDriver(PlaywrightSession):
     """Persistent Chromium login/status driver; v0.1 read extraction fails explicitly."""
 
     def __init__(self) -> None:
-        self._playwright: Any = None
-        self._context: Any = None
-        self._page: Any = None
+        super().__init__()
         self._outlook_bearer: _TransientBearer | None = None
         self._capture_outlook_authorization = False
-        self._probing_outlook_identity = False
         self._files_bearer: _TransientBearer | None = None
         self._files_origin: str | None = None
         self._capture_files_authorization = False
@@ -210,47 +219,19 @@ class PlaywrightBrowserDriver:
         self._capture_files_authorization = False
         self._clear_outlook_bearer()
         self._clear_files_bearer()
-        profile_dir = ensure_browser_profile_path(profile_dir)
-        try:
-            sync_playwright = importlib.import_module("playwright.sync_api").sync_playwright
-        except ImportError as exc:
-            raise ConnectorFailure(
-                ReasonCode.CONFIGURATION_INVALID,
-                "Playwright optional dependency is not installed",
-            ) from exc
-        audit_browser_profile_path(profile_dir, private_root=profile_dir.parent)
-        self._playwright = sync_playwright().start()
-        try:
-            self._context = self._playwright.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=headless,
-                accept_downloads=False,
-            )
-        except Exception as exc:
-            self._playwright.stop()
-            self._playwright = None
-            raise ConnectorFailure(
-                ReasonCode.CONFIGURATION_INVALID,
-                _launch_failure_message(exc),
-            ) from exc
-        try:
-            self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
-            if connection_type is ConnectionType.OUTLOOK:
-                self._install_request_observer(self._observe_outlook_request)
-                self._capture_outlook_authorization = True
-            elif connection_type is ConnectionType.ONEDRIVE:
-                self._install_request_observer(self._observe_files_request)
-                self._capture_files_authorization = True
-        except Exception as exc:
-            with suppress(Exception):
-                self.close()
-            raise ConnectorFailure(
-                ReasonCode.CONFIGURATION_INVALID,
-                "Playwright Chromium context could not initialize",
-            ) from exc
+        self._open_persistent_context(
+            profile_dir,
+            headless=headless,
+            on_page=lambda: self._observe_session_authorization(connection_type),
+        )
 
-    def navigate(self, url: str, *, timeout_ms: int) -> None:
-        self._require_page().goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+    def _observe_session_authorization(self, connection_type: ConnectionType | None) -> None:
+        if connection_type is ConnectionType.OUTLOOK:
+            self._install_request_observer(self._observe_outlook_request)
+            self._capture_outlook_authorization = True
+        elif connection_type is ConnectionType.ONEDRIVE:
+            self._install_request_observer(self._observe_files_request)
+            self._capture_files_authorization = True
 
     def snapshot(
         self,
@@ -395,9 +376,6 @@ class PlaywrightBrowserDriver:
                     continue
         return False
 
-    def wait(self, milliseconds: int) -> None:
-        self._require_page().wait_for_timeout(milliseconds)
-
     def read_records(
         self,
         capability: Capability,
@@ -409,6 +387,13 @@ class PlaywrightBrowserDriver:
         del selectors
         if capability is Capability.MAIL_SENT_LIST and isinstance(payload, MailQuery):
             return self._read_sent_mail(payload, timeout_ms=timeout_ms)
+        if capability is Capability.MAIL_INBOX_LIST and isinstance(payload, MailQuery):
+            return self._read_folder_mail(
+                payload,
+                url=ENDPOINTS.outlook_inbox_messages,
+                time_field="ReceivedDateTime",
+                timeout_ms=timeout_ms,
+            )
         if capability is Capability.CALENDAR_EVENTS_LIST and isinstance(payload, CalendarQuery):
             return self._read_calendar(payload, timeout_ms=timeout_ms)
         if capability in {Capability.FILES_SEARCH, Capability.FILES_GET} and isinstance(
@@ -440,35 +425,52 @@ class PlaywrightBrowserDriver:
         timeout_ms: int,
     ) -> tuple[MailMessage, ...]:
         """List sent mail through the documented read-only Outlook REST collection."""
+        return self._read_folder_mail(
+            query,
+            url=ENDPOINTS.outlook_sent_messages,
+            time_field="SentDateTime",
+            timeout_ms=timeout_ms,
+        )
+
+    def _read_folder_mail(
+        self,
+        query: MailQuery,
+        *,
+        url: str,
+        time_field: _OutlookTimeField,
+        timeout_ms: int,
+    ) -> tuple[MailMessage, ...]:
+        """List one Outlook mail folder through its documented read-only REST collection."""
+        select, folder = _OUTLOOK_MAIL_READS[time_field]
         messages: list[MailMessage] = []
-        url: str | None = ENDPOINTS.outlook_sent_messages
+        next_url: str | None = url
         params: Mapping[str, str] | None = {
             "$filter": (
-                f"SentDateTime ge {_outlook_timestamp(query.window.start)}"
-                f" and SentDateTime lt {_outlook_timestamp(query.window.end)}"
+                f"{time_field} ge {_outlook_timestamp(query.window.start)}"
+                f" and {time_field} lt {_outlook_timestamp(query.window.end)}"
             ),
-            "$select": _SENT_MAIL_SELECT,
-            "$orderby": "SentDateTime asc",
+            "$select": select,
+            "$orderby": f"{time_field} asc",
             "$top": str(min(_OUTLOOK_PAGE_SIZE, query.limit)),
         }
 
         for _ in range(_OUTLOOK_MAX_PAGES):
-            if url is None or len(messages) >= query.limit:
+            if next_url is None or len(messages) >= query.limit:
                 break
-            payload = self._authorized_outlook_get(url, params=params, timeout_ms=timeout_ms)
+            payload = self._authorized_outlook_get(next_url, params=params, timeout_ms=timeout_ms)
             items = payload.get("value")
             if not isinstance(items, list):
                 raise ConnectorFailure(
                     ReasonCode.BROWSER_EXTRACTION_FAILED,
-                    "Outlook sent-mail collection returned an unexpected payload shape",
+                    "Outlook mail collection returned an unexpected payload shape",
                 )
             for item in items:
                 if len(messages) >= query.limit:
                     break
                 if isinstance(item, Mapping):
-                    messages.append(_normalize_outlook_message(item))
+                    messages.append(_normalize_outlook_message(item, folder=folder))
             next_link = payload.get("@odata.nextLink")
-            url = next_link if isinstance(next_link, str) else None
+            next_url = next_link if isinstance(next_link, str) else None
             params = None
 
         if query.include_attachments:
@@ -576,6 +578,69 @@ class PlaywrightBrowserDriver:
                 attachment = replace(attachment, content_base64=None)
             attachments.append(attachment)
         return replace(message, attachments=tuple(attachments))
+
+    def set_mail_categories(
+        self,
+        update: MailCategoriesUpdate,
+        *,
+        timeout_ms: int,
+    ) -> MailCategoryAssignment:
+        """Assign categories to one message: the only write this driver performs.
+
+        The current list and its version are read first. Nothing is written when the computed
+        list carries the same names; otherwise one PATCH sends only the category collection,
+        conditioned on the version read, so a concurrent edit by the team is never overwritten.
+        """
+        if not update.write_authorized:
+            raise ConnectorFailure(
+                ReasonCode.WRITE_NOT_AUTHORIZED,
+                "Category write was not explicitly authorized for this invocation",
+            )
+        url = f"{ENDPOINTS.outlook_messages}/{quote(update.message_id, safe='')}"
+        bearer = self._await_outlook_bearer(timeout_ms=timeout_ms)
+        try:
+            outcome = self._rest_get(
+                url,
+                bearer,
+                params={"$select": "Id,Categories"},
+                timeout_ms=timeout_ms,
+                allowed=_is_allowed_outlook_request_url,
+            )
+        finally:
+            bearer.clear()
+        state = _require_message_state(outcome)
+        previous = microsoft_categories(field(state, "Categories", "categories"))
+        version = state.get("@odata.etag")
+        if not isinstance(version, str) or not version.strip():
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Outlook message carried no version to condition the category write on",
+            )
+
+        final = update.resolve(previous)
+        if same_categories(final, previous):
+            return _category_assignment(update.message_id, previous, previous, changed=False)
+
+        bearer = self._await_outlook_bearer(timeout_ms=timeout_ms)
+        try:
+            written = _require_category_write(
+                self._rest_patch_categories(
+                    url,
+                    bearer,
+                    categories=final,
+                    version=version,
+                    timeout_ms=timeout_ms,
+                )
+            )
+        finally:
+            bearer.clear()
+        confirmed = microsoft_categories(field(written, "Categories", "categories"))
+        if not same_categories(confirmed, final):
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Outlook did not confirm the requested categories after the write",
+            )
+        return _category_assignment(update.message_id, confirmed, previous, changed=True)
 
     def observed_session_authorization(self) -> bool:
         """Report whether the session has already issued an authorized provider call.
@@ -1118,28 +1183,11 @@ class PlaywrightBrowserDriver:
         self._clear_outlook_bearer()
         self._clear_files_bearer()
         self._files_origin = None
-        context = self._context
-        playwright = self._playwright
-        self._page = None
-        self._context = None
-        self._playwright = None
-        try:
-            if context is not None:
-                context.close()
-        finally:
-            if playwright is not None:
-                playwright.stop()
-
-    def _install_request_observer(self, observer: Any) -> None:
-        for emitter in (self._context, self._page):
-            try:
-                emitter.on("request", observer)
-            except Exception:
-                continue
+        super().close()
 
     def _observe_files_request(self, request: Any) -> None:
         """Capture the drive authorization and the drive host that issued it."""
-        if not self._capture_files_authorization or self._probing_outlook_identity:
+        if not self._capture_files_authorization or self._issuing_session_request:
             return
         try:
             url = request.url
@@ -1171,7 +1219,7 @@ class PlaywrightBrowserDriver:
             bearer.clear()
 
     def _observe_outlook_request(self, request: Any) -> None:
-        if not self._capture_outlook_authorization or self._probing_outlook_identity:
+        if not self._capture_outlook_authorization or self._issuing_session_request:
             return
         try:
             url = request.url
@@ -1238,35 +1286,59 @@ class PlaywrightBrowserDriver:
         allowed: Callable[[str], bool],
         extra_headers: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
-        """Read-only Outlook REST call issued outside the page's cross-origin sandbox.
+        """The core's same-context read, plus the ``EmailAddress`` the Outlook probe reads."""
+        outcome = super()._rest_get(
+            url,
+            bearer,
+            params=params,
+            timeout_ms=timeout_ms,
+            allowed=allowed,
+            extra_headers=extra_headers,
+        )
+        payload = outcome.get("payload")
+        if outcome.get("kind") == "ok" and isinstance(payload, Mapping):
+            outcome["emailAddress"] = payload.get("EmailAddress")
+        return outcome
 
-        The page is served from one Microsoft host while the REST endpoint lives on another,
-        so an in-page fetch is subject to that origin's CORS policy and fails for reasons that
-        have nothing to do with the session. Playwright's request context shares the session
-        but is not bound by CORS, which makes the outcome depend only on the session itself.
+    def _rest_patch_categories(
+        self,
+        url: str,
+        bearer: _TransientBearer,
+        *,
+        categories: tuple[str, ...],
+        version: str,
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        """Send the single write: the category collection of one message, and nothing else.
+
+        The body is built here from the names alone, so no caller can widen it to another
+        property. Redirects are not followed, so the write and its authorization go only to the
+        allowlisted endpoint that was named.
         """
-        if not allowed(url):
+        if not _is_allowed_outlook_request_url(url):
             return {"kind": "unavailable"}
         context = self._context
         if context is None:
             return {"kind": "unavailable"}
-        self._probing_outlook_identity = True
+        self._issuing_session_request = True
         try:
-            response = context.request.get(
+            response = context.request.patch(
                 url,
                 headers={
                     "Authorization": bearer.authorization_header(),
                     "Accept": "application/json",
-                    **(dict(extra_headers) if extra_headers else {}),
+                    "Content-Type": "application/json",
+                    "If-Match": version,
                 },
-                params=dict(params) if params else None,
+                data={"Categories": list(categories)},
                 timeout=timeout_ms,
                 fail_on_status_code=False,
+                max_redirects=0,
             )
         except Exception:
             return {"kind": "unavailable"}
         finally:
-            self._probing_outlook_identity = False
+            self._issuing_session_request = False
 
         try:
             status = int(response.status)
@@ -1281,55 +1353,11 @@ class PlaywrightBrowserDriver:
 
         if not isinstance(payload, Mapping):
             return {"kind": "malformed"}
-        return {"kind": "ok", "payload": payload, "emailAddress": payload.get("EmailAddress")}
-
-    def _require_page(self) -> Any:
-        if self._page is None:
-            raise ConnectorFailure(
-                ReasonCode.CONFIGURATION_INVALID,
-                "Playwright persistent context is not open",
-            )
-        return self._page
+        return {"kind": "ok", "payload": payload}
 
 
 def validate_dedicated_profile(profile_dir: Path) -> None:
     audit_browser_profile_path(profile_dir, private_root=profile_dir.parent)
-
-
-def _parse_bearer(value: object) -> _TransientBearer | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        encoded = value.encode("ascii")
-    except UnicodeEncodeError:
-        return None
-    match = _BEARER_AUTHORIZATION.fullmatch(value)
-    if match is None:
-        return None
-    token = match.group(1)
-    if not token or len(encoded) > len("Bearer ") + _MAX_OUTLOOK_BEARER_BYTES:
-        return None
-    captured = _TransientBearer(token)
-    token = ""
-    return captured
-
-
-def _is_allowed_request_url(value: str, suffixes: tuple[str, ...]) -> bool:
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError:
-        return False
-    if (
-        parsed.scheme.casefold() != "https"
-        or parsed.hostname is None
-        or parsed.username is not None
-        or parsed.password is not None
-        or port not in {None, 443}
-    ):
-        return False
-    host = parsed.hostname.casefold().rstrip(".")
-    return any(host == suffix or host.endswith(f".{suffix}") for suffix in suffixes)
 
 
 def _is_allowed_outlook_request_url(value: str) -> bool:
@@ -1341,7 +1369,11 @@ def _outlook_timestamp(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _normalize_outlook_message(item: Mapping[str, object]) -> MailMessage:
+def _normalize_outlook_message(
+    item: Mapping[str, object],
+    *,
+    folder: MailFolderName,
+) -> MailMessage:
     """Normalize through the shared Microsoft layer so both routes return one record shape."""
     identifier = field(item, "id", "Id")
     source_id = identifier if isinstance(identifier, str) else ""
@@ -1355,6 +1387,7 @@ def _normalize_outlook_message(item: Mapping[str, object]) -> MailMessage:
             account_id=None,
             endpoint="outlook-rest-v2",
         ),
+        folder=folder,
     )
 
 
@@ -1474,26 +1507,87 @@ def _require_rest_payload(outcome: Mapping[str, object]) -> Mapping[str, object]
     )
 
 
+def _require_message_state(outcome: Mapping[str, object]) -> Mapping[str, object]:
+    """Map the read that precedes a category write, naming a message the mailbox lacks."""
+    if outcome.get("kind") == "http_error" and outcome.get("status") in {400, 404}:
+        raise ConnectorFailure(
+            ReasonCode.INVALID_INPUT,
+            "Outlook found no message with that id in this mailbox; ids change when a message "
+            "moves, so read the folder again for the current id",
+        )
+    return _require_rest_payload(outcome)
+
+
+def _require_category_write(outcome: Mapping[str, object]) -> Mapping[str, object]:
+    """Map the category write onto typed failures; none of them is ever reported as success."""
+    kind = outcome.get("kind")
+    if kind == "ok":
+        payload = outcome.get("payload")
+        if isinstance(payload, Mapping):
+            return payload
+    if kind == "http_error":
+        status = outcome.get("status")
+        if status in {409, 412}:
+            raise ConnectorFailure(
+                ReasonCode.WRITE_CONFLICT,
+                "The message changed after it was read; nothing was written. Run the command "
+                "again to apply it over the current categories",
+            )
+        if status == 401:
+            raise ConnectorFailure(
+                ReasonCode.BROWSER_IDENTITY_UNAVAILABLE,
+                "Provider rejected the captured session authorization for the category write",
+            )
+        if status == 403:
+            raise ConnectorFailure(
+                ReasonCode.AUTHORIZATION_DENIED,
+                "Provider denied the category write for this mailbox",
+            )
+        if status in {400, 404}:
+            raise ConnectorFailure(
+                ReasonCode.INVALID_INPUT,
+                "Outlook rejected the category write for that message id",
+            )
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_EXTRACTION_FAILED,
+            "Provider rejected the bounded category write",
+        )
+    raise ConnectorFailure(
+        ReasonCode.BROWSER_EXTRACTION_FAILED,
+        "Category write did not complete or was not confirmed; read the message again before "
+        "repeating it",
+    )
+
+
+def _category_assignment(
+    message_id: str,
+    categories: tuple[str, ...],
+    previous: tuple[str, ...],
+    *,
+    changed: bool,
+) -> MailCategoryAssignment:
+    return MailCategoryAssignment(
+        message_id,
+        categories,
+        previous,
+        changed,
+        microsoft_provenance(
+            provider_id="microsoft365.browser",
+            route=RouteKind.BROWSER,
+            source_id=message_id,
+            fetched_at=utc_now(),
+            account_id=None,
+            endpoint="outlook-rest-v2-message-categories",
+        ),
+    )
+
+
 def _within_window(item: DriveFile, window: DateWindow | None) -> bool:
     if window is None:
         return True
     if item.modified_at is None:
         return False
     return window.start <= item.modified_at < window.end
-
-
-def _launch_failure_message(exc: Exception) -> str:
-    """Name the actual obstacle instead of always blaming a missing runtime.
-
-    A dedicated profile still held by an earlier browser process produced the same message as an
-    uninstalled runtime, which sent the reader to reinstall something that was already there.
-    """
-    text = str(exc).casefold()
-    if any(marker in text for marker in ("singletonlock", "profile", "already in use", "lock")):
-        return (
-            "The dedicated browser profile is already in use by another process; close it and retry"
-        )
-    return "Playwright Chromium could not start; install the browser runtime"
 
 
 def _drive_owner_identity(payload: Mapping[str, object]) -> str | None:
@@ -1527,21 +1621,6 @@ def _attendance_confirmed(event: CalendarEvent) -> bool:
         return False
     status = (event.response_status or "").strip().casefold()
     return status in _CONFIRMED_ATTENDANCE
-
-
-def _authorization_header(request: Any) -> object:
-    all_headers = getattr(request, "all_headers", None)
-    headers = all_headers() if callable(all_headers) else request.headers
-    if not isinstance(headers, Mapping):
-        return None
-    return next(
-        (
-            value
-            for name, value in headers.items()
-            if isinstance(name, str) and name.casefold() == "authorization"
-        ),
-        None,
-    )
 
 
 def _is_allowed_files_request_url(value: str) -> bool:

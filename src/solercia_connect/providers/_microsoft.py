@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from solercia_connect.domain import (
     CalendarEvent,
@@ -26,6 +26,8 @@ from solercia_connect.domain import (
     RouteKind,
 )
 from solercia_connect.errors import ConnectorFailure
+
+MailFolderName = Literal["inbox", "sent"]
 
 
 def field(item: Mapping[str, Any], *names: str) -> Any:
@@ -83,10 +85,37 @@ def microsoft_addresses(value: object) -> tuple[EmailAddress, ...]:
     return tuple(address for address in resolved if address is not None)
 
 
+def microsoft_categories(value: object) -> tuple[str, ...]:
+    """Read a message's Outlook categories, failing closed on a shape no collection serves.
+
+    A support team reads a case's state from these names, so a malformed value is refused rather
+    than reported as "no categories", which would silently look like an untriaged case.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ConnectorFailure(
+            ReasonCode.MALFORMED_PROVIDER_DATA,
+            "Microsoft message carried categories that are not a list",
+        )
+    names: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ConnectorFailure(
+                ReasonCode.MALFORMED_PROVIDER_DATA,
+                "Microsoft message carried an unusable category name",
+            )
+        name = entry.strip()
+        if name not in names:
+            names.append(name)
+    return tuple(names)
+
+
 def normalize_mail_message(
     item: Mapping[str, Any],
     *,
     provenance: Provenance,
+    folder: MailFolderName,
 ) -> MailMessage:
     identifier = field(item, "id", "Id")
     if not isinstance(identifier, str) or not identifier.strip():
@@ -108,6 +137,13 @@ def normalize_mail_message(
     sender = microsoft_address(field(item, "from", "From")) or microsoft_address(
         field(item, "sender", "Sender")
     )
+    raw_internet_message_id = field(item, "internetMessageId", "InternetMessageId")
+    internet_message_id = (
+        raw_internet_message_id.strip()
+        if isinstance(raw_internet_message_id, str) and raw_internet_message_id.strip()
+        else None
+    )
+    received_at = optional_microsoft_datetime(field(item, "receivedDateTime", "ReceivedDateTime"))
     return MailMessage(
         identifier,
         subject if isinstance(subject, str) else "",
@@ -120,6 +156,10 @@ def normalize_mail_message(
         conversation if isinstance(conversation, str) and conversation.strip() else None,
         bool(field(item, "hasAttachments", "HasAttachments")),
         provenance,
+        internet_message_id=internet_message_id,
+        folder=folder,
+        received_at=received_at,
+        categories=microsoft_categories(field(item, "categories", "Categories")),
     )
 
 

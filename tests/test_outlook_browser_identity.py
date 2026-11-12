@@ -99,7 +99,7 @@ def test_live_shape_zero_dom_signals_with_rest_me_connects_and_returns(tmp_path:
         "identity_verified": True,
         "session_status": "connected_browser",
         "extraction_status": "available",
-        "capabilities": ["mail.sent.list", "calendar.events.list"],
+        "capabilities": ["mail.sent.list", "mail.inbox.list", "calendar.events.list"],
     }
     assert driver.open_calls == [(profile_dir, False), (profile_dir, True)]
     assert driver.open_connection_types == [ConnectionType.OUTLOOK, ConnectionType.OUTLOOK]
@@ -810,7 +810,10 @@ def test_both_browser_gates_and_noninteractive_http_boundary_remain_intact(
     enabled_profiles.save(
         ConnectionProfile.create("outlook", "user@example.com", route="browser", now=NOW)
     )
-    http_result = enabled.test_connection(
+    http_result = enabled.test_connection("outlook", "user@example.com")
+    calls_without_invocation_gate = list(browser_calls)
+    # Both gates true: the browser profile is verified headless, never through a headed login.
+    verified = enabled.test_connection(
         "outlook",
         "user@example.com",
         allow_browser_fallback=True,
@@ -820,4 +823,7 @@ def test_both_browser_gates_and_noninteractive_http_boundary_remain_intact(
     assert missing_global_gate.ok is False
     assert http_result.status == "action_required"
     assert http_result.data["interactive_flow_started"] is False
-    assert browser_calls == []
+    assert calls_without_invocation_gate == []
+    assert verified.status == "connected_browser"
+    assert verified.operation == "connections.test"
+    assert browser_calls == ["user@example.com"]

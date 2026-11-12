@@ -35,16 +35,26 @@ class ProviderRegistry:
     def browser(self, family: ProviderFamily) -> ProviderAdapter | None:
         return self._browser.get(family)
 
-    def browser_for_capability(self, capability: Capability) -> ProviderAdapter | None:
+    def browser_for_capability(
+        self,
+        capability: Capability,
+        *,
+        family: ProviderFamily | None = None,
+    ) -> ProviderAdapter | None:
         """Find a browser adapter by capability, for when no official adapter exists at all.
 
         An unconfigured official provider is the very situation the fallback exists for, so the
-        family cannot be read off an official descriptor that was never built.
+        family cannot be read off an official descriptor that was never built. The target's
+        family, when known, decides; registration order never does. Without a known family the
+        capability must name exactly one adapter, or none is chosen.
         """
-        for adapter in self._browser.values():
-            if capability in adapter.descriptor.capabilities:
-                return adapter
-        return None
+        matches = [
+            adapter
+            for adapter in self._browser.values()
+            if capability in adapter.descriptor.capabilities
+            and (family is None or adapter.descriptor.family is family)
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     def find(self, provider_id: str) -> ProviderAdapter:
         if provider_id in self._official:

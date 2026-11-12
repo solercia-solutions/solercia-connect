@@ -16,6 +16,8 @@ from solercia_connect.domain import (
     EmailAddress,
     HealthReport,
     HealthState,
+    MailCategoriesUpdate,
+    MailCategoryAssignment,
     MailMessage,
     Provenance,
     ProviderFamily,
@@ -134,6 +136,8 @@ class FakeBrowserDriver:
         self.read_calls = 0
         self.close_calls = 0
         self.last_snapshot: BrowserSnapshot | None = None
+        self.write_result: MailCategoryAssignment | None = None
+        self.write_calls: list[MailCategoriesUpdate] = []
 
     def open_persistent(
         self,
@@ -219,6 +223,20 @@ class FakeBrowserDriver:
             raise self.read_error
         return self.records
 
+    def set_mail_categories(
+        self,
+        update: MailCategoriesUpdate,
+        *,
+        timeout_ms: int,
+    ) -> MailCategoryAssignment:
+        del timeout_ms
+        self.write_calls.append(update)
+        if self.read_error:
+            raise self.read_error
+        if self.write_result is None:
+            raise AssertionError("Fake browser driver has no queued category write result")
+        return self.write_result
+
     def close(self) -> None:
         self.close_calls += 1
 
@@ -228,6 +246,9 @@ def mail_record(
     family: ProviderFamily = ProviderFamily.MICROSOFT,
     route: RouteKind = RouteKind.OFFICIAL,
     account_id: str | None = "user@example.com",
+    folder: str | None = None,
+    internet_message_id: str | None = None,
+    received_at: datetime | None = None,
 ) -> MailMessage:
     return MailMessage(
         "message-1",
@@ -241,6 +262,9 @@ def mail_record(
         "thread-1",
         False,
         Provenance(provider_id, family, route, "message-1", NOW, account_id),
+        internet_message_id=internet_message_id,
+        folder=folder,
+        received_at=received_at,
     )
 
 

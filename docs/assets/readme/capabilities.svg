@@ -1,0 +1,121 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="580" viewBox="0 0 960 580" role="img" aria-labelledby="title desc">
+  <title id="title">Solercia Connect providers and capabilities</title>
+  <desc id="desc">Capabilities per target. Microsoft: Outlook mail and calendar, Teams transcripts and OneDrive or SharePoint files, all with a browser route. Google: Gmail, Gmail compose, Calendar, Meet with a browser route, and Search Console. Atlassian: Jira and Bitbucket, plus GLPI tickets. Write capabilities are marked.</desc>
+  <defs>
+    <style>
+      text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+      .bg{fill:#f8fafc;stroke:#e2e8f0}
+      .h{fill:#0f172a;font-size:22px;font-weight:700}
+      .sub{fill:#475569;font-size:13px}
+      .f{fill:#0f172a;font-size:17px;font-weight:700}
+      .t{fill:#0f172a;font-size:14px;font-weight:600}
+      .s{fill:#475569;font-size:12px}
+      .c{fill:#334155;font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+      .card{fill:#ffffff;stroke:#cbd5e1;stroke-width:1.5}
+      .b1{fill:#0ea5e9}.b2{fill:#10b981}.b3{fill:#6366f1}
+      .tw{fill:#ffe4e6}.tb{fill:#fef3c7}
+      .tt{fill:#9f1239;font-size:10.5px;font-weight:700}
+      .tbt{fill:#92400e;font-size:10.5px;font-weight:700}
+      @media (prefers-color-scheme:dark){
+        .bg{fill:#0d1117;stroke:#30363d}
+        .h,.f,.t{fill:#e6edf3}
+        .sub,.s{fill:#9da7b3}
+        .c{fill:#c9d1d9}
+        .card{fill:#161b22;stroke:#30363d}
+        .b1{fill:#38bdf8}.b2{fill:#34d399}.b3{fill:#818cf8}
+        .tw{fill:#4c0519}.tb{fill:#451a03}
+        .tt{fill:#fecdd3}
+        .tbt{fill:#fde68a}
+      }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0.5" y="0.5" width="959" height="579" rx="16"/>
+  <text class="h" x="32" y="44">What you can read, and the few things you can write</text>
+  <text class="sub" x="32" y="66">Capabilities per connection target. Reads are the default; every write needs --allow-write on each call.</text>
+
+  <!-- Microsoft -->
+  <rect class="card" x="32" y="92" width="288" height="420" rx="12"/>
+  <rect class="b1" x="32" y="92" width="288" height="6" rx="3"/>
+  <text class="f" x="48" y="126">Microsoft 365</text>
+  <text class="s" x="48" y="146">Microsoft Graph, Outlook REST, SharePoint</text>
+
+  <text class="t" x="48" y="178">Outlook</text>
+  <rect class="tb" x="112" y="166" width="58" height="17" rx="8.5"/><text class="tbt" x="141" y="178" text-anchor="middle">browser</text>
+  <text class="c" x="48" y="198">mail.sent.list</text>
+  <text class="c" x="48" y="216">mail.inbox.list</text>
+  <text class="c" x="48" y="234">calendar.events.list</text>
+  <text class="c" x="48" y="252">mail.categories.set</text>
+  <rect class="tw" x="190" y="241" width="44" height="16" rx="8"/><text class="tt" x="212" y="252" text-anchor="middle">write</text>
+  <text class="s" x="240" y="252">browser only</text>
+
+  <text class="t" x="48" y="284">Teams</text>
+  <rect class="tb" x="100" y="272" width="58" height="17" rx="8.5"/><text class="tbt" x="129" y="284" text-anchor="middle">browser</text>
+  <text class="c" x="48" y="304">meeting.transcripts.list</text>
+  <text class="c" x="48" y="322">meeting.transcript.get</text>
+
+  <text class="t" x="48" y="354">OneDrive / SharePoint</text>
+  <rect class="tb" x="216" y="342" width="58" height="17" rx="8.5"/><text class="tbt" x="245" y="354" text-anchor="middle">browser</text>
+  <text class="c" x="48" y="374">files.search</text>
+  <text class="c" x="48" y="392">files.get</text>
+
+  <!-- Google -->
+  <rect class="card" x="336" y="92" width="288" height="420" rx="12"/>
+  <rect class="b2" x="336" y="92" width="288" height="6" rx="3"/>
+  <text class="f" x="352" y="126">Google</text>
+  <text class="s" x="352" y="146">Gmail, Calendar, Drive, Search Console</text>
+
+  <text class="t" x="352" y="178">Gmail</text>
+  <text class="c" x="352" y="198">mail.sent.list</text>
+  <text class="c" x="352" y="216">mail.inbox.list</text>
+
+  <text class="t" x="352" y="248">Gmail compose</text>
+  <text class="c" x="352" y="268">mail.draft.create</text>
+  <rect class="tw" x="476" y="257" width="44" height="16" rx="8"/><text class="tt" x="498" y="268" text-anchor="middle">write</text>
+  <text class="c" x="352" y="286">mail.draft.send</text>
+  <rect class="tw" x="476" y="275" width="44" height="16" rx="8"/><text class="tt" x="498" y="286" text-anchor="middle">write</text>
+
+  <text class="t" x="352" y="318">Google Calendar</text>
+  <text class="c" x="352" y="338">calendar.events.list</text>
+
+  <text class="t" x="352" y="370">Google Meet</text>
+  <rect class="tb" x="448" y="358" width="58" height="17" rx="8.5"/><text class="tbt" x="477" y="370" text-anchor="middle">browser</text>
+  <text class="c" x="352" y="390">meeting.transcripts.list</text>
+  <text class="c" x="352" y="408">meeting.transcript.get</text>
+
+  <text class="t" x="352" y="440">Search Console</text>
+  <text class="c" x="352" y="460">search.analytics.query</text>
+  <text class="c" x="352" y="478">search.sitemaps.list</text>
+  <text class="c" x="352" y="496">search.urls.inspect</text>
+
+  <!-- Atlassian + GLPI -->
+  <rect class="card" x="640" y="92" width="288" height="420" rx="12"/>
+  <rect class="b3" x="640" y="92" width="288" height="6" rx="3"/>
+  <text class="f" x="656" y="126">Atlassian and GLPI</text>
+  <text class="s" x="656" y="146">REST APIs with API tokens or OAuth</text>
+
+  <text class="t" x="656" y="178">Jira Cloud</text>
+  <text class="c" x="656" y="198">external.issues.search</text>
+  <text class="c" x="656" y="216">external.issues.open.list</text>
+  <text class="c" x="656" y="234">external.issues.transitions.list</text>
+  <text class="c" x="656" y="252">external.issues.transition</text>
+  <rect class="tw" x="842" y="241" width="44" height="16" rx="8"/><text class="tt" x="864" y="252" text-anchor="middle">write</text>
+
+  <text class="t" x="656" y="284">Bitbucket Cloud</text>
+  <text class="c" x="656" y="304">scm.repositories.list</text>
+  <text class="c" x="656" y="322">scm.pullrequests.list</text>
+  <text class="c" x="656" y="340">scm.commits.list</text>
+
+  <text class="t" x="656" y="372">Bitbucket admin</text>
+  <text class="c" x="656" y="392">scm.repositories.create</text>
+  <rect class="tw" x="828" y="381" width="44" height="16" rx="8"/><text class="tt" x="850" y="392" text-anchor="middle">write</text>
+
+  <text class="t" x="656" y="424">GLPI</text>
+  <text class="c" x="656" y="444">tickets.search</text>
+
+  <!-- Legend -->
+  <rect class="tb" x="32" y="534" width="58" height="17" rx="8.5"/><text class="tbt" x="61" y="546" text-anchor="middle">browser</text>
+  <text class="s" x="98" y="547">also served by the supervised browser route</text>
+  <rect class="tw" x="372" y="535" width="44" height="16" rx="8"/><text class="tt" x="394" y="546" text-anchor="middle">write</text>
+  <text class="s" x="424" y="547">bounded write: --allow-write on every call, never retried</text>
+</svg>

@@ -8,18 +8,24 @@ from typing import Any
 
 from solercia_connect.browser_profile import (
     audit_browser_profile_path,
-    microsoft_browser_profile_path,
-    microsoft_browser_profile_root,
+    browser_profile_path,
+    browser_profile_root,
 )
+from solercia_connect.browser_routes import has_browser_route, target_family
 from solercia_connect.config import (
+    BITBUCKET_TARGETS,
+    GOOGLE_TARGETS,
     MICROSOFT_TARGETS,
+    ConnectionProfile,
     ConnectionType,
     ConnectSettings,
     ProfileStore,
     normalize_account,
     target_spec,
 )
+from solercia_connect.domain import ProviderFamily
 from solercia_connect.errors import ConnectorFailure
+from solercia_connect.project_home import GitRunner, ProjectHomeInspection, inspect_project_home
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,9 +59,13 @@ class DoctorReport:
     service_host: str
     service_port: int
     api_key_configured: bool
+    # Present only in project mode, so the report is unchanged without SOLERCIA_CONNECT_HOME.
+    project_mode: ProjectHomeInspection | None = None
+    # "explicit" (SOLERCIA_CONNECT_HOME) or "discovered" (SOLERCIA_CONNECT_PROJECT_DISCOVERY).
+    project_home_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "type": self.type.value,
             "account": self.account,
             "ready": self.ready,
@@ -70,6 +80,10 @@ class DoctorReport:
                 "api_key_configured": self.api_key_configured,
             },
         }
+        if self.project_mode is not None:
+            payload["project_mode"] = self.project_mode.to_dict()
+            payload["project_home_source"] = self.project_home_source
+        return payload
 
 
 class DoctorService:
@@ -81,12 +95,15 @@ class DoctorService:
         module_available: Callable[[str], bool] | None = None,
         keyring_probe: Callable[[], tuple[bool, str]] | None = None,
         browser_probe: Callable[[], tuple[bool, str]] | None = None,
+        git_runner: GitRunner | None = None,
     ) -> None:
         self._settings = settings
         self._profiles = profiles
         self._module_available = module_available or _module_available
         self._keyring_probe = keyring_probe or _keyring_backend_probe
         self._browser_probe = browser_probe or _playwright_browser_probe
+        self._git_runner = git_runner
+        self._project_inspection: ProjectHomeInspection | None = None
 
     def inspect(
         self,
@@ -100,21 +117,19 @@ class DoctorService:
             name for name in spec.required_configuration if name not in configured_names
         )
         microsoft_target = spec.type in MICROSOFT_TARGETS
-        oauth_target = spec.type in {
-            ConnectionType.OUTLOOK,
-            ConnectionType.TEAMS,
-            ConnectionType.ONEDRIVE,
-            ConnectionType.GMAIL,
-            ConnectionType.GOOGLE_CALENDAR,
-        }
+        browser_target = has_browser_route(spec.type)
+        oauth_target = spec.type in MICROSOFT_TARGETS | GOOGLE_TARGETS
+        # Bitbucket keeps its API token in the same secure store, so it needs it just as much.
+        secret_target = oauth_target or spec.type in BITBUCKET_TARGETS
         browser_profile_status = "not_applicable"
         browser_profile_detail = "Microsoft browser profiles do not apply to this target"
         browser_route_status = "not_applicable"
         browser_route_detail = "Microsoft browser fallback does not apply to this target"
         browser_route_ready = False
-        if microsoft_target:
+        if browser_target:
             browser_profile_status, browser_profile_detail = self._browser_profile_check(
-                normalized_account
+                target_family(spec.type),
+                normalized_account,
             )
             if not self._settings.browser_fallback_enabled:
                 browser_route_status = "disabled"
@@ -132,9 +147,29 @@ class DoctorService:
                 browser_route_detail = browser_runtime_detail
 
         official_configuration_ready = not missing
-        keyring_ready = not oauth_target
+        project = self._project_mode()
+        keyring_ready = not secret_target
         keyring_checks: list[DoctorCheck] = []
-        if oauth_target:
+        if secret_target and project is not None:
+            # Project mode keeps secrets in files, so the folder's safety replaces the keyring.
+            keyring_ready = project.ready
+            keyring_checks.extend(
+                (
+                    DoctorCheck(
+                        "keyring_package",
+                        "not_required",
+                        "Project mode stores secrets in files under SOLERCIA_CONNECT_HOME/secrets",
+                        False,
+                    ),
+                    DoctorCheck(
+                        "keyring_backend",
+                        "not_required",
+                        "Project mode does not use the OS keyring",
+                        False,
+                    ),
+                )
+            )
+        elif secret_target:
             if official_configuration_ready:
                 package_available = self._module_available("keyring")
                 keyring_checks.append(
@@ -188,7 +223,7 @@ class DoctorService:
                 )
 
         official_route_ready = official_configuration_ready and keyring_ready
-        configuration_required = not (microsoft_target and browser_route_ready)
+        configuration_required = not (browser_target and browser_route_ready)
         checks: list[DoctorCheck] = [
             DoctorCheck(
                 "configuration",
@@ -197,18 +232,37 @@ class DoctorService:
                     "Required non-secret configuration names are present"
                     if not missing
                     else "Configuration is missing only for the official provider route"
-                    if microsoft_target
+                    if browser_target
                     else "Required configuration names are missing"
                 ),
                 configuration_required,
                 (
                     ()
-                    if microsoft_target and browser_route_ready
+                    if browser_target and browser_route_ready
                     else tuple(f"Set {name}." for name in missing)
                 ),
             )
         ]
         checks.extend(keyring_checks)
+        if project is not None:
+            subject = (
+                "The project home discovered at the git root"
+                if self._settings.project_home_source == "discovered"
+                else "SOLERCIA_CONNECT_HOME"
+            )
+            checks.append(
+                DoctorCheck(
+                    "project_mode",
+                    "ready" if project.ready else "unsafe",
+                    (
+                        f"{subject} is private and git tracks nothing inside it"
+                        if project.ready
+                        else f"{subject} is not safe for project mode"
+                    ),
+                    True,
+                    project.problems,
+                )
+            )
 
         if microsoft_target:
             checks.append(
@@ -237,6 +291,7 @@ class DoctorService:
                     not browser_route_ready,
                 )
             )
+        if browser_target:
             profile_remediation = (
                 ()
                 if browser_profile_status == "ready"
@@ -300,6 +355,11 @@ class DoctorService:
             )
         )
 
+        if spec.type is ConnectionType.BITBUCKET:
+            checks.append(_bitbucket_connection_check(profile))
+        if spec.type is ConnectionType.BITBUCKET_ADMIN:
+            checks.append(_bitbucket_admin_connection_check(profile))
+
         for module in ("fastapi", "uvicorn", "playwright"):
             available = self._module_available(module)
             checks.append(
@@ -349,10 +409,11 @@ class DoctorService:
             normalized_account,
             (
                 (official_route_ready or browser_route_ready)
-                if microsoft_target
+                if browser_target
                 else official_route_ready
             )
-            and not personal_account_blocked,
+            and not personal_account_blocked
+            and (project is None or project.ready),
             missing,
             spec.capabilities,
             spec.oauth_scopes,
@@ -361,12 +422,26 @@ class DoctorService:
             self._settings.api_host,
             self._settings.api_port,
             self._settings.api_key is not None,
+            project,
+            self._settings.project_home_source,
         )
 
-    def _browser_profile_check(self, account: str | None) -> tuple[str, str]:
-        root = microsoft_browser_profile_root(self._settings)
+    def _project_mode(self) -> ProjectHomeInspection | None:
+        home = self._settings.project_home
+        if home is None:
+            return None
+        if self._project_inspection is None:
+            self._project_inspection = inspect_project_home(home, runner=self._git_runner)
+        return self._project_inspection
+
+    def _browser_profile_check(
+        self,
+        family: ProviderFamily,
+        account: str | None,
+    ) -> tuple[str, str]:
+        root = browser_profile_root(self._settings, family)
         profile = (
-            microsoft_browser_profile_path(self._settings, account)
+            browser_profile_path(self._settings, family, account)
             if account is not None
             else root / "legacy"
         )
@@ -380,6 +455,55 @@ class DoctorService:
             if audit.exists
             else "Dedicated Microsoft browser profile can be created privately when authorized",
         )
+
+
+def _bitbucket_connection_check(profile: ConnectionProfile | None) -> DoctorCheck:
+    """Report the stored binding; doctor never reads or tests the API token itself."""
+
+    if profile is not None and profile.workspace is not None:
+        return DoctorCheck(
+            "bitbucket_connection",
+            "present",
+            f"The connection binds workspace {profile.workspace} and a Bitbucket account ID; "
+            "status proves the stored API token again",
+            False,
+        )
+    return DoctorCheck(
+        "bitbucket_connection",
+        "absent",
+        "No Bitbucket connection exists; it needs an API token with scopes for the Bitbucket app",
+        False,
+        (
+            "solercia-connect connect bitbucket <account> --workspace <workspace> "
+            "--token-env BITBUCKET_API_TOKEN",
+            "Create the token as docs/runbooks/bitbucket.md describes.",
+        ),
+    )
+
+
+def _bitbucket_admin_connection_check(profile: ConnectionProfile | None) -> DoctorCheck:
+    """Report the separate repository-creation binding; its token is never read or tested."""
+
+    if profile is not None and profile.workspace is not None:
+        return DoctorCheck(
+            "bitbucket_admin_connection",
+            "present",
+            f"The admin connection binds workspace {profile.workspace} and a Bitbucket account "
+            "ID; status proves the stored API token again",
+            False,
+        )
+    return DoctorCheck(
+        "bitbucket_admin_connection",
+        "absent",
+        "No bitbucket-admin connection exists; it needs its own API token with the five scopes "
+        "of the repository creation",
+        False,
+        (
+            "solercia-connect connect bitbucket-admin <account> --workspace <workspace> "
+            "--token-env BITBUCKET_ADMIN_API_TOKEN",
+            "Create the token as docs/runbooks/bitbucket.md describes.",
+        ),
+    )
 
 
 def _configured_names(settings: ConnectSettings) -> frozenset[str]:

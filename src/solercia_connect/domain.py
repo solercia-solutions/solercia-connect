@@ -2,21 +2,47 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import asdict, dataclass, fields, is_dataclass
+import re
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any
+from urllib.parse import urlsplit
 
 
 class Capability(StrEnum):
     MAIL_SENT_LIST = "mail.sent.list"
+    MAIL_INBOX_LIST = "mail.inbox.list"
+    # The Outlook category write: see docs/decisions/2026-10-19-escritura-categorias-outlook.md.
+    MAIL_CATEGORIES_SET = "mail.categories.set"
     CALENDAR_EVENTS_LIST = "calendar.events.list"
     MEETING_TRANSCRIPTS_LIST = "meeting.transcripts.list"
     MEETING_TRANSCRIPT_GET = "meeting.transcript.get"
     FILES_SEARCH = "files.search"
     FILES_GET = "files.get"
     EXTERNAL_ISSUES_SEARCH = "external.issues.search"
+    # Read-only and official route only: the issues of the connected account not yet done.
+    EXTERNAL_ISSUES_OPEN_LIST = "external.issues.open.list"
+    # Official route only: see docs/decisions/2026-10-25-escritura-transiciones-jira.md. The
+    # transition is the second write, after the Outlook categories.
+    EXTERNAL_ISSUES_TRANSITIONS_LIST = "external.issues.transitions.list"
+    EXTERNAL_ISSUES_TRANSITION = "external.issues.transition"
     TICKETS_SEARCH = "tickets.search"
+    # The Gmail send in two steps, on the gmail-compose target, official route only: see
+    # docs/decisions/2026-10-25-envio-correo-gmail-dos-pasos.md. It is the third write.
+    MAIL_DRAFT_CREATE = "mail.draft.create"
+    MAIL_DRAFT_SEND = "mail.draft.send"
+    # Bitbucket Cloud reads, official route only: docs/decisions/2026-10-26-conector-bitbucket.md.
+    SCM_REPOSITORIES_LIST = "scm.repositories.list"
+    SCM_PULLREQUESTS_LIST = "scm.pullrequests.list"
+    SCM_COMMITS_LIST = "scm.commits.list"
+    # The fourth write, on the separate bitbucket-admin target, official route only:
+    # docs/decisions/2026-10-25-escritura-creacion-repositorios-bitbucket.md.
+    SCM_REPOSITORIES_CREATE = "scm.repositories.create"
+    # Search Console reads, official route only; they add no write.
+    SEARCH_ANALYTICS_QUERY = "search.analytics.query"
+    SEARCH_SITEMAPS_LIST = "search.sitemaps.list"
+    SEARCH_URLS_INSPECT = "search.urls.inspect"
 
 
 class ProviderFamily(StrEnum):
@@ -24,6 +50,28 @@ class ProviderFamily(StrEnum):
     GOOGLE = "google"
     JIRA = "jira"
     GLPI = "glpi"
+    # Read-only and official-only: docs/decisions/2026-10-26-conector-bitbucket.md.
+    BITBUCKET = "bitbucket"
+
+
+# The family each official provider belongs to. A request names its official provider even when
+# that adapter was never configured, so the runtime reads the target's family here and picks the
+# browser route by family, never by which browser adapter happened to be registered first.
+_OFFICIAL_PROVIDER_FAMILIES: dict[str, ProviderFamily] = {
+    "microsoft.graph": ProviderFamily.MICROSOFT,
+    "google.gmail": ProviderFamily.GOOGLE,
+    "google.calendar": ProviderFamily.GOOGLE,
+    "google.meet": ProviderFamily.GOOGLE,
+    "google.searchconsole": ProviderFamily.GOOGLE,
+    "jira.cloud": ProviderFamily.JIRA,
+    "glpi.rest": ProviderFamily.GLPI,
+    "bitbucket.cloud": ProviderFamily.BITBUCKET,
+}
+
+
+def official_provider_family(provider_id: str) -> ProviderFamily | None:
+    """Return the family of a known official provider ID, or ``None`` for any other ID."""
+    return _OFFICIAL_PROVIDER_FAMILIES.get(provider_id)
 
 
 class RouteKind(StrEnum):
@@ -64,6 +112,37 @@ class ReasonCode(StrEnum):
     PERSONAL_ACCOUNT_UNSUPPORTED = "personal_account_unsupported"
     TENANT_POLICY_BLOCKED = "tenant_policy_blocked"
     API_AUTHENTICATION_REQUIRED = "api_authentication_required"
+    WRITE_NOT_AUTHORIZED = "write_not_authorized"
+    WRITE_CONFLICT = "write_conflict"
+    ISSUE_NOT_FOUND = "issue_not_found"
+    TRANSITION_UNAVAILABLE = "transition_unavailable"
+    TRANSITION_AMBIGUOUS = "transition_ambiguous"
+    TRANSITION_REQUIRES_FIELDS = "transition_requires_fields"
+    WRITE_SCOPE_MISSING = "write_scope_missing"
+    WRITE_UNVERIFIED = "write_unverified"
+    DRAFT_NOT_FOUND = "draft_not_found"
+    DUPLICATE_SUSPECTED = "duplicate_suspected"
+    DUPLICATE_CHECK_UNAVAILABLE = "duplicate_check_unavailable"
+    WORKSPACE_NOT_FOUND = "workspace_not_found"
+    # A paged read reached its fixed page bound: nothing is returned rather than a partial list.
+    RESULT_INCOMPLETE = "result_incomplete"
+    REPOSITORY_NOT_FOUND = "repository_not_found"
+    # The repository to create already exists; it is never touched.
+    REPOSITORY_EXISTS = "repository_exists"
+    PROJECT_NOT_FOUND = "project_not_found"
+
+
+# Capabilities that change provider state. Each one needs explicit authorization per invocation,
+# never runs over HTTP, and is never retried automatically.
+WRITE_CAPABILITIES: frozenset[Capability] = frozenset(
+    {
+        Capability.MAIL_CATEGORIES_SET,
+        Capability.EXTERNAL_ISSUES_TRANSITION,
+        Capability.MAIL_DRAFT_CREATE,
+        Capability.MAIL_DRAFT_SEND,
+        Capability.SCM_REPOSITORIES_CREATE,
+    }
+)
 
 
 class StepOutcome(StrEnum):
@@ -107,8 +186,8 @@ class MailQuery:
     max_attachment_bytes: int = 10_485_760
 
     def __post_init__(self) -> None:
-        if not 1 <= self.limit <= 100:
-            raise ValueError("MailQuery limit must be between 1 and 100")
+        if not 1 <= self.limit <= 1000:
+            raise ValueError("MailQuery limit must be between 1 and 1000")
         if self.max_attachment_bytes <= 0:
             raise ValueError("MailQuery max_attachment_bytes must be positive")
 
@@ -170,6 +249,363 @@ class IssueQuery:
             raise ValueError("IssueQuery limit must be between 1 and 100")
 
 
+# One Jira project key, exactly: the prefix of an issue key. Quotes, spaces, operators and lists
+# never match, so a project filter cannot reshape the JQL it is joined to.
+_JIRA_PROJECT_KEY = re.compile(r"[A-Z][A-Z0-9_]+")
+
+
+@dataclass(frozen=True, slots=True)
+class OpenIssueQuery:
+    """List the Jira issues of the connected account whose status category is not Done.
+
+    ``project`` and ``current_sprint`` narrow the default filter. ``jql`` replaces that filter
+    whole, so it cannot be combined with them. There is no date window.
+    """
+
+    project: str | None = None
+    current_sprint: bool = False
+    jql: str | None = None
+    account_id: str | None = None
+    limit: int = 100
+
+    def __post_init__(self) -> None:
+        if self.project is not None and (
+            not isinstance(self.project, str) or _JIRA_PROJECT_KEY.fullmatch(self.project) is None
+        ):
+            raise ValueError("project must be one Jira project key such as CP")
+        if self.jql is not None:
+            if not isinstance(self.jql, str) or not self.jql.strip():
+                raise ValueError("jql cannot be blank")
+            if self.project is not None or self.current_sprint:
+                raise ValueError(
+                    "jql replaces the default filter; do not combine it with project or sprint"
+                )
+            object.__setattr__(self, "jql", self.jql.strip())
+        if not 1 <= self.limit <= 100:
+            raise ValueError("OpenIssueQuery limit must be between 1 and 100")
+
+
+# One Jira issue key, exactly: a project key, a hyphen and a positive number without leading zeros.
+# Lists, ranges and JQL never match, so an issue-scoped capability reaches one issue at most.
+_JIRA_ISSUE_KEY = re.compile(r"[A-Z][A-Z0-9_]+-[1-9][0-9]*")
+
+
+def require_jira_issue_key(value: object) -> str:
+    """Return the key unchanged when it is one exact Jira issue key; refuse anything else."""
+    if not isinstance(value, str) or _JIRA_ISSUE_KEY.fullmatch(value) is None:
+        raise ValueError(
+            "issue must be one exact Jira issue key such as CP-1356; lists, ranges and JQL are "
+            "not accepted"
+        )
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class IssueTransitionsQuery:
+    """List the workflow transitions available to one Jira issue, named by its exact key."""
+
+    issue_key: str
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        require_jira_issue_key(self.issue_key)
+
+
+@dataclass(frozen=True, slots=True)
+class IssueTransitionRequest:
+    """Move one Jira issue, named by its exact key, to the status called ``to_status``.
+
+    The status name is trimmed and compared without case. ``write_authorized`` must be set
+    explicitly per invocation; the runtime refuses the write otherwise.
+    """
+
+    issue_key: str
+    to_status: str
+    account_id: str | None = None
+    write_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        require_jira_issue_key(self.issue_key)
+        if not isinstance(self.to_status, str) or not self.to_status.strip():
+            raise ValueError("A Jira transition needs a target status name")
+        object.__setattr__(self, "to_status", self.to_status.strip())
+
+
+# One Bitbucket workspace slug, as it appears in bitbucket.org/<workspace>/<repository>. Nothing
+# that could reshape the URL path it is joined to ever matches.
+_BITBUCKET_WORKSPACE = re.compile(r"[a-z0-9][a-z0-9_-]{0,61}")
+
+
+def normalize_bitbucket_workspace(value: object) -> str:
+    """Return the lower-case workspace slug, or refuse anything that is not one slug."""
+    # lower(), not casefold(): casefold would turn a non-ASCII letter such as ß into a valid slug.
+    candidate = value.strip().lower() if isinstance(value, str) else ""
+    if _BITBUCKET_WORKSPACE.fullmatch(candidate) is None:
+        raise ValueError(
+            "The Bitbucket workspace must be one slug of lower-case letters, digits, '-' or '_', "
+            "such as idartes-tecnologia"
+        )
+    return candidate
+
+
+# One Bitbucket repository slug, as in bitbucket.org/<workspace>/<repository>. No slash, space or
+# query character can match, so a slug never reshapes the URL path it is joined to.
+_BITBUCKET_REPOSITORY = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
+# The pull request states Bitbucket documents, in the order a query lists them.
+PULL_REQUEST_STATES: tuple[str, ...] = ("OPEN", "MERGED", "DECLINED", "SUPERSEDED")
+
+
+def normalize_bitbucket_repository(value: object) -> str:
+    """Return the lower-case repository slug, or refuse anything that is not one slug."""
+    candidate = value.strip().lower() if isinstance(value, str) else ""
+    if _BITBUCKET_REPOSITORY.fullmatch(candidate) is None:
+        raise ValueError(
+            "The Bitbucket repository must be one slug of lower-case letters, digits, '.', '-' "
+            "or '_', such as pandora_proxy"
+        )
+    return candidate
+
+
+# One git branch name: no space, control or special character, no "..", "//" or leading "-", "/"
+# or ".", and no trailing "/", "." or ".lock". It is percent-encoded into one path segment.
+_BITBUCKET_BRANCH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,254}")
+
+
+def normalize_bitbucket_branch(value: object) -> str:
+    """Return the branch name unchanged when it is one safe ref name; refuse anything else."""
+    candidate = value.strip() if isinstance(value, str) else ""
+    if (
+        _BITBUCKET_BRANCH.fullmatch(candidate) is None
+        or ".." in candidate
+        or "//" in candidate
+        or candidate.endswith(("/", ".", ".lock"))
+    ):
+        raise ValueError(
+            "The branch must be one git branch name of letters, digits, '.', '_', '-' or '/', "
+            "such as develop or feature/x"
+        )
+    return candidate
+
+
+# The slug of a repository to create, validated as given: never lowered or trimmed, so what is
+# checked is exactly what is created. Bitbucket declares no pattern or maximum length, so none is
+# invented; "." and ".." are refused because they would reshape the URL path.
+_NEW_BITBUCKET_REPOSITORY = re.compile(r"[a-z0-9._-]+")
+# A Bitbucket project key; a braced project UUID, which the API also accepts, is refused.
+_BITBUCKET_PROJECT_KEY = re.compile(r"[A-Za-z0-9_]+")
+
+
+def require_new_bitbucket_repository(value: object) -> str:
+    """Return the slug of a repository to create unchanged, or refuse it."""
+    candidate = value if isinstance(value, str) else ""
+    if _NEW_BITBUCKET_REPOSITORY.fullmatch(candidate) is None or candidate in {".", ".."}:
+        raise ValueError(
+            "The new repository slug must use only lower-case letters, digits, '.', '-' or '_', "
+            "such as pandora-front; upper case, spaces, '/', braces, '.' and '..' are refused"
+        )
+    return candidate
+
+
+def require_bitbucket_project_key(value: object) -> str:
+    """Return one Bitbucket project key unchanged, or refuse anything else."""
+    candidate = value if isinstance(value, str) else ""
+    if _BITBUCKET_PROJECT_KEY.fullmatch(candidate) is None:
+        raise ValueError(
+            "The Bitbucket project key must be one key of letters, digits or '_', such as PAN; "
+            "a project UUID is refused"
+        )
+    return candidate
+
+
+@dataclass(frozen=True, slots=True)
+class ScmRepositoryQuery:
+    """List the repositories of one Bitbucket workspace the account is a member of.
+
+    Without a workspace the adapter reads the one stored with the connection.
+    """
+
+    workspace: str | None = None
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.workspace is not None:
+            object.__setattr__(self, "workspace", normalize_bitbucket_workspace(self.workspace))
+
+
+@dataclass(frozen=True, slots=True)
+class ScmPullRequestQuery:
+    """List the pull requests of one repository updated inside an end-exclusive window.
+
+    ``states`` keeps the documented order and drops repeats; it defaults to every state.
+    """
+
+    repository: str
+    window: DateWindow
+    states: tuple[str, ...] = PULL_REQUEST_STATES
+    workspace: str | None = None
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "repository", normalize_bitbucket_repository(self.repository))
+        if self.workspace is not None:
+            object.__setattr__(self, "workspace", normalize_bitbucket_workspace(self.workspace))
+        requested: set[str] = set()
+        for state in self.states:
+            name = state.strip().upper() if isinstance(state, str) else ""
+            if name not in PULL_REQUEST_STATES:
+                raise ValueError(
+                    "Each pull request state must be one of " + ", ".join(PULL_REQUEST_STATES)
+                )
+            requested.add(name)
+        if not requested:
+            raise ValueError("A pull request query needs at least one state")
+        object.__setattr__(
+            self, "states", tuple(state for state in PULL_REQUEST_STATES if state in requested)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ScmCommitQuery:
+    """List the commits of one branch dated inside an end-exclusive window.
+
+    Without a branch the adapter reads the repository's main branch.
+    """
+
+    repository: str
+    window: DateWindow
+    branch: str | None = None
+    workspace: str | None = None
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "repository", normalize_bitbucket_repository(self.repository))
+        if self.branch is not None:
+            object.__setattr__(self, "branch", normalize_bitbucket_branch(self.branch))
+        if self.workspace is not None:
+            object.__setattr__(self, "workspace", normalize_bitbucket_workspace(self.workspace))
+
+
+def same_status_name(first: str, second: str) -> bool:
+    """Tell whether two Jira status names are the same, ignoring case and outer whitespace."""
+    return first.strip().casefold() == second.strip().casefold()
+
+
+# One email address: the rule that also validates connection accounts (config.normalize_account).
+EMAIL_ADDRESS_PATTERN = re.compile(
+    r"(?=.{3,320}\Z)[^\s<>@]+@[^\s<>@.]+(?:\.[^\s<>@.]+)+\Z",
+    re.ASCII,
+)
+# A recipient written into a mail header must also be a plain dot-atom address, so no comma,
+# quote, parenthesis or angle bracket can add a second recipient or a comment to the header.
+_HEADER_SAFE_ADDRESS = re.compile(
+    r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+"
+)
+MAX_DRAFT_RECIPIENTS = 20
+MAX_DRAFT_BODY_BYTES = 200 * 1024
+MAX_DRAFT_SUBJECT_CHARS = 255
+DRAFT_PREVIEW_CHARS = 200
+
+
+def normalize_mail_recipient(value: object, label: str) -> str:
+    """Return one recipient address in lower case, or refuse anything else."""
+    if isinstance(value, str):
+        candidate = value.strip().casefold()
+        if EMAIL_ADDRESS_PATTERN.fullmatch(candidate) and _HEADER_SAFE_ADDRESS.fullmatch(candidate):
+            return candidate
+    raise ValueError(f"A --{label} value is not a valid email address")
+
+
+def require_draft_subject(value: object) -> str:
+    """Return the trimmed subject when it is one non-empty, bounded line."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("A Gmail draft needs a non-empty subject")
+    subject = value.strip()
+    if len(subject.splitlines()) != 1 or any(
+        ord(char) < 32 or ord(char) == 127 for char in subject
+    ):
+        raise ValueError("The subject must be one line without control characters")
+    if len(subject) > MAX_DRAFT_SUBJECT_CHARS:
+        raise ValueError(f"The subject is longer than {MAX_DRAFT_SUBJECT_CHARS} characters")
+    return subject
+
+
+@dataclass(frozen=True, slots=True)
+class MailDraftRequest:
+    """One plain-text Gmail draft from the connected account, with explicit recipients.
+
+    Every recipient is validated and appears once across ``to``, ``cc`` and ``bcc``, at most
+    ``MAX_DRAFT_RECIPIENTS`` in total. The body is UTF-8 text of at most ``MAX_DRAFT_BODY_BYTES``
+    and never appears in a representation. ``write_authorized`` must be set explicitly per
+    invocation; the runtime refuses the write otherwise.
+    """
+
+    to: tuple[str, ...]
+    subject: str
+    body: str = field(repr=False)
+    cc: tuple[str, ...] = ()
+    bcc: tuple[str, ...] = ()
+    account_id: str | None = None
+    write_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        to = _draft_recipients(self.to, "to")
+        cc = _draft_recipients(self.cc, "cc")
+        bcc = _draft_recipients(self.bcc, "bcc")
+        if not to:
+            raise ValueError("A Gmail draft needs at least one --to recipient")
+        everyone = [*to, *cc, *bcc]
+        if len(set(everyone)) != len(everyone):
+            raise ValueError("A recipient appears more than once across --to, --cc and --bcc")
+        if len(everyone) > MAX_DRAFT_RECIPIENTS:
+            raise ValueError(
+                f"A Gmail draft takes at most {MAX_DRAFT_RECIPIENTS} recipients across --to, --cc "
+                "and --bcc"
+            )
+        object.__setattr__(self, "to", to)
+        object.__setattr__(self, "cc", cc)
+        object.__setattr__(self, "bcc", bcc)
+        object.__setattr__(self, "subject", require_draft_subject(self.subject))
+        if not isinstance(self.body, str) or not self.body.strip():
+            raise ValueError("A Gmail draft needs a non-empty body")
+        try:
+            size = len(self.body.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise ValueError("The body is not valid UTF-8 text") from None
+        if size > MAX_DRAFT_BODY_BYTES:
+            raise ValueError(f"The body is larger than {MAX_DRAFT_BODY_BYTES // 1024} KB")
+
+
+# A Gmail draft id as Gmail issues it; nothing that could reshape the URL path it is joined to.
+_GMAIL_DRAFT_ID = re.compile(r"[A-Za-z0-9_-]{1,256}")
+
+
+@dataclass(frozen=True, slots=True)
+class MailDraftSendRequest:
+    """Send one existing Gmail draft, named by its id, after the user approved that draft.
+
+    Unless ``allow_duplicate`` is set, the send first refuses a draft whose subject and recipients
+    match a message already in Sent. ``write_authorized`` must be set explicitly per invocation.
+    """
+
+    draft_id: str
+    account_id: str | None = None
+    write_authorized: bool = False
+    allow_duplicate: bool = False
+
+    def __post_init__(self) -> None:
+        candidate = self.draft_id.strip() if isinstance(self.draft_id, str) else ""
+        if _GMAIL_DRAFT_ID.fullmatch(candidate) is None:
+            raise ValueError("The draft id must be one Gmail draft identifier, such as r-123")
+        object.__setattr__(self, "draft_id", candidate)
+
+
+def _draft_recipients(values: object, label: str) -> tuple[str, ...]:
+    if not isinstance(values, (tuple, list)):
+        raise ValueError(f"{label} must be a list of email addresses")
+    return tuple(normalize_mail_recipient(value, label) for value in values)
+
+
 @dataclass(frozen=True, slots=True)
 class TicketQuery:
     window: DateWindow
@@ -207,8 +643,219 @@ class FileQuery:
             raise ValueError("FileQuery site cannot be blank")
 
 
+@dataclass(frozen=True, slots=True)
+class MailCategoriesUpdate:
+    """Assign Outlook categories to one message, declared as a change to its current list.
+
+    ``message_id`` is the provider id carried by the ``id`` field of mail records. ``add`` and
+    ``remove`` may be combined so a state changes in one write; ``replace`` sets the whole list and
+    excludes both. Names compare without case, so asking for a name the message already carries
+    in another case changes nothing. ``write_authorized`` must be set explicitly per invocation.
+    """
+
+    message_id: str
+    add: tuple[str, ...] = ()
+    remove: tuple[str, ...] = ()
+    replace: tuple[str, ...] | None = None
+    account_id: str | None = None
+    write_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.message_id.strip():
+            raise ValueError("MailCategoriesUpdate message_id cannot be blank")
+        object.__setattr__(self, "message_id", self.message_id.strip())
+        object.__setattr__(self, "add", _category_names(self.add, "add"))
+        object.__setattr__(self, "remove", _category_names(self.remove, "remove"))
+        if self.replace is not None:
+            if self.add or self.remove:
+                raise ValueError("Category replace excludes add and remove")
+            replace = _category_names(self.replace, "replace")
+            if not replace:
+                raise ValueError("Category replace needs at least one name")
+            object.__setattr__(self, "replace", replace)
+        elif not self.add and not self.remove:
+            raise ValueError("A category update needs at least one name to add, remove or replace")
+        overlap = {name.casefold() for name in self.add} & {name.casefold() for name in self.remove}
+        if overlap:
+            raise ValueError("A category cannot be both added and removed in one update")
+
+    def resolve(self, current: tuple[str, ...]) -> tuple[str, ...]:
+        """Compute the list the message should carry, preserving the order already there."""
+        if self.replace is not None:
+            return self.replace
+        removed = {name.casefold() for name in self.remove}
+        result = [name for name in current if name.casefold() not in removed]
+        present = {name.casefold() for name in result}
+        for name in self.add:
+            if name.casefold() not in present:
+                result.append(name)
+                present.add(name.casefold())
+        return tuple(result)
+
+
+def same_categories(first: tuple[str, ...], second: tuple[str, ...]) -> bool:
+    """Tell whether two category lists carry the same names, ignoring case and order."""
+    return sorted(name.casefold() for name in first) == sorted(name.casefold() for name in second)
+
+
+def _category_names(values: tuple[str, ...], label: str) -> tuple[str, ...]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Category {label} cannot contain a blank name")
+        name = value.strip()
+        if name.casefold() not in seen:
+            seen.add(name.casefold())
+            names.append(name)
+    return tuple(names)
+
+
+@dataclass(frozen=True, slots=True)
+class ScmRepositoryCreateRequest:
+    """Create one private, empty git repository in an explicit project of a workspace.
+
+    Without a workspace the adapter uses the one stored with the bitbucket-admin connection.
+    ``write_authorized`` must be set explicitly per invocation; the runtime refuses the write
+    otherwise.
+    """
+
+    repository: str
+    project_key: str
+    workspace: str | None = None
+    account_id: str | None = None
+    write_authorized: bool = False
+
+    def __post_init__(self) -> None:
+        require_new_bitbucket_repository(self.repository)
+        require_bitbucket_project_key(self.project_key)
+        if self.workspace is not None:
+            object.__setattr__(self, "workspace", normalize_bitbucket_workspace(self.workspace))
+
+
+SEARCH_ANALYTICS_DIMENSIONS = frozenset(
+    {"country", "date", "device", "hour", "page", "query", "searchAppearance"}
+)
+SEARCH_ANALYTICS_TYPES = frozenset({"discover", "googleNews", "image", "news", "video", "web"})
+SEARCH_ANALYTICS_DATA_STATES = frozenset({"all", "final"})
+SEARCH_ANALYTICS_MAX_ROWS = 500_000
+
+_DOMAIN_PROPERTY = re.compile(r"sc-domain:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9-]+)+\Z")
+
+
+def validate_search_property(value: str) -> str:
+    """Accept a property exactly as Search Console names it.
+
+    A Domain property is ``sc-domain:example.com``. A URL-prefix property is an absolute URL with
+    a trailing slash, and without the slash it names a property that does not exist.
+    """
+    if _DOMAIN_PROPERTY.fullmatch(value):
+        return value
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname
+        and parsed.path.endswith("/")
+        and not parsed.query
+        and not parsed.fragment
+    ):
+        return value
+    raise ValueError(
+        "site_url must be sc-domain:example.com or a URL-prefix property ending in a slash"
+    )
+
+
+def url_belongs_to_search_property(url: str, site_url: str) -> bool:
+    """Tell whether a page falls under a property, which URL Inspection requires."""
+    parsed = urlsplit(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    if site_url.startswith("sc-domain:"):
+        domain = site_url.removeprefix("sc-domain:")
+        host = parsed.hostname.casefold()
+        return host == domain or host.endswith(f".{domain}")
+    return url.startswith(site_url)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchAnalyticsQuery:
+    """Read Search Console performance for exact calendar dates.
+
+    Search Console dates are calendar days in America/Los_Angeles, inclusive at both ends. They
+    are not instants, so this contract keeps the provider's own meaning instead of an
+    end-exclusive window that would shift each day by a time zone.
+    """
+
+    site_url: str
+    start_date: date
+    end_date: date
+    dimensions: tuple[str, ...] = ("date",)
+    search_type: str = "web"
+    data_state: str = "final"
+    row_limit: int = 25_000
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_search_property(self.site_url)
+        if self.start_date > self.end_date:
+            raise ValueError("start_date must not be after end_date")
+        unknown = set(self.dimensions) - SEARCH_ANALYTICS_DIMENSIONS
+        if unknown:
+            raise ValueError(f"Unsupported dimensions: {', '.join(sorted(unknown))}")
+        if len(set(self.dimensions)) != len(self.dimensions):
+            raise ValueError("dimensions cannot repeat")
+        if self.search_type not in SEARCH_ANALYTICS_TYPES:
+            raise ValueError("search_type is not a Search Console type")
+        if self.data_state not in SEARCH_ANALYTICS_DATA_STATES:
+            raise ValueError("data_state must be final or all")
+        if not 1 <= self.row_limit <= SEARCH_ANALYTICS_MAX_ROWS:
+            raise ValueError(f"row_limit must be between 1 and {SEARCH_ANALYTICS_MAX_ROWS}")
+
+
+@dataclass(frozen=True, slots=True)
+class SearchSitemapsQuery:
+    site_url: str
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_search_property(self.site_url)
+
+
+@dataclass(frozen=True, slots=True)
+class SearchUrlInspectionQuery:
+    site_url: str
+    inspection_url: str
+    language_code: str = "es-CO"
+    account_id: str | None = None
+
+    def __post_init__(self) -> None:
+        validate_search_property(self.site_url)
+        if not url_belongs_to_search_property(self.inspection_url, self.site_url):
+            raise ValueError("inspection_url must be a full URL under site_url")
+        if not self.language_code.strip():
+            raise ValueError("language_code cannot be blank")
+
+
 type QueryPayload = (
-    MailQuery | CalendarQuery | TranscriptQuery | IssueQuery | TicketQuery | FileQuery
+    MailQuery
+    | CalendarQuery
+    | TranscriptQuery
+    | IssueQuery
+    | OpenIssueQuery
+    | IssueTransitionsQuery
+    | IssueTransitionRequest
+    | TicketQuery
+    | FileQuery
+    | MailCategoriesUpdate
+    | MailDraftRequest
+    | MailDraftSendRequest
+    | ScmRepositoryQuery
+    | ScmPullRequestQuery
+    | ScmCommitQuery
+    | ScmRepositoryCreateRequest
+    | SearchAnalyticsQuery
+    | SearchSitemapsQuery
+    | SearchUrlInspectionQuery
 )
 
 
@@ -268,6 +915,11 @@ class MailMessage:
     has_attachments: bool
     provenance: Provenance
     attachments: tuple[MailAttachment, ...] = ()
+    internet_message_id: str | None = None
+    folder: str | None = None
+    received_at: datetime | None = None
+    # Outlook category names in provider order; empty when the message carries none.
+    categories: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +985,62 @@ class ExternalIssue:
 
 
 @dataclass(frozen=True, slots=True)
+class OpenIssue:
+    """One Jira issue still open for the connected account.
+
+    ``status_category`` is the stable category key (``new``, ``indeterminate``), not its
+    translated name, and ``assignee_account_id`` is the opaque Atlassian account ID.
+    """
+
+    key: str
+    summary: str
+    status: str | None
+    status_category: str | None
+    issue_type: str | None
+    priority: str | None
+    updated_at: datetime | None
+    assignee_account_id: str | None
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
+class IssueTransitionOption:
+    """One workflow transition a Jira issue can take now, with the status it would reach.
+
+    ``requires_fields`` is true when the transition screen declares a required field; the write
+    refuses such a transition because it never sets fields. ``current_status`` repeats on every
+    option so a caller sees where the issue stands without a second read.
+    """
+
+    issue_key: str
+    transition_id: str
+    transition_name: str
+    to_status: str
+    to_status_category: str | None
+    requires_fields: bool
+    current_status: str
+    current_status_category: str | None
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
+class IssueTransitionResult:
+    """The outcome of one Jira transition: the status read before and after the write.
+
+    When the issue already had the requested status nothing is written, ``changed`` is false and
+    the transition fields stay unset.
+    """
+
+    issue_key: str
+    previous_status: str
+    status: str
+    transition_id: str | None
+    transition_name: str | None
+    changed: bool
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
 class TicketCase:
     id: str
     title: str
@@ -369,8 +1077,230 @@ class DriveFile:
             raise ValueError("DriveFile size_bytes cannot be negative")
 
 
+@dataclass(frozen=True, slots=True)
+class MailCategoryAssignment:
+    """The outcome of one category write: the list the message now carries and what it had."""
+
+    message_id: str
+    categories: tuple[str, ...]
+    previous_categories: tuple[str, ...]
+    changed: bool
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
+class MailDraft:
+    """A Gmail draft created for human review.
+
+    ``body_preview`` holds only the first ``DRAFT_PREVIEW_CHARS`` characters of the body: it is
+    what an agent shows the user before asking to approve the send, never the whole body.
+    """
+
+    draft_id: str
+    message_id: str
+    thread_id: str | None
+    sender: EmailAddress
+    to: tuple[EmailAddress, ...]
+    cc: tuple[EmailAddress, ...]
+    bcc: tuple[EmailAddress, ...]
+    subject: str
+    body_preview: str
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
+class SearchAnalyticsRow:
+    """One grouped row; ``keys`` follows the order of the report's ``dimensions``."""
+
+    keys: tuple[str, ...]
+    clicks: float
+    impressions: float
+    ctr: float
+    position: float
+
+
+@dataclass(frozen=True, slots=True)
+class SearchAnalyticsReport:
+    """Everything one query answered, including an honest statement of what it covers.
+
+    A query always yields one report, so "no rows" is an observed answer and not an absent one.
+    ``first_day_with_data`` and ``last_day_with_data`` come only from returned rows and stay unset
+    when the query did not group by date. Search Console omits days without data, so neither value
+    says data began or ended beyond the requested range. ``truncated`` means the row limit was
+    reached and more rows may exist.
+    """
+
+    id: str
+    site_url: str
+    start_date: date
+    end_date: date
+    dimensions: tuple[str, ...]
+    search_type: str
+    data_state: str
+    rows: tuple[SearchAnalyticsRow, ...]
+    first_day_with_data: date | None
+    last_day_with_data: date | None
+    first_incomplete_date: date | None
+    aggregation_type: str | None
+    truncated: bool
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
+class MailSendResult:
+    """The outcome of one Gmail draft send: the sent message and who it went to.
+
+    ``sent_at`` is Gmail's ``internalDate`` when the send answer carries it, and otherwise the
+    moment Connect received Gmail's confirmation.
+    """
+
+    draft_id: str
+    message_id: str
+    thread_id: str | None
+    sender: EmailAddress
+    to: tuple[EmailAddress, ...]
+    cc: tuple[EmailAddress, ...]
+    bcc: tuple[EmailAddress, ...]
+    subject: str
+    sent_at: datetime
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
+class SearchSitemapContent:
+    type: str
+    submitted: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class SearchSitemap:
+    id: str
+    site_url: str
+    path: str
+    is_pending: bool
+    is_index: bool
+    type: str | None
+    last_submitted: datetime | None
+    last_downloaded: datetime | None
+    errors: int
+    warnings: int
+    contents: tuple[SearchSitemapContent, ...]
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
+class ScmRepository:
+    """One Bitbucket repository, with the time of its last update as Bitbucket reports it."""
+
+    workspace: str
+    slug: str
+    name: str
+    full_name: str
+    is_private: bool
+    main_branch: str | None
+    project_key: str | None
+    updated_at: datetime
+    web_url: str | None
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
+class ScmPullRequest:
+    """One Bitbucket pull request; ``merge_commit`` is set only once Bitbucket merged it."""
+
+    id: int
+    title: str
+    state: str
+    draft: bool
+    author_account_id: str | None
+    author_name: str | None
+    source_branch: str | None
+    destination_branch: str | None
+    created_at: datetime
+    updated_at: datetime
+    merge_commit: str | None
+    web_url: str | None
+    repository: str
+    workspace: str
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
+class ScmCommit:
+    """One commit of a branch: ``summary`` is the first line of its message."""
+
+    hash: str
+    date: datetime
+    author: str | None
+    author_account_id: str | None
+    summary: str
+    parent_count: int
+    branch: str
+    repository: str
+    workspace: str
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
+class ScmRepositoryCreation:
+    """The repository one creation produced, as Bitbucket confirmed it.
+
+    ``clone_https`` never carries a user name or password, even when Bitbucket's link does.
+    """
+
+    workspace: str
+    slug: str
+    full_name: str
+    project_key: str
+    is_private: bool
+    web_url: str | None
+    clone_https: str | None
+    created_at: datetime
+    provenance: Provenance
+
+
+@dataclass(frozen=True, slots=True)
+class SearchUrlInspection:
+    """Google's indexed view of one URL; fields it did not report stay unset."""
+
+    id: str
+    site_url: str
+    inspection_url: str
+    verdict: str | None
+    coverage_state: str | None
+    robots_txt_state: str | None
+    indexing_state: str | None
+    page_fetch_state: str | None
+    last_crawl_time: datetime | None
+    google_canonical: str | None
+    user_canonical: str | None
+    crawled_as: str | None
+    sitemaps: tuple[str, ...]
+    referring_urls: tuple[str, ...]
+    inspection_link: str | None
+    provenance: Provenance
+
+
 type DomainRecord = (
-    MailMessage | CalendarEvent | MeetingTranscript | ExternalIssue | TicketCase | DriveFile
+    MailMessage
+    | CalendarEvent
+    | MeetingTranscript
+    | ExternalIssue
+    | OpenIssue
+    | IssueTransitionOption
+    | IssueTransitionResult
+    | TicketCase
+    | DriveFile
+    | MailCategoryAssignment
+    | MailDraft
+    | MailSendResult
+    | ScmRepository
+    | ScmPullRequest
+    | ScmCommit
+    | ScmRepositoryCreation
+    | SearchAnalyticsReport
+    | SearchSitemap
+    | SearchUrlInspection
 )
 
 
@@ -446,13 +1376,27 @@ class HealthReport:
 
 _CAPABILITY_RECORD_TYPES: dict[Capability, type[object]] = {
     Capability.MAIL_SENT_LIST: MailMessage,
+    Capability.MAIL_INBOX_LIST: MailMessage,
+    Capability.MAIL_CATEGORIES_SET: MailCategoryAssignment,
     Capability.CALENDAR_EVENTS_LIST: CalendarEvent,
     Capability.MEETING_TRANSCRIPTS_LIST: MeetingTranscript,
     Capability.MEETING_TRANSCRIPT_GET: MeetingTranscript,
     Capability.FILES_SEARCH: DriveFile,
     Capability.FILES_GET: DriveFile,
     Capability.EXTERNAL_ISSUES_SEARCH: ExternalIssue,
+    Capability.EXTERNAL_ISSUES_OPEN_LIST: OpenIssue,
+    Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST: IssueTransitionOption,
+    Capability.EXTERNAL_ISSUES_TRANSITION: IssueTransitionResult,
     Capability.TICKETS_SEARCH: TicketCase,
+    Capability.MAIL_DRAFT_CREATE: MailDraft,
+    Capability.MAIL_DRAFT_SEND: MailSendResult,
+    Capability.SCM_REPOSITORIES_LIST: ScmRepository,
+    Capability.SCM_PULLREQUESTS_LIST: ScmPullRequest,
+    Capability.SCM_COMMITS_LIST: ScmCommit,
+    Capability.SCM_REPOSITORIES_CREATE: ScmRepositoryCreation,
+    Capability.SEARCH_ANALYTICS_QUERY: SearchAnalyticsReport,
+    Capability.SEARCH_SITEMAPS_LIST: SearchSitemap,
+    Capability.SEARCH_URLS_INSPECT: SearchUrlInspection,
 }
 
 

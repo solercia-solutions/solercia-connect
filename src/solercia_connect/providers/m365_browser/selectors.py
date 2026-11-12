@@ -17,6 +17,9 @@ class Microsoft365Endpoints:
     outlook_sent_messages: str = (
         "https://outlook.office.com/api/v2.0/me/MailFolders/SentItems/messages"
     )
+    outlook_inbox_messages: str = (
+        "https://outlook.office.com/api/v2.0/me/MailFolders/Inbox/messages"
+    )
     onedrive_launch: str = "https://www.microsoft365.com/launch/onedrive?auth=2"
 
     def home_for(self, connection_type: ConnectionType) -> str:

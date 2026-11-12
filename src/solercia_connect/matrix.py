@@ -23,6 +23,20 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
     CapabilityRow(
         "Microsoft Graph",
         "official",
+        "mail.inbox.list",
+        "implemented",
+        "Identity validation, strict range on receivedDateTime, ascending order, paging",
+    ),
+    CapabilityRow(
+        "Microsoft Graph",
+        "official",
+        "mail.categories.set",
+        "not-implemented",
+        "Needs Mail.ReadWrite; adding it invalidates every stored Outlook grant (scope decision)",
+    ),
+    CapabilityRow(
+        "Microsoft Graph",
+        "official",
         "calendar.events.list",
         "implemented",
         "calendarView, paging, accepted/organizer and cancellation filters",
@@ -56,6 +70,27 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "messages.list + messages.get full MIME body",
     ),
     CapabilityRow(
+        "Gmail API",
+        "official",
+        "mail.inbox.list",
+        "implemented-offline",
+        "in:inbox query, strict range on internalDate, ascending order, full MIME body; not live",
+    ),
+    CapabilityRow(
+        "Gmail API",
+        "official",
+        "mail.draft.create",
+        "implemented-offline",
+        "Third write: gmail-compose target, one drafts.create POST, --allow-write, CLI only",
+    ),
+    CapabilityRow(
+        "Gmail API",
+        "official",
+        "mail.draft.send",
+        "implemented-offline",
+        "One drafts.send POST after the From and duplicate checks, --allow-write, CLI only",
+    ),
+    CapabilityRow(
         "Google Calendar API",
         "official",
         "calendar.events.list",
@@ -63,11 +98,91 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "Recurring expansion, paging, exact account/calendar boundary",
     ),
     CapabilityRow(
+        "Google Calendar + Drive APIs",
+        "official",
+        "meeting.transcripts.*",
+        "implemented-offline",
+        (
+            "Google Meet target; Calendar attachment discovery and Drive text export; live proof "
+            "pending"
+        ),
+    ),
+    CapabilityRow(
+        "Google Search Console API",
+        "official",
+        "search.analytics.query",
+        "implemented-offline",
+        "Exact dates, dimensions, paging, stated coverage; hermetic contract, live proof pending",
+    ),
+    CapabilityRow(
+        "Google Search Console API",
+        "official",
+        "search.sitemaps.list",
+        "implemented-offline",
+        "Submitted sitemaps with errors and warnings; hermetic contract, live proof pending",
+    ),
+    CapabilityRow(
+        "Google Search Console API",
+        "official",
+        "search.urls.inspect",
+        "implemented-offline",
+        "One URL at a time under its property; hermetic contract, live proof pending",
+    ),
+    CapabilityRow(
         "Jira Cloud REST v3",
         "official",
         "external.issues.search",
         "implemented",
         "Enhanced JQL endpoint, done/resolved representative query",
+    ),
+    CapabilityRow(
+        "Jira Cloud REST v3",
+        "official",
+        "external.issues.open.list",
+        "implemented-offline",
+        "Own issues not Done, optional project and open sprint; official only; not live",
+    ),
+    CapabilityRow(
+        "Jira Cloud REST v3",
+        "official",
+        "external.issues.transitions.list",
+        "implemented-offline",
+        "One exact issue key; current status plus transitions with fields; official only; not live",
+    ),
+    CapabilityRow(
+        "Jira Cloud REST v3",
+        "official",
+        "external.issues.transition",
+        "implemented-offline",
+        "Second write: one field-free transition POST, --allow-write per run, CLI only; not live",
+    ),
+    CapabilityRow(
+        "Bitbucket Cloud REST 2.0",
+        "official",
+        "scm.repositories.list",
+        "implemented-offline",
+        "Workspace repositories with role=member, newest update first, 20-page bound; not live",
+    ),
+    CapabilityRow(
+        "Bitbucket Cloud REST 2.0",
+        "official",
+        "scm.pullrequests.list",
+        "implemented-offline",
+        "Repeatable state, updated_on window in q and re-checked, 20-page bound; not live",
+    ),
+    CapabilityRow(
+        "Bitbucket Cloud REST 2.0",
+        "official",
+        "scm.commits.list",
+        "implemented-offline",
+        "Branch or main branch, window filtered locally, 7-day stop margin, 30 pages; not live",
+    ),
+    CapabilityRow(
+        "Bitbucket Cloud REST 2.0 (bitbucket-admin)",
+        "official",
+        "scm.repositories.create",
+        "implemented-offline",
+        "Fourth write: one private repo POST after absence and project checks, --allow-write, CLI",
     ),
     CapabilityRow(
         "GLPI REST",
@@ -93,6 +208,20 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
     CapabilityRow(
         "Microsoft 365 Web",
         "browser",
+        "mail.inbox.list",
+        "implemented",
+        "Same documented Outlook REST collection scoped to Inbox, strict range, ascending order",
+    ),
+    CapabilityRow(
+        "Microsoft 365 Web",
+        "browser",
+        "mail.categories.set",
+        "implemented-offline",
+        "Write: one If-Match PATCH of Categories, --allow-write per run, CLI only; not live",
+    ),
+    CapabilityRow(
+        "Microsoft 365 Web",
+        "browser",
         "calendar.events.list",
         "implemented",
         "calendarView with expanded recurrences, UTC-pinned, attendance and domain filters",
@@ -110,5 +239,15 @@ CAPABILITY_MATRIX: tuple[CapabilityRow, ...] = (
         "meeting.transcripts.*",
         "implemented",
         "SharePoint recording transcripts, own and shared; speaker-named WebVTT, window filter",
+    ),
+    CapabilityRow(
+        "Google Calendar + Docs Web",
+        "browser",
+        "meeting.transcripts.*",
+        "implemented-offline",
+        (
+            "Google Meet target; Calendar web event detail and Docs mobilebasic text; window only, "
+            "31 days max; identity probe and live proof pending"
+        ),
     ),
 )

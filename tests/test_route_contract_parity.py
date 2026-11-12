@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from solercia_connect.domain import Capability, MeetingTranscript, RouteKind
+from solercia_connect.matrix import CAPABILITY_MATRIX
 from solercia_connect.providers import microsoft_graph as graph_module
 from solercia_connect.providers._microsoft import (
     microsoft_provenance,
@@ -23,6 +24,7 @@ from solercia_connect.providers._microsoft import (
     normalize_mail_message,
     normalize_stream_transcript,
 )
+from solercia_connect.providers.google_meet import GoogleMeetAdapter
 from solercia_connect.providers.m365_browser import Microsoft365BrowserAdapter
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
 
@@ -69,24 +71,28 @@ _GRAPH_MESSAGE: dict[str, Any] = {
     "id": "AAMk-1",
     "subject": "Radicación de soporte",
     "sentDateTime": "2026-08-14T09:31:00Z",
+    "receivedDateTime": "2026-08-14T09:35:00Z",
     "from": {"emailAddress": {"name": "Camilo", "address": "user@example.com"}},
     "toRecipients": [{"emailAddress": {"name": "Mesa", "address": "mesa@example.com"}}],
     "ccRecipients": [{"emailAddress": {"address": "jefe@example.com"}}],
     "body": {"contentType": "html", "content": "<p>cuerpo</p>"},
     "conversationId": "conv-1",
     "hasAttachments": True,
+    "internetMessageId": "<abc@contoso.com>",
 }
 
 _BROWSER_MESSAGE: dict[str, Any] = {
     "Id": "AAMk-1",
     "Subject": "Radicación de soporte",
     "SentDateTime": "2026-08-14T09:31:00Z",
+    "ReceivedDateTime": "2026-08-14T09:35:00Z",
     "From": {"EmailAddress": {"Name": "Camilo", "Address": "user@example.com"}},
     "ToRecipients": [{"EmailAddress": {"Name": "Mesa", "Address": "mesa@example.com"}}],
     "CcRecipients": [{"EmailAddress": {"Address": "jefe@example.com"}}],
     "Body": {"ContentType": "HTML", "Content": "<p>cuerpo</p>"},
     "ConversationId": "conv-1",
     "HasAttachments": True,
+    "InternetMessageId": "<abc@contoso.com>",
 }
 
 _GRAPH_FILE: dict[str, Any] = {
@@ -127,10 +133,12 @@ def test_a_mail_record_is_identical_whichever_route_produced_it() -> None:
     official = normalize_mail_message(
         _GRAPH_MESSAGE,
         provenance=_provenance(RouteKind.OFFICIAL, "graph-v1"),
+        folder="inbox",
     )
     browser = normalize_mail_message(
         _BROWSER_MESSAGE,
         provenance=_provenance(RouteKind.BROWSER, "outlook-rest-v2"),
+        folder="inbox",
     )
 
     assert replace(official, provenance=browser.provenance) == browser
@@ -139,6 +147,24 @@ def test_a_mail_record_is_identical_whichever_route_produced_it() -> None:
     assert official.cc == browser.cc
     assert official.body_format == browser.body_format == "html"
     assert official.sent_at == browser.sent_at
+    assert official.folder == browser.folder == "inbox"
+    assert official.internet_message_id == browser.internet_message_id == "<abc@contoso.com>"
+    assert official.received_at is not None
+    assert browser.received_at is not None
+    assert official.received_at == browser.received_at
+
+
+def test_a_sent_mail_record_declares_its_folder_and_no_received_instant() -> None:
+    sent_only = {key: value for key, value in _GRAPH_MESSAGE.items() if key != "receivedDateTime"}
+
+    record = normalize_mail_message(
+        sent_only,
+        provenance=_provenance(RouteKind.OFFICIAL, "graph-v1"),
+        folder="sent",
+    )
+
+    assert record.folder == "sent"
+    assert record.received_at is None
 
 
 def test_a_file_record_is_identical_whichever_route_produced_it() -> None:
@@ -202,15 +228,38 @@ def test_provenance_is_the_only_place_the_route_is_visible() -> None:
     official = normalize_mail_message(
         _GRAPH_MESSAGE,
         provenance=_provenance(RouteKind.OFFICIAL, "graph-v1"),
+        folder="inbox",
     )
     browser = normalize_mail_message(
         _BROWSER_MESSAGE,
         provenance=_provenance(RouteKind.BROWSER, "outlook-rest-v2"),
+        folder="inbox",
     )
 
     assert official.provenance.route is RouteKind.OFFICIAL
     assert browser.provenance.route is RouteKind.BROWSER
     assert official.provenance.family is browser.provenance.family
+
+
+def test_google_meet_matrix_rows_are_offline_honest() -> None:
+    rows = [row for row in CAPABILITY_MATRIX if row.capability == "meeting.transcripts.*"]
+    assert [(row.provider, row.channel, row.v0_1_status) for row in rows] == [
+        ("Microsoft Graph", "official", "implemented-offline"),
+        ("Google Calendar + Drive APIs", "official", "implemented-offline"),
+        ("Microsoft 365 Web", "browser", "implemented"),
+        # Not proven live yet: the identity probe and the selectors wait for tasks T5.0 and T5.1.
+        ("Google Calendar + Docs Web", "browser", "implemented-offline"),
+    ]
+
+
+def test_google_meet_is_official_only_and_declares_both_transcript_capabilities() -> None:
+    assert GoogleMeetAdapter.descriptor.provider_id == "google.meet"
+    assert GoogleMeetAdapter.descriptor.family.value == "google"
+    assert GoogleMeetAdapter.descriptor.route is RouteKind.OFFICIAL
+    assert GoogleMeetAdapter.descriptor.capabilities == {
+        Capability.MEETING_TRANSCRIPTS_LIST,
+        Capability.MEETING_TRANSCRIPT_GET,
+    }
 
 
 def test_both_microsoft_adapters_answer_the_same_port() -> None:
@@ -244,10 +293,12 @@ def test_normalization_never_stamps_its_own_time() -> None:
     record = normalize_mail_message(
         _BROWSER_MESSAGE,
         provenance=_provenance(RouteKind.BROWSER, "outlook-rest-v2"),
+        folder="inbox",
     )
     again = normalize_mail_message(
         _BROWSER_MESSAGE,
         provenance=_provenance(RouteKind.BROWSER, "outlook-rest-v2"),
+        folder="inbox",
     )
 
     assert record.provenance.fetched_at == _FETCHED

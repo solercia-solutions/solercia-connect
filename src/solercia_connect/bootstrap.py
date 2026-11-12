@@ -2,34 +2,66 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from solercia_connect.auth import BasicAuthProvider, BearerTokenProvider, GlpiCredentials
+from solercia_connect.auth import (
+    AuthorizationProvider,
+    BasicAuthProvider,
+    BearerTokenProvider,
+    GlpiCredentials,
+)
 from solercia_connect.browser_profile import (
+    browser_profile_path,
     microsoft_browser_profile_path,
     microsoft_browser_profile_root,
 )
+from solercia_connect.browser_routes import has_browser_route
 from solercia_connect.config import (
+    BITBUCKET_TARGETS,
+    GMAIL_COMPOSE_SCOPE,
+    GOOGLE_TARGETS,
     MICROSOFT_TARGETS,
     ConnectionType,
     ConnectSettings,
+    JiraTokenKind,
     ProfileStore,
     effective_environment,
     load_settings,
     normalize_account,
+    target_spec,
 )
-from solercia_connect.connections import oauth_provider_from_settings
-from solercia_connect.domain import Capability, ReasonCode
+from solercia_connect.connections import (
+    atlassian_oauth_provider_from_settings,
+    connect_command,
+    oauth_provider_from_settings,
+)
+from solercia_connect.domain import Capability, ProviderFamily, ReasonCode
 from solercia_connect.errors import ConnectorFailure
-from solercia_connect.oauth import KeyringOAuthTokenStore, OAuthTokenStore
+from solercia_connect.oauth import OAuthTokenStore, grant_covers
+from solercia_connect.ports import HTTPTransport
+from solercia_connect.project_home import prepare_project_home
+from solercia_connect.project_secrets import (
+    api_token_store_from_settings,
+    oauth_token_store_from_settings,
+)
+from solercia_connect.providers.bitbucket import BitbucketAdapter
+from solercia_connect.providers.bitbucket_admin import BitbucketAdminAdapter
 from solercia_connect.providers.glpi import GlpiAdapter
+from solercia_connect.providers.gmail_compose import GmailComposeAdapter
 from solercia_connect.providers.google import GoogleCalendarAdapter, GoogleGmailAdapter
-from solercia_connect.providers.jira import JiraAdapter
+from solercia_connect.providers.google_browser import (
+    GoogleBrowserAdapter,
+    PlaywrightGoogleBrowserDriver,
+)
+from solercia_connect.providers.google_meet import GoogleMeetAdapter
+from solercia_connect.providers.jira import JiraAdapter, jira_api_base_url
 from solercia_connect.providers.m365_browser import (
     Microsoft365BrowserAdapter,
     PlaywrightBrowserDriver,
     browser_surface_for_capability,
 )
 from solercia_connect.providers.microsoft_graph import MicrosoftGraphAdapter
+from solercia_connect.providers.search_console import GoogleSearchConsoleAdapter
 from solercia_connect.registry import ProviderRegistry
+from solercia_connect.secret_store import SecretStore
 from solercia_connect.secrets import SecretValue
 from solercia_connect.transport import HttpxTransport
 
@@ -43,15 +75,21 @@ def registry_from_environment(
     environ: Mapping[str, str] | None = None,
     include_browser: bool = True,
     settings_override: ConnectSettings | None = None,
+    secret_store: SecretStore | None = None,
+    transport: HTTPTransport | None = None,
 ) -> ProviderRegistry:
     values = effective_environment(environ=environ)
     settings = settings_override or load_settings(environ=values)
+    if settings.project_home is not None:
+        # Every run builds its registry here, before a token refresh or a browser session can
+        # write under the project home, so project mode prepares and git-checks it first.
+        prepare_project_home(settings.project_home)
     registry = ProviderRegistry()
-    transport = HttpxTransport()
+    transport = transport or HttpxTransport()
     parsed_type = ConnectionType.parse(connection_type) if connection_type is not None else None
     normalized_account = normalize_account(account) if account is not None else None
     profiles = ProfileStore.from_settings(settings)
-    secure_store = token_store or KeyringOAuthTokenStore()
+    secure_store = token_store or oauth_token_store_from_settings(settings)
 
     microsoft_registered = False
     microsoft_token = _first_value(
@@ -100,7 +138,19 @@ def registry_from_environment(
         "SOLERCIA_CONNECT_GOOGLE_ACCESS_TOKEN",
         "GOOGLE_ACCESS_TOKEN",
     )
-    if google_token:
+    if parsed_type is ConnectionType.GMAIL_COMPOSE and normalized_account is not None:
+        # The Gmail writes use this account's own gmail-compose connection, never a token from
+        # the environment, whose scopes nobody verified.
+        registry.register(
+            _gmail_compose_adapter(
+                transport,
+                profiles,
+                settings,
+                secure_store,
+                normalized_account,
+            )
+        )
+    elif google_token:
         auth = BearerTokenProvider(SecretValue(google_token))
         expected = normalized_account or _first_value(
             values,
@@ -116,8 +166,16 @@ def registry_from_environment(
                 health_calendar_id=_value(values, "GOOGLE_CALENDAR_ID") or "primary",
             )
         )
+        registry.register(GoogleMeetAdapter(transport, auth, expected_account=expected))
+        registry.register(GoogleSearchConsoleAdapter(transport, auth, expected_account=expected))
     elif (
-        parsed_type in {ConnectionType.GMAIL, ConnectionType.GOOGLE_CALENDAR}
+        parsed_type
+        in {
+            ConnectionType.GMAIL,
+            ConnectionType.GOOGLE_CALENDAR,
+            ConnectionType.GOOGLE_MEET,
+            ConnectionType.SEARCH_CONSOLE,
+        }
         and normalized_account is not None
         and (profile := profiles.get(parsed_type, normalized_account)) is not None
         and profile.route == "official"
@@ -133,7 +191,11 @@ def registry_from_environment(
             registry.register(
                 GoogleGmailAdapter(transport, auth, expected_account=normalized_account)
             )
-        else:
+        elif parsed_type is ConnectionType.SEARCH_CONSOLE:
+            registry.register(
+                GoogleSearchConsoleAdapter(transport, auth, expected_account=normalized_account)
+            )
+        elif parsed_type is ConnectionType.GOOGLE_CALENDAR:
             registry.register(
                 GoogleCalendarAdapter(
                     transport,
@@ -142,17 +204,54 @@ def registry_from_environment(
                     health_calendar_id=_value(values, "GOOGLE_CALENDAR_ID") or "primary",
                 )
             )
+        else:
+            registry.register(
+                GoogleMeetAdapter(
+                    transport,
+                    auth,
+                    expected_account=normalized_account,
+                )
+            )
 
     jira_url = _value(values, "JIRA_BASE_URL")
     jira_email = _value(values, "JIRA_EMAIL")
     jira_token = _value(values, "JIRA_API_TOKEN")
-    if jira_url and jira_email and jira_token:
+    if parsed_type is ConnectionType.JIRA and normalized_account is not None:
+        registry.register(
+            _jira_adapter_for_account(
+                transport,
+                profiles,
+                secret_store or api_token_store_from_settings(settings),
+                normalized_account,
+                settings=settings,
+                token_store=secure_store,
+            )
+        )
+    elif jira_url and jira_email and jira_token:
         registry.register(
             JiraAdapter(
                 transport,
                 BasicAuthProvider(jira_email, SecretValue(jira_token)),
                 base_url=jira_url,
                 expected_account_id=_value(values, "JIRA_EXPECTED_ACCOUNT_ID"),
+            )
+        )
+
+    if parsed_type in BITBUCKET_TARGETS:
+        # Bitbucket has no environment credentials: a run reads one account's own connection, and
+        # the repository creation reads only the separate bitbucket-admin one.
+        if normalized_account is None:
+            raise ValueError(
+                "An account is required for Bitbucket runs; connect it with "
+                f"{connect_command(parsed_type, '<account>')}"
+            )
+        registry.register(
+            _bitbucket_adapter_for_account(
+                transport,
+                profiles,
+                secret_store or api_token_store_from_settings(settings),
+                normalized_account,
+                parsed_type,
             )
         )
 
@@ -172,14 +271,29 @@ def registry_from_environment(
     # belong to Teams and are stored in the drive, so the session to open — and the profile that
     # proves it was opened — are the drive's, not the Teams client's.
     browser_type = (
-        browser_surface_for_capability(capability) if capability is not None else None
+        browser_surface_for_capability(capability)
+        if capability is not None and (parsed_type is None or parsed_type in MICROSOFT_TARGETS)
+        else None
     ) or parsed_type
     browser_profile = (
         profiles.get(browser_type, normalized_account)
-        if browser_type in MICROSOFT_TARGETS and normalized_account is not None
+        if browser_type is not None
+        and has_browser_route(browser_type)
+        and normalized_account is not None
         else None
     )
     if (
+        include_browser
+        and settings.browser_fallback_enabled
+        and browser_type in GOOGLE_TARGETS
+        and normalized_account is not None
+        and browser_profile is not None
+        and browser_profile.route == "browser"
+    ):
+        # Google's browser route serves only the account's own browser connection: there is no
+        # environment-level Google profile to fall back on.
+        registry.register(google_browser_adapter(settings, normalized_account))
+    elif (
         include_browser
         and settings.browser_fallback_enabled
         and (
@@ -200,6 +314,165 @@ def registry_from_environment(
             )
         )
     return registry
+
+
+def _gmail_compose_adapter(
+    transport: HTTPTransport,
+    profiles: ProfileStore,
+    settings: ConnectSettings,
+    token_store: OAuthTokenStore,
+    account: str,
+) -> GmailComposeAdapter:
+    """Build the compose adapter from the account's official gmail-compose connection.
+
+    The stored grant decides whether the adapter may write: without gmail.compose every write
+    fails closed with ``write_scope_missing`` before any provider call. The account's read-only
+    gmail connection, when it exists, reads Sent for the duplicate check of a send.
+    """
+
+    parsed = ConnectionType.GMAIL_COMPOSE
+    profile = profiles.get(parsed, account)
+    if profile is None or profile.route != "official":
+        raise ValueError(
+            "No official Gmail compose connection exists for this account; run "
+            f"{connect_command(parsed, account)}"
+        )
+    tokens = token_store.load(f"{parsed.value}:{account}")
+    if tokens is None:
+        raise ConnectorFailure(
+            ReasonCode.INVALID_CREDENTIALS,
+            "The Gmail compose authorization for this account is not stored; reconnect it",
+        )
+    return GmailComposeAdapter(
+        transport,
+        oauth_provider_from_settings(settings, token_store, parsed, account, transport=transport),
+        expected_account=account,
+        grant_can_write=grant_covers((GMAIL_COMPOSE_SCOPE,), tokens.scopes),
+        sent_reader=_gmail_sent_reader(transport, profiles, settings, token_store, account),
+    )
+
+
+def _gmail_sent_reader(
+    transport: HTTPTransport,
+    profiles: ProfileStore,
+    settings: ConnectSettings,
+    token_store: OAuthTokenStore,
+    account: str,
+) -> AuthorizationProvider | None:
+    """Return the account's read-only gmail authorization, or ``None`` when it cannot read Sent."""
+
+    parsed = ConnectionType.GMAIL
+    profile = profiles.get(parsed, account)
+    tokens = token_store.load(f"{parsed.value}:{account}")
+    if (
+        profile is None
+        or profile.route != "official"
+        or tokens is None
+        or not grant_covers(target_spec(parsed).oauth_scopes, tokens.scopes)
+    ):
+        return None
+    return oauth_provider_from_settings(settings, token_store, parsed, account, transport=transport)
+
+
+def _jira_adapter_for_account(
+    transport: HTTPTransport,
+    profiles: ProfileStore,
+    secrets: SecretStore,
+    account: str,
+    *,
+    settings: ConnectSettings,
+    token_store: OAuthTokenStore,
+) -> JiraAdapter:
+    """Build Jira from this account's own connection; never borrow the JIRA_* variables.
+
+    An API-token profile authenticates with Basic email:token; an OAuth profile with the bearer
+    grant of the Atlassian provider. Both call the base bound to the stored site and cloud ID.
+    """
+
+    profile = profiles.get(ConnectionType.JIRA, account)
+    if (
+        profile is None
+        or profile.route != "official"
+        or profile.site is None
+        or profile.provider_account_id is None
+    ):
+        command = connect_command(
+            ConnectionType.JIRA,
+            account,
+            site=profile.site if profile else None,
+            cloud_id=profile.cloud_id if profile else None,
+            token_kind=profile.token_kind if profile else None,
+        )
+        raise ValueError(f"No official Jira connection exists for this account; run {command}")
+    key = f"{ConnectionType.JIRA.value}:{account}"
+    auth: AuthorizationProvider
+    if profile.token_kind is JiraTokenKind.OAUTH:
+        auth = atlassian_oauth_provider_from_settings(
+            settings, token_store, account, transport=transport
+        )
+        if token_store.load(key) is None:
+            raise ConnectorFailure(
+                ReasonCode.INVALID_CREDENTIALS,
+                "The Atlassian authorization for this account is not stored; reconnect it",
+            )
+    else:
+        token = secrets.load(key)
+        if token is None:
+            raise ConnectorFailure(
+                ReasonCode.INVALID_CREDENTIALS,
+                "The Jira API token for this account is not stored; reconnect it in the CLI",
+            )
+        auth = BasicAuthProvider(account, token)
+    return JiraAdapter(
+        transport,
+        auth,
+        base_url=jira_api_base_url(profile.site, profile.cloud_id),
+        expected_account_id=profile.provider_account_id,
+        expected_account=account,
+        # The Atlassian OAuth grant requests read scopes only, so it can never transition.
+        grant_can_write=profile.token_kind is not JiraTokenKind.OAUTH,
+    )
+
+
+def _bitbucket_adapter_for_account(
+    transport: HTTPTransport,
+    profiles: ProfileStore,
+    secrets: SecretStore,
+    account: str,
+    parsed: ConnectionType = ConnectionType.BITBUCKET,
+) -> BitbucketAdapter:
+    """Build Bitbucket from this account's profile and stored API token.
+
+    The base URL is fixed in the adapter, the profile's account ID is the one every call must
+    prove again, and its workspace is the default for calls that name none. A bitbucket-admin
+    connection builds the creation adapter with its own token; a bitbucket one, the reads.
+    """
+
+    profile = profiles.get(parsed, account)
+    if (
+        profile is None
+        or profile.route != "official"
+        or profile.workspace is None
+        or profile.provider_account_id is None
+    ):
+        command = connect_command(parsed, account, workspace=profile.workspace if profile else None)
+        raise ValueError(f"No Bitbucket connection exists for this account; run {command}")
+    token = secrets.load(f"{parsed.value}:{account}")
+    if token is None:
+        raise ConnectorFailure(
+            ReasonCode.INVALID_CREDENTIALS,
+            "The Bitbucket API token for this account is not stored; reconnect it in the CLI",
+        )
+    adapter = (
+        BitbucketAdminAdapter if parsed is ConnectionType.BITBUCKET_ADMIN else BitbucketAdapter
+    )
+    return adapter(
+        transport,
+        BasicAuthProvider(account, token),
+        account=account,
+        workspace=profile.workspace,
+        expected_account_id=profile.provider_account_id,
+    )
 
 
 def browser_adapter_from_environment(
@@ -237,6 +510,16 @@ def browser_adapter_from_environment(
         connection_type=parsed_type,
         profile_dir=profile_path,
         expected_account=expected,
+    )
+
+
+def google_browser_adapter(settings: ConnectSettings, account: str) -> GoogleBrowserAdapter:
+    """Build the Google browser adapter over this account's dedicated Google profile."""
+    normalized = normalize_account(account)
+    return GoogleBrowserAdapter(
+        PlaywrightGoogleBrowserDriver(),
+        profile_dir=browser_profile_path(settings, ProviderFamily.GOOGLE, normalized),
+        expected_account=normalized,
     )
 
 

@@ -15,6 +15,7 @@ from solercia_connect.domain import (
     DomainRecord,
     HealthReport,
     HealthState,
+    MailCategoriesUpdate,
     MailQuery,
     Provenance,
     ProviderFamily,
@@ -29,15 +30,26 @@ from solercia_connect.providers._shared import (
     canonical_account_identities,
     unique_canonical_account_identity,
 )
+from solercia_connect.providers.browser_core.login import (
+    SessionPhase,
+    close_session,
+    poll_until_ready,
+)
+from solercia_connect.providers.browser_core.states import BrowserState, BrowserStateMachine
 from solercia_connect.providers.m365_browser.driver import BrowserDriver, BrowserSnapshot
 from solercia_connect.providers.m365_browser.selectors import ENDPOINTS, SELECTORS
-from solercia_connect.providers.m365_browser.states import BrowserState, BrowserStateMachine
 
 _OUTLOOK_IDENTITY_PROBE_ATTEMPTS = 2
+# Names the vendor in the user-facing messages of the shared sign-in loop.
+_PRODUCT = "Microsoft 365"
 
 # Single source of truth for what the browser route can actually extract today.
 _BROWSER_EXTRACTION_CAPABILITIES: dict[ConnectionType, tuple[Capability, ...]] = {
-    ConnectionType.OUTLOOK: (Capability.MAIL_SENT_LIST, Capability.CALENDAR_EVENTS_LIST),
+    ConnectionType.OUTLOOK: (
+        Capability.MAIL_SENT_LIST,
+        Capability.MAIL_INBOX_LIST,
+        Capability.CALENDAR_EVENTS_LIST,
+    ),
     # The Teams client itself extracts nothing over this route: it degrades under automation and
     # its transcripts are not stored there anyway.
     ConnectionType.TEAMS: (),
@@ -83,6 +95,8 @@ class Microsoft365BrowserAdapter:
         frozenset(
             {
                 Capability.MAIL_SENT_LIST,
+                Capability.MAIL_INBOX_LIST,
+                Capability.MAIL_CATEGORIES_SET,
                 Capability.CALENDAR_EVENTS_LIST,
                 Capability.MEETING_TRANSCRIPTS_LIST,
                 Capability.MEETING_TRANSCRIPT_GET,
@@ -185,6 +199,7 @@ class Microsoft365BrowserAdapter:
             self._close(verified)
 
     def execute(self, request: ConnectorRequest) -> tuple[DomainRecord, ...]:
+        write = _category_write(request, self._connection_type)
         requested_account = _requested_account(request)
         machine = BrowserStateMachine()
         try:
@@ -194,13 +209,20 @@ class Microsoft365BrowserAdapter:
                 headless=True,
                 requested_account=requested_account,
             )
+            # One operating state serves the reads and the single category write alike.
             machine.advance(BrowserState.READING)
-            records = self._driver.read_records(
-                request.capability,
-                request.payload,
-                SELECTORS,
-                timeout_ms=self._read_timeout_ms,
-            )
+            records: tuple[DomainRecord, ...]
+            if write is not None:
+                records = (
+                    self._driver.set_mail_categories(write, timeout_ms=self._read_timeout_ms),
+                )
+            else:
+                records = self._driver.read_records(
+                    request.capability,
+                    request.payload,
+                    SELECTORS,
+                    timeout_ms=self._read_timeout_ms,
+                )
             machine.advance(BrowserState.COMPLETE)
             return tuple(self._bind_provenance(record, account) for record in records)
         except ConnectorFailure:
@@ -228,57 +250,15 @@ class Microsoft365BrowserAdapter:
             ENDPOINTS.home_for(self._connection_type),
             timeout_ms=self._navigation_timeout_ms,
         )
-        last_snapshot: BrowserSnapshot | None = None
-        for _ in range(self._max_poll_cycles):
-            snapshot = self._driver.snapshot(
-                SELECTORS,
-                connection_type=self._connection_type,
-            )
-            last_snapshot = snapshot
-            if snapshot.mfa_visible:
-                if machine.state is not BrowserState.MFA_REQUIRED:
-                    machine.advance(BrowserState.MFA_REQUIRED)
-                if not interactive:
-                    raise ConnectorFailure(
-                        ReasonCode.BROWSER_MFA_REQUIRED,
-                        "Microsoft 365 browser session requires user MFA",
-                    )
-            elif snapshot.login_visible:
-                if machine.state is not BrowserState.LOGIN_REQUIRED:
-                    machine.advance(BrowserState.LOGIN_REQUIRED)
-                if not interactive:
-                    raise ConnectorFailure(
-                        ReasonCode.BROWSER_LOGIN_REQUIRED,
-                        "Microsoft 365 browser session requires interactive login",
-                    )
-            elif snapshot.authenticated_shell_visible or (
-                self._connection_type is ConnectionType.ONEDRIVE
-                and self._driver.observed_session_authorization()
-            ):
-                machine.advance(BrowserState.AUTHENTICATED)
-                account = self._attested_account(machine, snapshot)
-                if any(
-                    boundary is not None and account != boundary
-                    for boundary in (self._expected_account, requested_account)
-                ):
-                    machine.advance(BrowserState.ACCOUNT_MISMATCH)
-                    raise ConnectorFailure(
-                        ReasonCode.BROWSER_ACCOUNT_MISMATCH,
-                        "Authenticated Microsoft 365 account does not match the configured or "
-                        "requested account",
-                    )
-                machine.advance(BrowserState.READY)
-                return account
-            self._driver.wait(self._state_poll_ms)
-
-        if last_snapshot and last_snapshot.mfa_visible:
-            reason = ReasonCode.BROWSER_MFA_REQUIRED
-        elif last_snapshot and last_snapshot.login_visible:
-            reason = ReasonCode.BROWSER_LOGIN_REQUIRED
-        else:
-            reason = ReasonCode.BROWSER_TIMEOUT
-        machine.advance(BrowserState.FAILED)
-        raise ConnectorFailure(reason, "Microsoft 365 browser state did not become ready in time")
+        return poll_until_ready(
+            machine,
+            _MicrosoftSessionProbe(self._driver, self._connection_type, self._attested_account),
+            interactive=interactive,
+            product=_PRODUCT,
+            boundaries=(self._expected_account, requested_account),
+            max_poll_cycles=self._max_poll_cycles,
+            state_poll_ms=self._state_poll_ms,
+        )
 
     def _attested_account(
         self,
@@ -388,23 +368,46 @@ class Microsoft365BrowserAdapter:
         return replace(record, provenance=provenance)
 
     def _close(self, machine: BrowserStateMachine) -> None:
-        try:
-            self._driver.close()
-        finally:
-            if machine.state is not BrowserState.CLOSED:
-                if machine.state not in {
-                    BrowserState.READY,
-                    BrowserState.COMPLETE,
-                    BrowserState.FAILED,
-                    BrowserState.ACCOUNT_MISMATCH,
-                } and machine.state in {
-                    BrowserState.OPENING,
-                    BrowserState.LOGIN_REQUIRED,
-                    BrowserState.MFA_REQUIRED,
-                    BrowserState.AUTHENTICATED,
-                }:
-                    machine.advance(BrowserState.FAILED)
-                machine.advance(BrowserState.CLOSED)
+        close_session(machine, self._driver.close)
+
+
+class _MicrosoftSessionProbe:
+    """How the Microsoft surfaces show login, MFA and an authenticated session to the core loop.
+
+    A drive surface exposes no stable shell selector, so traffic the session itself authorized
+    also counts as authenticated there; it is asked only when no prompt or shell is visible.
+    """
+
+    def __init__(
+        self,
+        driver: BrowserDriver,
+        connection_type: ConnectionType,
+        attest: Callable[[BrowserStateMachine, BrowserSnapshot], str],
+    ) -> None:
+        self._driver = driver
+        self._connection_type = connection_type
+        self._attest = attest
+
+    def observe(self) -> BrowserSnapshot:
+        return self._driver.snapshot(SELECTORS, connection_type=self._connection_type)
+
+    def phase(self, snapshot: BrowserSnapshot) -> SessionPhase:
+        if snapshot.mfa_visible:
+            return SessionPhase.MFA_REQUIRED
+        if snapshot.login_visible:
+            return SessionPhase.LOGIN_REQUIRED
+        if snapshot.authenticated_shell_visible or (
+            self._connection_type is ConnectionType.ONEDRIVE
+            and self._driver.observed_session_authorization()
+        ):
+            return SessionPhase.AUTHENTICATED
+        return SessionPhase.PENDING
+
+    def attest(self, machine: BrowserStateMachine, snapshot: BrowserSnapshot) -> str:
+        return self._attest(machine, snapshot)
+
+    def wait(self, milliseconds: int) -> None:
+        self._driver.wait(milliseconds)
 
 
 def _identities_from_snapshot(snapshot: BrowserSnapshot) -> frozenset[str]:
@@ -440,9 +443,26 @@ def _canonical_expected_account(value: str) -> str:
     return identity
 
 
+def _category_write(
+    request: ConnectorRequest,
+    connection_type: ConnectionType,
+) -> MailCategoriesUpdate | None:
+    """Select the category write, refusing it before any browser opens off the Outlook session."""
+    if request.capability is not Capability.MAIL_CATEGORIES_SET:
+        return None
+    if connection_type is not ConnectionType.OUTLOOK or not isinstance(
+        request.payload, MailCategoriesUpdate
+    ):
+        raise ConnectorFailure(
+            ReasonCode.BROWSER_CAPABILITY_NOT_IMPLEMENTED,
+            "Outlook categories are written only through the Outlook browser session",
+        )
+    return request.payload
+
+
 def _requested_account(request: ConnectorRequest) -> str | None:
     payload = request.payload
-    if not isinstance(payload, (MailQuery, CalendarQuery, TranscriptQuery)):
+    if not isinstance(payload, (MailQuery, CalendarQuery, TranscriptQuery, MailCategoriesUpdate)):
         return None
     if payload.account_id is None:
         return None

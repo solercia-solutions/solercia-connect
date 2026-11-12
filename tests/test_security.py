@@ -110,6 +110,28 @@ def test_browser_source_contains_no_dom_storage_or_cookie_token_capture() -> Non
         assert marker not in source
 
 
+def test_every_browser_package_contains_no_dom_storage_or_cookie_token_capture() -> None:
+    """The same capture surfaces stay out of the core and of every family's browser package."""
+    providers = Path(__file__).parents[1] / "src/solercia_connect/providers"
+    packages = sorted({*providers.glob("*_browser"), providers / "browser_core"})
+    forbidden_capture_surfaces = (
+        "window.__ot",
+        "localStorage",
+        "sessionStorage",
+        "document.cookie",
+        ".cookies(",
+        "storage_state",
+    )
+
+    assert {package.name for package in packages} >= {"browser_core", "m365_browser"}
+    for package in packages:
+        modules = tuple(package.rglob("*.py"))
+        assert modules, f"{package.name} has no Python modules to scan"
+        source = "\n".join(path.read_text() for path in modules)
+        for marker in forbidden_capture_surfaces:
+            assert marker not in source, f"{marker} found in {package.name}"
+
+
 def test_transient_bearer_never_reveals_and_does_not_survive_clearing() -> None:
     """SECURITY.md: held only in memory, zeroed after use, never printable."""
     bearer = _TransientBearer("opaque-session-token")

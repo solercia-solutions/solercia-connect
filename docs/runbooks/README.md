@@ -8,4 +8,7 @@ explicit opt-in.
 - [Microsoft Teams transcripts](teams.md)
 - [Gmail](gmail.md)
 - [Google Calendar](google-calendar.md)
+- [Google Search Console](search-console.md)
+- [Jira](jira.md)
+- [Bitbucket](bitbucket.md)
 - [Loopback API](api.md)

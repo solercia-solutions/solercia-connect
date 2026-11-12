@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import re
+import sys
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
@@ -14,22 +18,34 @@ from solercia_connect.bootstrap import (
     browser_adapter_from_environment,
     registry_from_environment,
 )
+from solercia_connect.browser_routes import BROWSER_PROVIDER_IDS
 from solercia_connect.config import (
+    BITBUCKET_TARGETS,
+    PROJECT_DISCOVERY_VARIABLE,
     TARGET_SPECS,
     ConnectionType,
+    JiraTokenKind,
     ProfileStore,
+    effective_environment,
     load_settings,
     normalize_account,
+    normalize_bitbucket_workspace,
+    normalize_jira_site,
+    normalize_jira_token_binding,
+    project_selection,
 )
 from solercia_connect.connections import ConnectionService
 from solercia_connect.doctor import DoctorService
 from solercia_connect.domain import (
+    MAX_DRAFT_BODY_BYTES,
     CalendarQuery,
     Capability,
     DateWindow,
     FileQuery,
     IssueQuery,
+    IssueTransitionsQuery,
     MailQuery,
+    OpenIssueQuery,
     QueryPayload,
     ReasonCode,
     TicketQuery,
@@ -38,9 +54,14 @@ from solercia_connect.domain import (
 from solercia_connect.envelope import ErrorDetail, ResultEnvelope
 from solercia_connect.errors import ConnectorFailure
 from solercia_connect.matrix import CAPABILITY_MATRIX
-from solercia_connect.oauth import KeyringOAuthTokenStore
 from solercia_connect.output import SecureOutputError, write_secure_json
+from solercia_connect.project_home import find_git_root, init_project_home
+from solercia_connect.project_secrets import (
+    api_token_store_from_settings,
+    oauth_token_store_from_settings,
+)
 from solercia_connect.providers.m365_browser import browser_extraction_report
+from solercia_connect.secrets import SecretValue
 from solercia_connect.serialization import to_json, to_primitive
 
 
@@ -71,9 +92,15 @@ profile_app = typer.Typer(
     rich_markup_mode=None,
     help="Non-secret local connection profiles.",
 )
+project_app = typer.Typer(
+    no_args_is_help=True,
+    rich_markup_mode=None,
+    help="Project mode: one private .solercia-connect folder per project.",
+)
 app.add_typer(m365_app, name="m365")
 app.add_typer(config_app, name="config")
 app.add_typer(profile_app, name="profile")
+app.add_typer(project_app, name="project")
 
 
 @app.command()
@@ -130,7 +157,7 @@ def health(
 ) -> None:
     """Validate one configured adapter without printing credentials."""
 
-    if provider == "microsoft365.browser" and not allow_browser_fallback:
+    if provider in BROWSER_PROVIDER_IDS and not allow_browser_fallback:
         _finish(
             ResultEnvelope.failure(
                 operation="health",
@@ -142,9 +169,7 @@ def health(
                     "action_required",
                     "Browser health inspection requires explicit authorization",
                     True,
-                    remediation=(
-                        "solercia-connect health microsoft365.browser --allow-browser-fallback",
-                    ),
+                    remediation=(f"solercia-connect health {provider} --allow-browser-fallback",),
                     cause_category="interactive_authorization",
                 ),
             ),
@@ -227,6 +252,157 @@ def run_capability(
         typer.Option("--max-content-bytes", min=1, help="Reject files larger than this"),
     ] = 10_485_760,
     limit: Annotated[int, typer.Option(min=1, max=1000)] = 50,
+    message_id: Annotated[
+        str | None,
+        typer.Option(
+            "--message-id",
+            help="Provider message id: the `id` field of mail.inbox.list or mail.sent.list records",
+        ),
+    ] = None,
+    add: Annotated[
+        list[str] | None,
+        typer.Option("--add", help="Category to add; repeatable (mail.categories.set)"),
+    ] = None,
+    remove: Annotated[
+        list[str] | None,
+        typer.Option("--remove", help="Category to remove; repeatable (mail.categories.set)"),
+    ] = None,
+    replace: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--replace", help="Set the whole category list; repeatable, excludes the rest"
+        ),
+    ] = None,
+    issue: Annotated[
+        str | None,
+        typer.Option("--issue", help="One exact Jira issue key, such as CP-1356"),
+    ] = None,
+    project: Annotated[
+        str | None,
+        typer.Option(
+            "--project",
+            help="One Jira project key, such as CP (external.issues.open.list), or the key of the "
+            "Bitbucket project that holds a new repository, such as PAN (scm.repositories.create)",
+        ),
+    ] = None,
+    sprint: Annotated[
+        str | None,
+        typer.Option(
+            "--sprint",
+            help="Only `current`: keep issues in an open sprint (external.issues.open.list)",
+        ),
+    ] = None,
+    to_values: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--to",
+            help="Target status name (external.issues.transition, exactly one) or a recipient "
+            "(mail.draft.create, repeatable)",
+        ),
+    ] = None,
+    cc: Annotated[
+        list[str] | None,
+        typer.Option("--cc", help="Copy recipient; repeatable (mail.draft.create)"),
+    ] = None,
+    bcc: Annotated[
+        list[str] | None,
+        typer.Option("--bcc", help="Blind-copy recipient; repeatable (mail.draft.create)"),
+    ] = None,
+    subject: Annotated[
+        str | None,
+        typer.Option("--subject", help="One-line subject (mail.draft.create)"),
+    ] = None,
+    body_file: Annotated[
+        Path | None,
+        typer.Option("--body-file", help="UTF-8 plain-text body, up to 200 KB (mail.draft.create)"),
+    ] = None,
+    body_stdin: Annotated[
+        bool,
+        typer.Option("--body-stdin", help="Read the plain-text body from piped stdin"),
+    ] = False,
+    draft_id: Annotated[
+        str | None,
+        typer.Option(
+            "--draft-id", help="The draft to send, from mail.draft.create (mail.draft.send)"
+        ),
+    ] = None,
+    allow_duplicate: Annotated[
+        bool,
+        typer.Option(
+            "--allow-duplicate",
+            help="Skip the duplicate check of mail.draft.send; only with the user's approval",
+        ),
+    ] = False,
+    allow_write: Annotated[
+        bool,
+        typer.Option("--allow-write", help="Authorize one write for this invocation only"),
+    ] = False,
+    workspace: Annotated[
+        str | None,
+        typer.Option(
+            "--workspace",
+            help="Bitbucket workspace slug; defaults to the connected one (scm capabilities)",
+        ),
+    ] = None,
+    repo: Annotated[
+        str | None,
+        typer.Option(
+            "--repo",
+            help="Bitbucket repository slug (scm.pullrequests.list, scm.commits.list, "
+            "scm.repositories.create)",
+        ),
+    ] = None,
+    branch: Annotated[
+        str | None,
+        typer.Option(
+            "--branch",
+            help="Bitbucket branch; defaults to the repository's main branch (scm.commits.list)",
+        ),
+    ] = None,
+    state: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--state",
+            help="Pull request state, repeatable: OPEN, MERGED, DECLINED or SUPERSEDED; all four "
+            "by default (scm.pullrequests.list)",
+        ),
+    ] = None,
+    site_url: Annotated[
+        str | None,
+        typer.Option("--site-url", help="Search Console property, e.g. sc-domain:example.com"),
+    ] = None,
+    start_date: Annotated[
+        str | None,
+        typer.Option("--start-date", help="Search Console first day, YYYY-MM-DD, inclusive"),
+    ] = None,
+    end_date: Annotated[
+        str | None,
+        typer.Option("--end-date", help="Search Console last day, YYYY-MM-DD, inclusive"),
+    ] = None,
+    dimension: Annotated[
+        list[str] | None,
+        typer.Option("--dimension", help="Search Console grouping dimension; repeatable"),
+    ] = None,
+    search_type: Annotated[
+        str | None,
+        typer.Option("--search-type", help="Search Console type; defaults to web"),
+    ] = None,
+    data_state: Annotated[
+        str | None,
+        typer.Option("--data-state", help="final (default) or all, which includes fresh data"),
+    ] = None,
+    row_limit: Annotated[
+        int,
+        typer.Option("--row-limit", min=1, max=500_000, help="Search Console rows to page through"),
+    ] = 25_000,
+    inspection_url: Annotated[
+        str | None,
+        typer.Option("--url", help="Full URL to inspect, under the property"),
+    ] = None,
+    language_code: Annotated[
+        str | None,
+        typer.Option("--language", help="BCP-47 language for URL Inspection messages"),
+    ] = None,
     browser_fallback: Annotated[
         bool,
         typer.Option("--allow-browser-fallback", "--browser-fallback"),
@@ -267,9 +443,60 @@ def run_capability(
             "include_attachments": with_attachments,
             "max_attachment_bytes": max_attachment_bytes,
             "limit": limit,
+            "message_id": message_id,
+            "add": list(add) if add else None,
+            "remove": list(remove) if remove else None,
+            "replace": list(replace) if replace else None,
+            "allow_write": allow_write,
         }
+        if site_url is not None:
+            payload.update(
+                {
+                    "site_url": site_url,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "dimensions": dimension,
+                    "search_type": search_type,
+                    "data_state": data_state,
+                    "row_limit": row_limit,
+                    "inspection_url": inspection_url,
+                    "language_code": language_code,
+                }
+            )
         if with_content is not None:
             payload["include_content"] = with_content
+        # Issue-scoped options travel only when given, so other capabilities keep their payload.
+        if issue is not None:
+            payload["issue"] = issue
+        if project is not None:
+            payload["project"] = project
+        if sprint is not None:
+            payload["sprint"] = sprint
+        if to_values is not None:
+            payload["to"] = _to_option(capability, to_values)
+        # Draft options travel only when given, and the body is read only for the draft.
+        for name, value in (("cc", cc), ("bcc", bcc)):
+            if value is not None:
+                payload[name] = list(value)
+        if subject is not None:
+            payload["subject"] = subject
+        if draft_id is not None:
+            payload["draft_id"] = draft_id
+        if allow_duplicate:
+            payload["allow_duplicate"] = True
+        # Bitbucket options travel only when given, so other capabilities keep their payload.
+        if workspace is not None:
+            payload["workspace"] = workspace
+        if repo is not None:
+            payload["repo"] = repo
+        if branch is not None:
+            payload["branch"] = branch
+        if state is not None:
+            payload["state"] = list(state)
+        if capability is Capability.MAIL_DRAFT_CREATE:
+            payload["body"] = _draft_body(body_file, from_stdin=body_stdin)
+        elif body_file is not None or body_stdin:
+            raise _InputError("--body-file and --body-stdin apply only to mail.draft.create")
         payload["allow_browser_fallback"] = browser_fallback
         envelope = run_application(payload)
         normalized_account = envelope.account
@@ -293,19 +520,146 @@ def connect(
         typer.Option("--allow-browser-fallback"),
     ] = False,
     no_open_browser: Annotated[bool, typer.Option("--no-open-browser")] = False,
+    site: Annotated[
+        str | None,
+        typer.Option("--site", help="Jira site URL, such as https://your-site.atlassian.net"),
+    ] = None,
+    workspace: Annotated[
+        str | None,
+        typer.Option(
+            "--workspace",
+            help="Bitbucket workspace slug, as in bitbucket.org/<workspace>/<repository>",
+        ),
+    ] = None,
+    token_stdin: Annotated[
+        bool,
+        typer.Option(
+            "--token-stdin", help="Read the Jira or Bitbucket API token from one stdin line"
+        ),
+    ] = False,
+    token_env: Annotated[
+        str | None,
+        typer.Option(
+            "--token-env",
+            metavar="NAME",
+            help="Read the Jira or Bitbucket API token from variable NAME of the process "
+            "environment, SOLERCIA_CONNECT_ENV_FILE or SOLERCIA_CONNECT_HOME/connect.env",
+        ),
+    ] = None,
+    token_kind: Annotated[
+        str | None,
+        typer.Option(
+            "--token-kind",
+            help="Jira credential: classic API token (default) calls the site; scoped API "
+            "token calls api.atlassian.com/ex/jira/{cloudId}; oauth authorizes the "
+            "SOLERCIA_CONNECT_ATLASSIAN_* app in the browser and takes no token",
+        ),
+    ] = None,
+    cloud_id: Annotated[
+        str | None,
+        typer.Option(
+            "--cloud-id",
+            help="Jira cloud ID (UUID) for a scoped token; an atlassian.net site may omit it",
+        ),
+    ] = None,
     output: Annotated[Path | None, typer.Option("--output")] = None,
     force: Annotated[bool, typer.Option("--force")] = False,
 ) -> None:
-    """Connect one provider target and account using official OAuth first."""
+    """Connect one provider target and account using official OAuth first.
+
+    Jira takes --site and reads its API token from a hidden prompt, from one stdin line with
+    --token-stdin, or from the variable named by --token-env; the token itself is never accepted
+    as an argument and never printed. A scoped token needs --token-kind scoped, plus --cloud-id
+    unless the site is on atlassian.net.
+    --token-kind oauth uses Atlassian OAuth 2.0 (3LO) with the app configured in the environment
+    and prompts for nothing.
+
+    Bitbucket takes --workspace and reads an API token with Bitbucket scopes the same three ways;
+    it is official-only. bitbucket is read-only; bitbucket-admin is the separate connection, with
+    its own token, that creates repositories.
+    """
 
     try:
         service = connection_service_from_environment(action_sink=_interactive_action)
-        envelope = service.connect(
-            type_value,
-            account,
-            allow_browser_fallback=allow_browser_fallback,
-            open_browser=not no_open_browser,
-        )
+        parsed_type = ConnectionType.parse(type_value)
+        jira = parsed_type is ConnectionType.JIRA
+        bitbucket = parsed_type in BITBUCKET_TARGETS
+        if bitbucket:
+            _refuse_jira_options_for_bitbucket(
+                parsed_type,
+                site,
+                token_kind,
+                cloud_id,
+                allow_browser_fallback=allow_browser_fallback,
+            )
+        elif workspace is not None:
+            raise _InputError("--workspace applies only to bitbucket and bitbucket-admin")
+        jira_options = (site, token_kind, cloud_id, token_env)
+        if not (jira or bitbucket) and (
+            token_stdin or any(option is not None for option in jira_options)
+        ):
+            raise _InputError(
+                "--site, --token-kind and --cloud-id apply only to jira; --token-stdin and "
+                "--token-env apply only to jira, bitbucket and bitbucket-admin"
+            )
+        if token_stdin and token_env is not None:
+            raise _InputError("--token-env and --token-stdin are mutually exclusive")
+        if bitbucket and workspace is not None:
+            normalized_account = _valid_input(normalize_account, account)
+            slug = _valid_input(normalize_bitbucket_workspace, workspace)
+            envelope = service.connect_bitbucket(
+                normalized_account,
+                workspace=slug,
+                token=(
+                    _jira_token_from_environment(token_env)
+                    if token_env is not None
+                    else _jira_token(
+                        from_stdin=token_stdin,
+                        label=(
+                            "Bitbucket admin API token"
+                            if parsed_type is ConnectionType.BITBUCKET_ADMIN
+                            else "Bitbucket API token"
+                        ),
+                    )
+                ),
+                connection_type=parsed_type,
+            )
+        elif jira and site is not None:
+            normalized_account = _valid_input(normalize_account, account)
+            origin = _valid_input(normalize_jira_site, site)
+            try:
+                kind, scoped_cloud_id = normalize_jira_token_binding(origin, token_kind, cloud_id)
+            except ValueError as failure:
+                raise _InputError(str(failure)) from None
+            if kind is JiraTokenKind.OAUTH:
+                if token_stdin:
+                    raise _InputError("--token-stdin applies only to API tokens, not oauth")
+                if token_env is not None:
+                    raise _InputError("--token-env applies only to API tokens, not oauth")
+                envelope = service.connect_jira_oauth(
+                    normalized_account, site=origin, open_browser=not no_open_browser
+                )
+            else:
+                envelope = service.connect_jira(
+                    normalized_account,
+                    site=origin,
+                    token=(
+                        _jira_token_from_environment(token_env)
+                        if token_env is not None
+                        else _jira_token(from_stdin=token_stdin)
+                    ),
+                    token_kind=kind,
+                    cloud_id=scoped_cloud_id,
+                )
+        else:
+            envelope = service.connect(
+                type_value,
+                account,
+                allow_browser_fallback=allow_browser_fallback,
+                open_browser=not no_open_browser,
+            )
+    except _InputError as failure:
+        envelope = _input_envelope("connect", str(failure), type_value, account)
     except (ValueError, ConnectorFailure) as failure:
         envelope = _exception_envelope("connect", failure, provider=type_value, account=account)
     except Exception:
@@ -434,7 +788,7 @@ def config_validate(
                 name
                 for name in configured
                 if name.startswith("SOLERCIA_CONNECT_")
-                or name.startswith(("JIRA_", "GLPI_", "MS_GRAPH_", "GOOGLE_"))
+                or name.startswith(("JIRA_", "BITBUCKET_", "GLPI_", "MS_GRAPH_", "GOOGLE_"))
             ),
             "targets": [
                 {
@@ -541,6 +895,92 @@ def profile_delete(type_value: str, account: str) -> None:
     _finish(envelope)
 
 
+@project_app.command("init")
+def project_init(
+    path: Annotated[
+        Path | None,
+        typer.Option(
+            "--path",
+            help="Absolute project folder; defaults to the git root of the current directory",
+        ),
+    ] = None,
+) -> None:
+    """Create the private .solercia-connect folder and a connect.env template without values.
+
+    It never overwrites connect.env and works whether or not project discovery is on.
+    """
+
+    try:
+        discovery, explicit_home = project_selection()
+        root = _project_root(path)
+        result = init_project_home(root)
+        discoverable = find_git_root(root) == root
+        envelope = ResultEnvelope.success(
+            operation="project.init",
+            status="initialized" if result.created else "ready",
+            data={
+                "home": str(result.home),
+                "created": list(result.created),
+                "discoverable": discoverable,
+                "discovery_enabled": discovery,
+                "next_steps": _project_next_steps(
+                    result.home,
+                    discoverable=discoverable,
+                    discovery=discovery,
+                    explicit_home=explicit_home,
+                ),
+            },
+        )
+    except _InputError as failure:
+        envelope = _input_envelope("project.init", str(failure))
+    except ValueError as failure:
+        envelope = _exception_envelope("project.init", failure)
+    except Exception:
+        envelope = _unknown_envelope("project.init")
+    _finish(envelope)
+
+
+def _project_root(path: Path | None) -> Path:
+    if path is None:
+        root = find_git_root(Path.cwd())
+        if root is None:
+            raise _InputError(
+                "The current directory is not inside a git repository; "
+                "pass --path with the absolute project folder"
+            )
+        return root
+    if not path.is_absolute() or not path.is_dir():
+        raise _InputError("--path must be the absolute path of an existing directory")
+    return Path(os.path.abspath(path))
+
+
+def _project_next_steps(
+    home: Path, *, discoverable: bool, discovery: bool, explicit_home: Path | None
+) -> list[str]:
+    """Activation first, only when still needed, then the setup commands as templates."""
+
+    steps: list[str] = []
+    if explicit_home == home:
+        pass
+    elif not discoverable:
+        steps.append(f'export SOLERCIA_CONNECT_HOME="{home}"')
+    else:
+        if explicit_home is not None:
+            steps.append("unset SOLERCIA_CONNECT_HOME")
+        if not discovery:
+            steps.append(f"export {PROJECT_DISCOVERY_VARIABLE}=1")
+    return [
+        *steps,
+        f"Fill in {home / 'connect.env'}: uncomment only the variables you use",
+        "solercia-connect connect gmail <account>",
+        "solercia-connect connect jira <account> --site https://<site>.atlassian.net "
+        "--token-env JIRA_API_TOKEN",
+        "solercia-connect connect bitbucket <account> --workspace <workspace> "
+        "--token-env BITBUCKET_API_TOKEN",
+        "solercia-connect doctor <type> <account>",
+    ]
+
+
 @m365_app.command("login")
 def m365_login(
     allow_browser_fallback: Annotated[
@@ -626,13 +1066,123 @@ def connection_service_from_environment(
     return ConnectionService(
         settings,
         ProfileStore.from_settings(settings),
-        KeyringOAuthTokenStore(),
+        oauth_token_store_from_settings(settings),
         action_sink=action_sink,
+        secret_store=api_token_store_from_settings(settings),
     )
 
 
 class _InputError(ValueError):
     pass
+
+
+_VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _valid_input(normalize: Callable[[str], str], value: str) -> str:
+    """Validate Jira input before the token prompt, so a typo never costs a token entry."""
+
+    try:
+        return normalize(value)
+    except ValueError as failure:
+        raise _InputError(str(failure)) from None
+
+
+def _refuse_jira_options_for_bitbucket(
+    target: ConnectionType,
+    site: str | None,
+    token_kind: str | None,
+    cloud_id: str | None,
+    *,
+    allow_browser_fallback: bool,
+) -> None:
+    """Name the first option that does not apply to a Bitbucket connect."""
+
+    for option, value in (("--site", site), ("--token-kind", token_kind), ("--cloud-id", cloud_id)):
+        if value is not None:
+            raise _InputError(
+                f"{option} does not apply to {target.value}; it connects with --workspace and an "
+                "API token with Bitbucket scopes"
+            )
+    if allow_browser_fallback:
+        raise _InputError(
+            f"--allow-browser-fallback does not apply to {target.value}; it connects only over "
+            "the official API"
+        )
+
+
+def _jira_token_from_environment(name: str) -> SecretValue:
+    """Read the API token from one variable of the effective environment; only its name shows."""
+
+    if not _VARIABLE_NAME.fullmatch(name):
+        raise _InputError("--token-env must name an environment variable, such as JIRA_API_TOKEN")
+    token = effective_environment().get(name, "").strip()
+    if not token:
+        raise _InputError(f"The variable {name} named by --token-env is missing or empty")
+    return SecretValue(token)
+
+
+def _to_option(capability: Capability, values: list[str]) -> str | list[str]:
+    """Read --to as one target status for the Jira transition and as recipients otherwise."""
+    if capability is Capability.EXTERNAL_ISSUES_TRANSITION:
+        if len(values) != 1:
+            raise _InputError("--to takes exactly one target status for external.issues.transition")
+        return values[0]
+    return list(values)
+
+
+def _draft_body(path: Path | None, *, from_stdin: bool) -> str:
+    """Read the draft body from one file or from piped stdin, never from an argument."""
+    if path is not None and from_stdin:
+        raise _InputError("--body-file and --body-stdin are mutually exclusive")
+    if path is None and not from_stdin:
+        raise _InputError("mail.draft.create needs --body-file or --body-stdin")
+    if path is not None:
+        try:
+            if not path.is_file():
+                raise OSError("not a regular file")
+            if path.stat().st_size > MAX_DRAFT_BODY_BYTES:
+                raise _InputError(f"--body-file exceeds {MAX_DRAFT_BODY_BYTES // 1024} KB")
+            data = path.read_bytes()
+        except OSError:
+            raise _InputError("--body-file could not be read") from None
+        source = "--body-file"
+    else:
+        if sys.stdin.isatty():
+            raise _InputError("--body-stdin needs piped input")
+        stream = getattr(sys.stdin, "buffer", None)
+        data = (
+            stream.read(MAX_DRAFT_BODY_BYTES + 1)
+            if stream is not None
+            else sys.stdin.read(MAX_DRAFT_BODY_BYTES + 1).encode("utf-8")
+        )
+        source = "--body-stdin"
+    if len(data) > MAX_DRAFT_BODY_BYTES:
+        raise _InputError(f"{source} exceeds {MAX_DRAFT_BODY_BYTES // 1024} KB")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise _InputError(f"{source} must be UTF-8 text") from None
+
+
+def _jira_token(*, from_stdin: bool, label: str = "Jira API token") -> SecretValue:
+    """Read one API token from piped stdin or the hidden prompt; Bitbucket reuses it by label."""
+
+    if from_stdin and sys.stdin.isatty():
+        # A terminal would echo the token as it is typed; only piped input skips the prompt.
+        raise _InputError("--token-stdin needs piped input; omit it to use the hidden prompt")
+    try:
+        raw = (
+            sys.stdin.readline()
+            if from_stdin
+            else str(typer.prompt(label, hide_input=True, err=True))
+        )
+    except _click.exceptions.Abort:
+        raise _InputError(f"{label} entry was cancelled") from None
+    token = raw.strip()
+    if not token:
+        raise _InputError(f"The {label} is empty")
+    return SecretValue(token)
 
 
 def _query_payload(
@@ -647,8 +1197,43 @@ def _query_payload(
     meeting_id: str | None,
     drive_id: str | None = None,
     item_id: str | None = None,
+    issue: str | None = None,
+    project: str | None = None,
+    sprint: str | None = None,
     limit: int,
 ) -> QueryPayload:
+    if capability is Capability.MAIL_CATEGORIES_SET:
+        raise _InputError(
+            "mail.categories.set is a write, not a query; run it with --message-id and "
+            "--allow-write"
+        )
+    if capability is Capability.EXTERNAL_ISSUES_TRANSITION:
+        raise _InputError(
+            "external.issues.transition is a write, not a query; run it with --issue, --to and "
+            "--allow-write"
+        )
+    if capability is Capability.MAIL_DRAFT_CREATE:
+        raise _InputError(
+            "mail.draft.create is a write, not a query; run it with --to, --subject, --body-file "
+            "and --allow-write"
+        )
+    if capability is Capability.MAIL_DRAFT_SEND:
+        raise _InputError(
+            "mail.draft.send is a write, not a query; run it with --draft-id and --allow-write"
+        )
+    if capability is Capability.SCM_REPOSITORIES_CREATE:
+        raise _InputError(
+            "scm.repositories.create is a write, not a query; run it with --repo, --project and "
+            "--allow-write"
+        )
+    if capability is Capability.EXTERNAL_ISSUES_TRANSITIONS_LIST:
+        if issue is None:
+            raise _InputError("external.issues.transitions.list needs --issue with one Jira key")
+        return IssueTransitionsQuery(issue, account)
+    if capability is Capability.EXTERNAL_ISSUES_OPEN_LIST:
+        if sprint is not None and sprint != "current":
+            raise _InputError("--sprint accepts only current")
+        return OpenIssueQuery(project, sprint == "current", jql, account, min(limit, 100))
     transcripts = {Capability.MEETING_TRANSCRIPTS_LIST, Capability.MEETING_TRANSCRIPT_GET}
     if capability in transcripts:
         # A transcript is selected by meeting, by recording, or by period, so a window is one
@@ -658,8 +1243,8 @@ def _query_payload(
         window = None
     else:
         window = _window(start, end)
-    if capability is Capability.MAIL_SENT_LIST:
-        return MailQuery(_require_window(window), account, min(limit, 100))
+    if capability in {Capability.MAIL_SENT_LIST, Capability.MAIL_INBOX_LIST}:
+        return MailQuery(_require_window(window), account, min(limit, 1000))
     if capability is Capability.CALENDAR_EVENTS_LIST:
         return CalendarQuery(
             _require_window(window),
@@ -700,7 +1285,12 @@ def _query_payload(
         )
     if capability is Capability.EXTERNAL_ISSUES_SEARCH:
         return IssueQuery(_require_window(window), assignee, jql, min(limit, 100))
-    return TicketQuery(_require_window(window), min(limit, 1000))
+    if capability is Capability.TICKETS_SEARCH:
+        return TicketQuery(_require_window(window), min(limit, 1000))
+    # Every capability the enum can hold has an explicit branch above. Falling through here means
+    # a new capability was declared without teaching this legacy test helper its query shape, so
+    # it fails closed instead of silently handing back a query built for a different capability.
+    raise _InputError(f"Unsupported capability: {capability}")
 
 
 def _optional_window(start: str | None, end: str | None) -> DateWindow | None:
