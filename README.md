@@ -302,3 +302,13 @@ repository does not claim a self-contained clean-cache build.
 - [Checked roadmap](docs/ROADMAP.md)
 - [Provider runbooks](docs/runbooks/)
 - [Mandatory platform decisions](docs/decisions/2026-08-23-solercia-platform-decisions.md)
+
+## License
+
+Copyright (C) 2026 Cristian Camilo Calderón Tapia.
+
+Solercia Connect is free software: you can redistribute it and/or modify it under the terms
+of the GNU Affero General Public License as published by the Free Software Foundation,
+version 3 of the License. It is distributed WITHOUT ANY WARRANTY; see [LICENSE](LICENSE)
+for details. If you run a modified version as a network service, you must offer its
+source code to the users of that service.
