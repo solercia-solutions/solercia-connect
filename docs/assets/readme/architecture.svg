@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640" viewBox="0 0 960 640" role="img" aria-labelledby="title desc">
+  <title id="title">Solercia Connect architecture</title>
+  <desc id="desc">The Typer CLI and the loopback HTTP service share the same application services. The runtime applies the route policy, calls official provider adapters first and the supervised browser route only on explicit opt-in, and returns a versioned JSON envelope with a receipt. Local state lives in private profiles and the OS keyring; there is no database.</desc>
+  <defs>
+    <style>
+      text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+      .bg{fill:#f8fafc;stroke:#e2e8f0}
+      .h{fill:#0f172a;font-size:22px;font-weight:700}
+      .sub{fill:#475569;font-size:13px}
+      .t{fill:#0f172a;font-size:14px;font-weight:600}
+      .s{fill:#475569;font-size:12px}
+      .c{fill:#334155;font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+      .box{fill:#ffffff;stroke:#cbd5e1;stroke-width:1.5}
+      .ind{fill:#eef2ff;stroke:#6366f1;stroke-width:1.5}
+      .grn{fill:#ecfdf5;stroke:#10b981;stroke-width:1.5}
+      .amb{fill:#fffbeb;stroke:#f59e0b;stroke-width:1.5}
+      .sky{fill:#f0f9ff;stroke:#0ea5e9;stroke-width:1.5}
+      .pill{fill:#ffffff;stroke:#c7d2fe}
+      .ln{fill:none;stroke:#64748b;stroke-width:1.6}
+      .dash{stroke-dasharray:5 4}
+      .ah{fill:#64748b}
+      @media (prefers-color-scheme:dark){
+        .bg{fill:#0d1117;stroke:#30363d}
+        .h,.t{fill:#e6edf3}
+        .sub,.s{fill:#9da7b3}
+        .c{fill:#c9d1d9}
+        .box{fill:#161b22;stroke:#30363d}
+        .ind{fill:#1c1f3a;stroke:#818cf8}
+        .grn{fill:#0f2a20;stroke:#34d399}
+        .amb{fill:#2b2111;stroke:#fbbf24}
+        .sky{fill:#0c2433;stroke:#38bdf8}
+        .pill{fill:#161b22;stroke:#4f46e5}
+        .ln{stroke:#8b949e}
+        .ah{fill:#8b949e}
+      }
+    </style>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
+  </defs>
+
+  <rect class="bg" x="0.5" y="0.5" width="959" height="639" rx="16"/>
+  <text class="h" x="32" y="44">One runtime, two front doors</text>
+  <text class="sub" x="32" y="66">The CLI and the local HTTP service run the same application code and return the same JSON.</text>
+
+  <!-- Entry points -->
+  <rect class="box" x="32" y="96" width="430" height="72" rx="10"/>
+  <text class="t" x="48" y="122">Typer CLI · solercia-connect</text>
+  <text class="s" x="48" y="143">interactive: connect, status, doctor, run, disconnect</text>
+  <text class="s" x="48" y="159">OAuth device code / PKCE loopback, login and MFA</text>
+  <rect class="box" x="498" y="96" width="430" height="72" rx="10"/>
+  <text class="t" x="514" y="122">Loopback HTTP · solercia-connect-service</text>
+  <text class="s" x="514" y="143">127.0.0.1:8765 · local API key on POST routes</text>
+  <text class="s" x="514" y="159">non-interactive unless the login opt-in is on</text>
+  <path class="ln" d="M247 168 V198" marker-end="url(#a)"/>
+  <path class="ln" d="M713 168 V198" marker-end="url(#a)"/>
+
+  <!-- Application services -->
+  <rect class="ind" x="32" y="200" width="896" height="96" rx="12"/>
+  <text class="t" x="48" y="226">Application services</text>
+  <rect class="pill" x="48" y="244" width="280" height="34" rx="17"/>
+  <text class="s" x="188" y="265" text-anchor="middle">Typed settings + doctor</text>
+  <rect class="pill" x="340" y="244" width="280" height="34" rx="17"/>
+  <text class="s" x="480" y="265" text-anchor="middle">Connections + OAuth lifecycle</text>
+  <rect class="pill" x="632" y="244" width="280" height="34" rx="17"/>
+  <text class="s" x="772" y="265" text-anchor="middle">Capability execution</text>
+  <path class="ln" d="M332 296 V326" marker-end="url(#a)"/>
+
+  <!-- Runtime + envelope -->
+  <rect class="box" x="32" y="328" width="600" height="72" rx="10"/>
+  <text class="t" x="48" y="356">ConnectorRuntime + RoutePolicy</text>
+  <text class="s" x="48" y="378">official first · bounded retries on typed transient failures</text>
+  <text class="s" x="48" y="394">explicit browser fallback · immutable receipt for every run</text>
+  <rect class="sky" x="668" y="328" width="260" height="72" rx="10"/>
+  <text class="t" x="684" y="356">Versioned JSON envelope</text>
+  <text class="c" x="684" y="378">solercia.connect/v1</text>
+  <text class="s" x="684" y="394">records + receipt, back to the caller</text>
+  <path class="ln" d="M632 364 H666" marker-end="url(#a)"/>
+
+  <!-- Adapters -->
+  <path class="ln" d="M232 400 V432" marker-end="url(#a)"/>
+  <path class="ln dash" d="M576 400 V432" marker-end="url(#a)"/>
+  <text class="c" x="586" y="421">--allow-browser-fallback</text>
+  <rect class="grn" x="32" y="434" width="456" height="96" rx="10"/>
+  <text class="t" x="48" y="460">Official provider adapters</text>
+  <text class="s" x="48" y="482">Microsoft Graph · Gmail · Google Calendar · Google Meet</text>
+  <text class="s" x="48" y="500">Search Console · Jira Cloud · Bitbucket Cloud · GLPI</text>
+  <text class="s" x="48" y="518">documented APIs with the account's own grant</text>
+  <rect class="amb" x="520" y="434" width="408" height="96" rx="10"/>
+  <text class="t" x="536" y="460">Supervised browser route (opt-in)</text>
+  <text class="s" x="536" y="482">Microsoft 365 and Google Meet</text>
+  <text class="s" x="536" y="500">dedicated Chromium profile per account</text>
+  <text class="s" x="536" y="518">identity must match the requested account</text>
+
+  <!-- State -->
+  <rect class="box" x="32" y="560" width="896" height="56" rx="10"/>
+  <text class="t" x="480" y="584" text-anchor="middle">Local state only, no database</text>
+  <text class="s" x="480" y="603" text-anchor="middle">private profiles (0700 / 0600, atomic writes) · OAuth tokens in the OS keyring · per-account browser profiles</text>
+</svg>
